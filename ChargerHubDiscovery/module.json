@@ -1,0 +1,15 @@
+{
+  "id": "{613D9807-B975-91B2-C6BD-FDD3654EF87E}",
+  "name": "ChargerHubDiscovery",
+  "type": 5,
+  "vendor": "",
+  "aliases": [
+    "ChargerHub Suche",
+    "Wallbox Suche"
+  ],
+  "url": "https://github.com/DG65/ChargerHub",
+  "parentRequirements": [],
+  "childRequirements": [],
+  "implemented": [],
+  "prefix": "CHUBD"
+}
