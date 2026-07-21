@@ -1,0 +1,15 @@
+{
+  "id": "{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}",
+  "name": "ChargerHub",
+  "type": 3,
+  "vendor": "",
+  "aliases": [
+    "ChargerHub",
+    "Wallbox (Multi-Hersteller)"
+  ],
+  "url": "https://github.com/DG65/ChargerHub",
+  "parentRequirements": [],
+  "childRequirements": [],
+  "implemented": [],
+  "prefix": "CHUB"
+}
