@@ -44,9 +44,15 @@ Sitzungen** gearbeitet:
    Wort DER Fachbegriff ist (Modbus TCP, Holding-/Input-Register, FC 0x16, Unit-ID, RFID,
    LED, SelectVariable, WebFront). Faustregel: eindeutschen, wo es das Verständnis
    verbessert; stehen lassen, wo es das Verständnis erschwert.
-   Beim Ersetzen **Grammatik prüfen** — ändert sich das Genus (der Portcheck → die
-   Port-Prüfung), müssen Artikel und Adjektivendungen mitgezogen werden; deshalb den Diff
-   durchsehen statt blind zu ersetzen.
+   Beim Ersetzen **den Diff Zeile für Zeile lesen**, nie blind ersetzen — drei erprobte
+   Stolperfallen aus dem Verbund:
+   1. *Genus-Kongruenz*: der Portcheck → die Port-Prüfung ⇒ Artikel und Adjektivendungen
+      mitziehen („einen zuverlässigen Portcheck" → „eine zuverlässige Port-Prüfung").
+   2. *Objekt-Verwechslung bei scannen*: Ein **Bereich** wird durchsucht/abgesucht, ein
+      **Gerät** wird gefunden. „Geräte hinter Gateways lassen sich nicht durchsuchen" ist
+      grammatisch richtig, inhaltlich falsch — korrekt: „… findet die Suche nicht
+      zuverlässig". Im Englischen steht beide Male „scan".
+   3. *Fachbegriffe nicht überdehnen* (siehe Ausnahmeliste oben).
 
 ## Eigenständigkeit prüfen: `.tools/check-standalone.php`
 
