@@ -224,6 +224,21 @@ class ModbusTcpClient
         $w    = unpack('n2', $raw);
         return $this->writeMultiple($startReg, [$w[1], $w[2]]);
     }
+
+    // IEEE-754 Float64 (Double) über 4 Register, Big-Endian — go-e Controller
+    // legt seine Energiezähler (Wh) als Float64 ab (wie PAC2200 in MeterHub).
+    public function readDouble64($regs, $offset)
+    {
+        $raw = pack(
+            'nnnn',
+            $this->u16($regs, $offset),
+            $this->u16($regs, $offset + 1),
+            $this->u16($regs, $offset + 2),
+            $this->u16($regs, $offset + 3)
+        );
+        $val = unpack('E', $raw);
+        return (float)($val[1] ?? 0.0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -896,16 +911,160 @@ class GoeChargerDriver implements ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// GoeControllerDriver — go-e Controller (Energiemess-Zentrale mit 6 Strom-
+// sensoren und Kategorien Home/Grid/Car/Relais/Solar/Akku). Registeradressen
+// gemäß offizieller Doku https://github.com/goecharger/go-eController-API
+// (modbus-de.md), am 2026-07-22 abgerufen. Reines Lese-Gerät: Live-Werte per
+// FC 0x04 (Input-Register), Float32/Float64 Big-Endian; das einzige Holding-
+// Register (Unix-Zeitstempel) wird nicht benötigt. Modbus muss wie beim
+// go-eCharger erst per App/HTTP-API aktiviert werden (Port 502).
+//
+// Kategorie-Blöcke liegen im 26-Register-Raster ab 1046 (Home), je Block:
+// Offset 0-7 Ströme L1/L2/L3/N (Float32), 8-9 Leistung (Float32),
+// 10-13 Energie In (Float64, Wh), 14-17 Energie Out (Float64, Wh),
+// 18-25 Money In/Out (laut Doku „nicht implementiert" — übersprungen).
+// ---------------------------------------------------------------------------
+
+class GoeControllerDriver implements ChargerDriverInterface
+{
+    const REG_VOLTAGES   = 1000; // 8 Register: U L1/L2/L3/N (Float32, V)
+    const REG_SENSORS    = 1010; // 36 Register: I 1-6, P 1-6, PF 1-6 (Float32)
+    const CAT_BASE       = 1046; // Kategorie-Blöcke im 26er-Raster
+    const CAT_STRIDE     = 26;
+
+    const CATEGORIES = [
+        // index => [ident-Präfix, Anzeige]
+        0 => ['home',   'Hausverbrauch'],
+        1 => ['grid',   'Netz'],
+        2 => ['car',    'Fahrzeug(e)'],
+        3 => ['relais', 'Relais'],
+        4 => ['solar',  'Solar'],
+        5 => ['akku',   'Batterie'],
+    ];
+
+    public function getBaseVars()
+    {
+        $vars = [
+            ['connected', 'Verbindung', 'B', '~Alert.Reversed', false, 'errors', ''],
+        ];
+        foreach (self::CATEGORIES as $i => [$prefix, $label]) {
+            $reg = self::CAT_BASE + $i * self::CAT_STRIDE + 8;
+            $vars[] = [$prefix . '_power', $label . ' Leistung', 'F', 'CHB.WattSigned', true, 'device', 'Input ' . $reg . '-' . ($reg + 1) . ' (Float32)'];
+        }
+        return $vars;
+    }
+
+    public function getOptionalGroups()
+    {
+        $energyVars = [];
+        foreach (self::CATEGORIES as $i => [$prefix, $label]) {
+            $in  = self::CAT_BASE + $i * self::CAT_STRIDE + 10;
+            $out = self::CAT_BASE + $i * self::CAT_STRIDE + 14;
+            $energyVars[] = [$prefix . '_energy_in',  $label . ' Energie In',  'F', 'CHB.kWh', true, 'energy', 'Input ' . $in . '-' . ($in + 3) . ' (Float64, Wh)'];
+            $energyVars[] = [$prefix . '_energy_out', $label . ' Energie Out', 'F', 'CHB.kWh', true, 'energy', 'Input ' . $out . '-' . ($out + 3) . ' (Float64, Wh)'];
+        }
+
+        $sensorVars = [];
+        for ($s = 1; $s <= 6; $s++) {
+            $iReg = self::REG_SENSORS + ($s - 1) * 2;
+            $pReg = self::REG_SENSORS + 12 + ($s - 1) * 2;
+            $sensorVars[] = ['sensor' . $s . '_current', 'Sensor ' . $s . ' Strom',    'F', 'CHB.Ampere',     false, 'sensors', 'Input ' . $iReg . '-' . ($iReg + 1)];
+            $sensorVars[] = ['sensor' . $s . '_power',   'Sensor ' . $s . ' Leistung', 'F', 'CHB.WattSigned', false, 'sensors', 'Input ' . $pReg . '-' . ($pReg + 1)];
+        }
+
+        return [
+            'GroupVoltages' => ['caption' => 'Spannungen L1/L2/L3/N', 'vars' => [
+                ['voltage_l1', 'Spannung L1', 'F', 'CHB.Volt', false, 'phases', 'Input 1000-1001'],
+                ['voltage_l2', 'Spannung L2', 'F', 'CHB.Volt', false, 'phases', 'Input 1002-1003'],
+                ['voltage_l3', 'Spannung L3', 'F', 'CHB.Volt', false, 'phases', 'Input 1004-1005'],
+                ['voltage_n',  'Spannung N',  'F', 'CHB.Volt', false, 'phases', 'Input 1006-1007'],
+            ]],
+            'GroupSensors' => ['caption' => 'Stromsensoren 1-6 (Strom, Leistung)', 'vars' => $sensorVars],
+            'GroupEnergy'  => ['caption' => 'Energiezähler je Kategorie (In/Out, kWh)', 'vars' => $energyVars],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'CHB.WattSigned' => [VARIABLETYPE_FLOAT, ' W', -100000.0, 100000.0, 1.0, 0],
+            'CHB.kWh'        => [VARIABLETYPE_FLOAT, ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'CHB.Volt'       => [VARIABLETYPE_FLOAT, ' V', 0.0, 260.0, 0.1, 1],
+            'CHB.Ampere'     => [VARIABLETYPE_FLOAT, ' A', -200.0, 200.0, 0.1, 1],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        return [];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        // Verbindungstest über den ersten Kategorie-Block (Home).
+        $home = $mb->readInput(self::CAT_BASE, 18);
+        $ok   = ($home !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $energyOn = $hub->GroupActive('GroupEnergy');
+        foreach (self::CATEGORIES as $i => [$prefix, $label]) {
+            // Home ist schon gelesen; übrige Blöcke einzeln (18 Register decken
+            // Ströme + Leistung + beide Energiezähler ab, Money entfällt).
+            $blk = ($i === 0) ? $home : $mb->readInput(self::CAT_BASE + $i * self::CAT_STRIDE, 18);
+            if ($blk === null) {
+                continue;
+            }
+            $hub->SetVarFloat($prefix . '_power', $mb->readFloat32($blk, 8));
+            if ($energyOn) {
+                $hub->SetVarFloat($prefix . '_energy_in',  $mb->readDouble64($blk, 10) / 1000.0); // Wh -> kWh
+                $hub->SetVarFloat($prefix . '_energy_out', $mb->readDouble64($blk, 14) / 1000.0);
+            }
+        }
+
+        if ($hub->GroupActive('GroupVoltages')) {
+            $u = $mb->readInput(self::REG_VOLTAGES, 8);
+            if ($u !== null) {
+                $hub->SetVarFloat('voltage_l1', $mb->readFloat32($u, 0));
+                $hub->SetVarFloat('voltage_l2', $mb->readFloat32($u, 2));
+                $hub->SetVarFloat('voltage_l3', $mb->readFloat32($u, 4));
+                $hub->SetVarFloat('voltage_n',  $mb->readFloat32($u, 6));
+            }
+        }
+
+        if ($hub->GroupActive('GroupSensors')) {
+            $s = $mb->readInput(self::REG_SENSORS, 24); // I 1-6 + P 1-6
+            if ($s !== null) {
+                for ($n = 1; $n <= 6; $n++) {
+                    $hub->SetVarFloat('sensor' . $n . '_current', $mb->readFloat32($s, ($n - 1) * 2));
+                    $hub->SetVarFloat('sensor' . $n . '_power',   $mb->readFloat32($s, 12 + ($n - 1) * 2));
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // Reines Lese-Gerät — keine Steuer-Idents.
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChargerHub — Hauptmodul
 // ---------------------------------------------------------------------------
 
 class ChargerHub extends IPSModule
 {
     private const DRIVERS = [
-        'keba'       => 'KebaDriver',
-        'alfen'      => 'AlfenDriver',
-        'heidelberg' => 'HeidelbergDriver',
-        'goe'        => 'GoeChargerDriver',
+        'keba'          => 'KebaDriver',
+        'alfen'         => 'AlfenDriver',
+        'heidelberg'    => 'HeidelbergDriver',
+        'goe'           => 'GoeChargerDriver',
+        'goecontroller' => 'GoeControllerDriver',
     ];
 
     private $driver = null;
@@ -1079,7 +1238,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• KEBA KeContact P30/P40: Standard-Unit-ID 255, Port 502.'],
                         ['type' => 'Label', 'caption' => '• Alfen Eve Single/Double Pro-line: Standard-Unit-ID 1, Port 502. Nur Sockel 1 wird bedient.'],
                         ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
-                        ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Nur Basisfunktionen (Status, Ladefreigabe, Stromlimit) umgesetzt.'],
+                        ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 hatte einen Byte-Order-Bug (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben).'],
+                        ['type' => 'Label', 'caption' => '• go-e Controller: Standard-Unit-ID 1, Port 502, nur lesend (Energiemess-Zentrale mit 6 Stromsensoren und Kategorien Home/Netz/Fahrzeug/Relais/Solar/Batterie). Modbus muss erst per go-e-App/HTTP-API aktiviert werden.'],
                     ],
                 ],
                 ['type' => 'CheckBox', 'name' => 'Active', 'caption' => 'Kommunikation aktiv'],
@@ -1092,6 +1252,7 @@ class ChargerHub extends IPSModule
                         ['label' => 'Alfen (Eve Single/Double Pro-line)', 'value' => 'alfen'],
                         ['label' => 'Heidelberg Energy Control',       'value' => 'heidelberg'],
                         ['label' => 'go-eCharger (Gemini/HOME+)',      'value' => 'goe'],
+                        ['label' => 'go-e Controller (Energiesensor, nur lesend)', 'value' => 'goecontroller'],
                     ],
                 ],
                 [

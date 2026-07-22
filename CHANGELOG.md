@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.3.0-beta.1] - 2026-07-22
+
+### Added
+- **Neuer Gerätetyp: go-e Controller** (Energiemess-Zentrale, nur lesend) — Spannungen
+  L1/L2/L3/N, 6 Stromsensoren (Strom + Leistung), Kategorien Home/Netz/Fahrzeug/Relais/
+  Solar/Batterie mit Leistung und Energiezählern In/Out (Float64 Wh → kWh). Register gemäß
+  offizieller Doku ([go-eController-API](https://github.com/goecharger/go-eController-API),
+  modbus-de.md). Auch in der Discovery (Spannungs-Signatur auf Input 1000/1002).
+- `ModbusTcpClient::readDouble64()` (Float64 Big-Endian, wie PAC2200 in MeterHub).
+
+### Changed
+- Discovery-Hilfetext: Hinweis, dass go-e-Geräte bei nicht (wirklich) laufendem
+  Modbus-Server Port 502 geschlossen halten und damit für den Scan unsichtbar sind —
+  inkl. Prüf-URL (`/api/status?filter=men`). Real beobachtet: Auch bei gespeichertem
+  „aktiviert" lief der Server erst nach Aus-/Einschalten der Einstellung bzw. Neustart.
+
 ## [0.2.1-beta.1] - 2026-07-22
 
 ### Fixed
