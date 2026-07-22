@@ -320,7 +320,13 @@ class KebaDriver implements ChargerDriverInterface
     private function u32At($mb, int $reg)
     {
         $r = $mb->readHolding($reg, 2);
-        return ($r === null) ? null : $mb->u32($r, 0);
+        if ($r === null) {
+            return null;
+        }
+        $v = $mb->u32($r, 0);
+        // 0xFFFFFFFF = unbelegtes Register (Füllwert statt Exception, wie an
+        // go-e-Firmware beobachtet) — nicht als Messwert übernehmen.
+        return ($v === 0xFFFFFFFF) ? null : $v;
     }
 
     public function getBaseVars()
@@ -803,9 +809,15 @@ class GoeChargerDriver implements ChargerDriverInterface
         8 => 'Erdungsfehler', 10 => 'Interner Fehler',
     ];
 
+    // U32 mit optionalem Wort-Swap. Rückgabe null bei 0xFFFFFFFF: Unbelegte
+    // Register beantwortet die go-e-Firmware mit 0xFF-Füllwerten statt einer
+    // Modbus-Exception (an echtem go-e Controller verifiziert, MeterHub-
+    // Befund) — ungefiltert landete daraus z. B. eine Leistung von
+    // 42.949.672,95 W in einer archivierten Variable.
     private function u32($mb, $hub, $regs, $offset)
     {
-        return $hub->GroupActive('GoeWordSwap') ? $mb->u32sw($regs, $offset) : $mb->u32($regs, $offset);
+        $v = $hub->GroupActive('GoeWordSwap') ? $mb->u32sw($regs, $offset) : $mb->u32($regs, $offset);
+        return ($v === 0xFFFFFFFF) ? null : $v;
     }
 
     public function getBaseVars()
@@ -885,29 +897,31 @@ class GoeChargerDriver implements ChargerDriverInterface
         $hub->SetVarInt('state', $mb->u16($car, 0));
 
         $power = $mb->readInput(self::REG_POWER_TOTAL, 2);
-        if ($power !== null) {
-            $hub->SetVarFloat('power', $this->u32($mb, $hub, $power, 0) / 100.0); // 0,01 W -> W
+        $p     = ($power !== null) ? $this->u32($mb, $hub, $power, 0) : null;
+        if ($p !== null) {
+            $hub->SetVarFloat('power', $p / 100.0); // 0,01 W -> W
         }
 
         $energy = $mb->readInput(self::REG_ENERGY_CHARGE, 2);
-        if ($energy !== null) {
+        $e      = ($energy !== null) ? $this->u32($mb, $hub, $energy, 0) : null;
+        if ($e !== null) {
             // Deka-Wattsekunden (Ws*10) -> kWh: Ws = Rohwert*10, kWh = Ws/3.600.000
-            $hub->SetVarFloat('energy_session', $this->u32($mb, $hub, $energy, 0) * 10.0 / 3600000.0);
+            $hub->SetVarFloat('energy_session', $e * 10.0 / 3600000.0);
         }
 
         if ($hub->GroupActive('GroupPhases')) {
-            $v1 = $mb->readInput(self::REG_VOLT_L1, 2);
-            $v2 = $mb->readInput(self::REG_VOLT_L2, 2);
-            $v3 = $mb->readInput(self::REG_VOLT_L3, 2);
-            $i1 = $mb->readInput(self::REG_AMP_L1, 2);
-            $i2 = $mb->readInput(self::REG_AMP_L2, 2);
-            $i3 = $mb->readInput(self::REG_AMP_L3, 2);
-            if ($v1 !== null) { $hub->SetVarFloat('voltage_l1', (float)$this->u32($mb, $hub, $v1, 0)); }
-            if ($v2 !== null) { $hub->SetVarFloat('voltage_l2', (float)$this->u32($mb, $hub, $v2, 0)); }
-            if ($v3 !== null) { $hub->SetVarFloat('voltage_l3', (float)$this->u32($mb, $hub, $v3, 0)); }
-            if ($i1 !== null) { $hub->SetVarFloat('current_l1', $this->u32($mb, $hub, $i1, 0) / 10.0); }
-            if ($i2 !== null) { $hub->SetVarFloat('current_l2', $this->u32($mb, $hub, $i2, 0) / 10.0); }
-            if ($i3 !== null) { $hub->SetVarFloat('current_l3', $this->u32($mb, $hub, $i3, 0) / 10.0); }
+            foreach ([1, 2, 3] as $ph) {
+                $vr = $mb->readInput(self::REG_VOLT_L1 + ($ph - 1) * 2, 2);
+                $v  = ($vr !== null) ? $this->u32($mb, $hub, $vr, 0) : null;
+                if ($v !== null) {
+                    $hub->SetVarFloat('voltage_l' . $ph, (float)$v);
+                }
+                $ir = $mb->readInput(self::REG_AMP_L1 + ($ph - 1) * 2, 2);
+                $i  = ($ir !== null) ? $this->u32($mb, $hub, $ir, 0) : null;
+                if ($i !== null) {
+                    $hub->SetVarFloat('current_l' . $ph, $i / 10.0);
+                }
+            }
         }
 
         if ($hub->GroupActive('GroupDevice')) {
@@ -919,16 +933,17 @@ class GoeChargerDriver implements ChargerDriverInterface
             if ($fw !== null) {
                 $hub->SetVarStr('dev_firmware', $mb->readStr($fw, 0, 2));
             }
-            $etot = $mb->readInput(self::REG_ENERGY_TOTAL, 2);
+            $etotR = $mb->readInput(self::REG_ENERGY_TOTAL, 2);
+            $etot  = ($etotR !== null) ? $this->u32($mb, $hub, $etotR, 0) : null;
             if ($etot !== null) {
-                $hub->SetVarFloat('energy_total', $this->u32($mb, $hub, $etot, 0) / 10.0);
+                $hub->SetVarFloat('energy_total', $etot / 10.0);
             }
             $err = $mb->readInput(self::REG_ERROR, 1);
-            if ($err !== null) {
+            if ($err !== null && $mb->u16($err, 0) !== 0xFFFF) {
                 $hub->SetVarInt('dev_error', $mb->u16($err, 0));
             }
             $pp = $mb->readInput(self::REG_PP_CABLE, 1);
-            if ($pp !== null) {
+            if ($pp !== null && $mb->u16($pp, 0) !== 0xFFFF) {
                 $hub->SetVarInt('cable_current', $mb->u16($pp, 0));
             }
         }
@@ -1401,6 +1416,12 @@ class ChargerHub extends IPSModule
 
     public function SetVarFloat(string $ident, float $value)
     {
+        // NaN/Inf nie in (ggf. archivierte) Variablen schreiben — unbelegte
+        // Register liefern bei mancher Firmware 0xFF-Füllwerte statt einer
+        // Modbus-Exception, als Float32 dekodiert ergibt das NaN.
+        if (!is_finite($value)) {
+            return;
+        }
         $vid = $this->FindVarByIdent($ident);
         if ($vid) {
             SetValueFloat($vid, $value);

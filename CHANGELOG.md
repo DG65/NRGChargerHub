@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.6.1-beta.1] - 2026-07-22
+
+### Fixed
+- **Füllwert-Schutz** (MeterHub-Befund am echten go-e Controller): go-e-Firmware
+  beantwortet unbelegte Register mit 0xFF-Füllwerten statt einer Modbus-Exception.
+  go-e-U32-Werte mit 0xFFFFFFFF und U16-Werte mit 0xFFFF werden jetzt verworfen
+  (sonst landete z. B. eine Leistung von 42.949.672,95 W im Archiv); KEBA-Helfer
+  ebenso abgesichert; `SetVarFloat` verwirft generell NaN/Inf (schützt auch die
+  Float32-Treiber wie Alfen).
+
+### Changed
+- README: Verweis auf MeterHub für den go-e Controller (dort ab 0.14.0 unterstützt).
+
 ## [0.6.0-beta.1] - 2026-07-22
 
 ### Added

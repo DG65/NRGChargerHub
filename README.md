@@ -21,6 +21,10 @@ willkommen — bitte mit Wallbox-Typ und betroffenem Register melden.
 Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Manager, Spalte
 „Beschreibung") — praktisch zum Abgleich mit dem Herstellerhandbuch.
 
+ℹ️ Der **go-e Controller** (Energiemess-Zentrale) wird nicht hier, sondern von
+[MeterHub](https://github.com/DG65/MeterHub) unterstützt (ab 0.14.0, inkl. automatischer
+Erkennung in der dortigen Zählersuche) — er ist ein Energiezähler, keine Wallbox.
+
 ## Ziel
 
 Ein Modul, ein Auswahlfeld „Wallbox-Hersteller" — je nach Auswahl werden die passenden Register
