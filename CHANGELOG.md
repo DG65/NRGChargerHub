@@ -3,6 +3,26 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.7.0-beta.1] - 2026-07-22
+
+### Added
+- **`CHUB_GetFunctions`-Vertrag v1 — mit dem EMS abgestimmt und final umgesetzt:**
+  - Neu `plugStateID`: Variablen-ID „Fahrzeug verbunden" (Bool) — KEBA (Kabelstatus ≥ 5),
+    go-eCharger (CAR_STATE 2/3/4) und Heidelberg (Status 3–8 ohne Fehler) liefern sie;
+    Alfen hat kein dokumentiertes Steckerkennungs-Register → 0.
+  - Neu `minCurrent`/`maxCurrent` als **Werte** (keine IDs): min immer 6 A;
+    max = min(Hardware-Limit des Herstellers [KEBA 63 / Alfen 32 / Heidelberg 16 /
+    go-e 32 A], neue Property „Maximaler Anschlussstrom").
+  - Neue Property/Formularfeld **„Maximaler Anschlussstrom (A)"** (Default 16): harter
+    Clamp in JEDEM Treiber-Schreibzugriff — letzte Verteidigungslinie, egal was ein EMS
+    anfordert.
+- README: vollständige Feldtabelle des Vertrags; Abschnitt zum go-e-Eco-Modus-Alternativpfad
+  (`ids`-Feed + `fup`/`lpsc`-Erkennung, HTTP/MQTT — dokumentiert, bewusst nicht implementiert).
+- CLAUDE.md: Vertrag als abgestimmt (v1) festgeschrieben.
+
+### Fixed
+- Heidelberg: Stromlimit-Clamp auf das reale Hardware-Maximum 16 A statt 32 A.
+
 ## [0.6.1-beta.1] - 2026-07-22
 
 ### Fixed

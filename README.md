@@ -50,9 +50,34 @@ MeterHubDiscovery.
 
 ChargerHub bietet analog zu `MHUB_GetFunctions` eine Funktion `CHUB_GetFunctions($id)` an, über
 die ein EMS oder eine Kachel Ladepunkte, Momentanleistung und Steuerungsmöglichkeiten abfragen
-kann. Der Schreib-Teil des Vertrags (`chargeEnableID`, `currentLimitID`) ist ein erster
-Vorschlag und noch mit der EMS-Sitzung abzustimmen. Siehe [CLAUDE.md](CLAUDE.md) für die
-Konventionen des Verbunds.
+kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (v1); je Ladepunkt ein Eintrag:
+
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `function` | string | `'charger'` |
+| `label` | string | Instanzname |
+| `powerID` | int | Variablen-ID Ladeleistung (W); 0 falls nicht verfügbar |
+| `energyImportID` | int | Variablen-ID Energiezähler (kWh, kumulativ — `energy_total` bevorzugt); 0 falls nicht verfügbar |
+| `measured` | bool | `true` (echte Messwerte) |
+| `chargeEnableID` | int | Variablen-ID Ladefreigabe (Bool, per `RequestAction` schreibbar) — **nur fürs EMS**, nicht für Anzeigemodule |
+| `currentLimitID` | int | Variablen-ID Stromlimit (A, per `RequestAction` schreibbar) — **nur fürs EMS**; Summenlimit, phasengetrennte Limits ggf. später additiv |
+| `plugStateID` | int | Variablen-ID „Fahrzeug verbunden" (Bool); 0 wenn die Wallbox es nicht liefert (z. B. Alfen) |
+| `minCurrent` | int | Wert (A): kleinster gültiger Ladestrom (6 A). Fällt das EMS-Budget darunter, pausiert es über `chargeEnableID` statt ein ungültiges Limit zu setzen |
+| `maxCurrent` | int | Wert (A): wirksame Obergrenze = min(Hardware-Limit des Herstellers, Property „Maximaler Anschlussstrom"). Jeder Schreibzugriff wird im Treiber zusätzlich hart darauf geklemmt |
+| `externallyManaged` | bool | `true` = ein externes Lastmanagement (z. B. go-e Controller) regelt diesen Ladepunkt bereits — EMS darf nur lesen, nie schreiben |
+
+Siehe [CLAUDE.md](CLAUDE.md) für die Konventionen des Verbunds.
+
+### go-e Eco-Modus als Alternativpfad (dokumentiert, nicht implementiert)
+
+Statt aktiver Steuerung über `currentLimitID` kann ein EMS (oder der go-e Controller) dem
+go-eCharger per HTTP/MQTT-API zyklisch Überschussdaten liefern (API-Key `ids`, alle ~5 s) —
+dann regelt der **Eco-Modus der Wallbox selbst** (`fup=true`). Erkennungssignal, dass dieser
+Pfad aktiv ist: der API-Key `lpsc` (Zeitpunkt der letzten Überschussrechnung) aktualisiert sich
+laufend. Diese Schlüssel liegen **nicht** in der Modbus-Registerkarte; ein optionaler
+HTTP-Nebenkanal, der `fup`/`loe`/`modelStatus` ausliest und `externallyManaged` automatisch
+setzt, ist angedacht, aber bewusst noch nicht umgesetzt — bis dahin gilt die manuelle
+Kennzeichnung in der Instanz.
 
 ## Lizenz
 

@@ -23,10 +23,13 @@ Sitzungen** gearbeitet:
    niemals voraussetzen oder danach suchen.
 3. **`*_GetFunctions`-Konvention** (Referenz: `MHUB_GetFunctions` in MeterHub) — eine Liste von
    Einträgen mit `function`/`label`/`powerID`/`energyImportID`/`energyExportID`/`measured`.
-   `CHUB_GetFunctions` sollte sich, sobald implementiert, daran orientieren; zusätzlich braucht
-   ChargerHub (im Unterschied zu den reinen Lieferanten MeterHub/InverterHub) Schreibfunktionen
-   für Ladefreigabe und Stromlimit — deren Vertrag ist noch offen und mit der EMS-Sitzung
-   abzustimmen, bevor er als stabil gilt.
+   `CHUB_GetFunctions` ist **mit der EMS-Sitzung abgestimmt (v1, 2026-07-22)** und um die
+   Charger-spezifischen Felder erweitert: `chargeEnableID`/`currentLimitID` (Steuer-IDs, nur
+   fürs EMS — Anzeigemodule dürfen darüber nicht schalten), `plugStateID` (optional),
+   `minCurrent`/`maxCurrent` (Werte, keine IDs) und `externallyManaged` (bool; true = ein
+   externes Lastmanagement wie der go-e Controller regelt bereits, EMS liest dann nur).
+   Feldtabelle im README. Verträge werden dort konsumiert, wo aggregiert oder dargestellt
+   wird (EMS, Kachel, Sankey) — nie Mess-Hub zu Mess-Hub.
 4. **Ein veröffentlichter Vertrag wird nicht umbenannt.** Sobald ein Modul im Store ist, sind
    Feldnamen öffentliche API.
 

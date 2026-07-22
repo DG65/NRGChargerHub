@@ -335,6 +335,7 @@ class KebaDriver implements ChargerDriverInterface
             ['connected',      'Verbindung',           'B', '~Alert.Reversed',  false, 'errors', ''],
             ['state',          'Ladestatus',            'I', 'CHB.KebaState',   true,  'device', 'Holding 1000-1001 (U32)'],
             ['cable_state',    'Kabelstatus',           'I', 'CHB.KebaCable',   false, 'device', 'Holding 1004-1005 (U32)'],
+            ['vehicle_plugged','Fahrzeug verbunden',    'B', '~Switch',         false, 'device', 'abgeleitet: Kabelstatus >= 5'],
             ['power',          'Ladeleistung',          'F', 'CHB.Watt',        true,  'device', 'Holding 1020-1021 (mW)'],
             ['energy_total',   'Energie gesamt',        'F', 'CHB.kWh',         true,  'device', 'Holding 1036-1037 (0,1 Wh)'],
             ['energy_session', 'Energie akt. Sitzung',  'F', 'CHB.kWhSession',  true,  'device', 'Holding 1502-1503 (0,1 Wh)'],
@@ -405,6 +406,8 @@ class KebaDriver implements ChargerDriverInterface
         $cable = $this->u32At($mb, self::REG_CABLE_STATE);
         if ($cable !== null) {
             $hub->SetVarInt('cable_state', $cable);
+            // 5/7 = Kabel an Station UND Fahrzeug angesteckt
+            $hub->SetVarBool('vehicle_plugged', $cable >= 5);
         }
 
         $power = $this->u32At($mb, self::REG_POWER);
@@ -461,8 +464,8 @@ class KebaDriver implements ChargerDriverInterface
                 break;
 
             case 'ctl_curr_limit':
-                $amp = max(0, min(63, (int)$value));
-                $mA  = ($amp === 0) ? 0 : max(6000, min(63000, $amp * 1000));
+                $amp = max(0, min($hub->GetMaxCurrentA(), (int)$value));
+                $mA  = ($amp === 0) ? 0 : max(6000, $amp * 1000);
                 if ($mb->writeSingle(self::REG_CURR_LIMIT, $mA)) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
                 }
@@ -598,7 +601,7 @@ class AlfenDriver implements ChargerDriverInterface
                 break;
 
             case 'ctl_curr_limit':
-                $amp = max(0.0, min(80.0, (float)$value));
+                $amp = max(0.0, min((float)$hub->GetMaxCurrentA(), (float)$value));
                 $mb->writeFloat32(self::REG_SETPOINT_CURR, $amp);
                 $mb->writeSingle(self::REG_SETPOINT_TTL, 60);
                 $mb->writeSingle(self::REG_SLAVE_CONTROL, 1);
@@ -637,6 +640,7 @@ class HeidelbergDriver implements ChargerDriverInterface
         return [
             ['connected', 'Verbindung',  'B', '~Alert.Reversed', false, 'errors', ''],
             ['state',     'Ladestatus',  'I', 'CHB.HdbState',    true,  'device', 'Holding 5'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', '~Switch', false, 'device', 'abgeleitet: Status 3-8 (ohne 6)'],
             ['power',     'Leistung',    'F', 'CHB.Watt',        true,  'device', 'Holding 14'],
         ];
     }
@@ -689,7 +693,11 @@ class HeidelbergDriver implements ChargerDriverInterface
         if (!$ok) {
             return false;
         }
-        $hub->SetVarInt('state', $mb->u16($state, 0));
+        $st = $mb->u16($state, 0);
+        $hub->SetVarInt('state', $st);
+        // 2 = kein Fahrzeug; 3-8 = Fahrzeug erkannt/lädt/fertig (6 = Fehler,
+        // dort ist der Steckzustand unbekannt -> nicht als verbunden werten).
+        $hub->SetVarBool('vehicle_plugged', in_array($st, [3, 4, 5, 7, 8], true));
 
         $power = $mb->readHolding(self::REG_POWER, 1);
         if ($power !== null) {
@@ -736,7 +744,7 @@ class HeidelbergDriver implements ChargerDriverInterface
             case 'ctl_curr_limit':
                 // 0 = Laden sperren (siehe Profil CHB.Ampere6to32, das 0 erlaubt);
                 // sonst laut Doku nur 6–32 A gültig.
-                $amp = (int)$value === 0 ? 0 : max(6, min(32, (int)$value));
+                $amp = (int)$value === 0 ? 0 : max(6, min($hub->GetMaxCurrentA(), (int)$value));
                 if ($mb->writeSingle(self::REG_CURR_LIMIT, $amp * 10)) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
                 }
@@ -825,6 +833,7 @@ class GoeChargerDriver implements ChargerDriverInterface
         return [
             ['connected',      'Verbindung',            'B', '~Alert.Reversed', false, 'errors', ''],
             ['state',          'Ladestatus',             'I', 'CHB.GoeCarState', true,  'device', 'Input 100'],
+            ['vehicle_plugged','Fahrzeug verbunden',     'B', '~Switch',         false, 'device', 'abgeleitet: CAR_STATE 2/3/4'],
             ['power',          'Ladeleistung',           'F', 'CHB.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
             ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWhSession',  true,  'device', 'Input 132-133 (Deka-Ws)'],
         ];
@@ -894,7 +903,10 @@ class GoeChargerDriver implements ChargerDriverInterface
         if (!$ok) {
             return false;
         }
-        $hub->SetVarInt('state', $mb->u16($car, 0));
+        $carState = $mb->u16($car, 0);
+        $hub->SetVarInt('state', $carState);
+        // 2=lädt, 3=wartet auf Fahrzeug(-Freigabe), 4=Ladung beendet+verbunden
+        $hub->SetVarBool('vehicle_plugged', in_array($carState, [2, 3, 4], true));
 
         $power = $mb->readInput(self::REG_POWER_TOTAL, 2);
         $p     = ($power !== null) ? $this->u32($mb, $hub, $power, 0) : null;
@@ -965,7 +977,7 @@ class GoeChargerDriver implements ChargerDriverInterface
                 break;
 
             case 'ctl_curr_limit':
-                $amp = max(6, min(32, (int)$value));
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
                 if ($mb->writeMultiple(self::REG_AMPERE_VOLATILE, [$amp])) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
                 }
@@ -986,6 +998,16 @@ class ChargerHub extends IPSModule
         'heidelberg' => 'HeidelbergDriver',
         'goe'        => 'GoeChargerDriver',
     ];
+
+    // Hardware-Obergrenze des Ladestroms je Hersteller (A) — der wirksame
+    // Clamp ist min(Hardware, Property MaxCurrent).
+    private const DRIVER_MAX_CURRENT = [
+        'keba'       => 63,
+        'alfen'      => 32,
+        'heidelberg' => 16,
+        'goe'        => 32,
+    ];
+    private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
 
     private $driver = null;
 
@@ -1008,6 +1030,10 @@ class ChargerHub extends IPSModule
         // überschreiben sich EMS und Controller gegenseitig (AMPERE_VOLATILE
         // würde ständig zurückgesetzt).
         $this->RegisterPropertyBoolean('ExternallyManaged', false);
+        // Maximaler Anschlussstrom (A) der Zuleitung/Absicherung dieses
+        // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
+        // Verteidigungslinie unabhängig vom EMS (EMS-Vertragsabsprache).
+        $this->RegisterPropertyInteger('MaxCurrent', 16);
 
         // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
         // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
@@ -1091,6 +1117,15 @@ class ChargerHub extends IPSModule
     // erster Vorschlag und noch mit der EMS-Sitzung abzustimmen, bevor er als
     // stabiler Vertrag gilt — die Steuer-IDs sind fürs EMS bestimmt, nicht für
     // Anzeigemodule.
+    // Wirksame Ladestrom-Obergrenze: Hardware-Limit des Herstellers,
+    // zusätzlich begrenzt durch die Property „Maximaler Anschlussstrom".
+    public function GetMaxCurrentA(): int
+    {
+        $hw = self::DRIVER_MAX_CURRENT[$this->ReadPropertyString('Manufacturer')] ?? 32;
+        $cfg = (int)$this->ReadPropertyInteger('MaxCurrent');
+        return ($cfg >= self::MIN_CURRENT) ? min($hw, $cfg) : $hw;
+    }
+
     public function GetFunctions(): array
     {
         $powerID = $this->FindVarByIdent('power');
@@ -1112,6 +1147,13 @@ class ChargerHub extends IPSModule
             'measured'           => true,
             'chargeEnableID'     => $enableID ?: 0,
             'currentLimitID'     => $limitID ?: 0,
+            // Fahrzeug angesteckt (optional, 0 wenn die Wallbox es nicht
+            // liefert) — fürs EMS: „kein Fahrzeug" vs. „wartet auf Freigabe".
+            'plugStateID'        => $this->FindVarByIdent('vehicle_plugged') ?: 0,
+            // Statische Stromgrenzen (Werte, keine IDs): Budget-Verteilung im
+            // EMS; unter minCurrent pausiert das EMS über chargeEnableID.
+            'minCurrent'         => self::MIN_CURRENT,
+            'maxCurrent'         => $this->GetMaxCurrentA(),
             // true = ein externes Lastmanagement (z. B. go-e Controller) regelt
             // diesen Ladepunkt bereits — EMS soll ihn NICHT selbst steuern
             // (Zwei-Regler-Konflikt). Manuell in der Instanz gekennzeichnet,
@@ -1214,6 +1256,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
                         ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535],
                         ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247],
+                        ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A) — Zuleitung/Absicherung dieses Ladepunkts', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
+                        ['type' => 'Label', 'caption' => 'Harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox) — unabhängig davon, was ein EMS anfordert.'],
                     ],
                 ],
                 [
