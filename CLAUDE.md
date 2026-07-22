@@ -39,8 +39,14 @@ Sitzungen** gearbeitet:
    README/Dokumentation. Vermeidbare Anglizismen ersetzen (Scan → Suche, Link → Verknüpfung,
    Event → Ereignis, Button → Schaltfläche, Dry-Run → Probelauf).
    **Ausgenommen** (bleibt englisch): Bezeichner im Code — Klassen-, Methoden-, Variablen-,
-   Property- und Ident-Namen sowie die `CHUB_GetFunctions`-Feldnamen — und feststehende
-   IP-Symcon-/Technikbegriffe (SelectVariable, WebFront, Modbus TCP, Holding-Register …).
+   Property- und Ident-Namen, Formularelement-Typen (`'type' => 'Button'`) sowie die
+   `CHUB_GetFunctions`-Feldnamen — und feststehende Fachbegriffe, bei denen das englische
+   Wort DER Fachbegriff ist (Modbus TCP, Holding-/Input-Register, FC 0x16, Unit-ID, RFID,
+   LED, SelectVariable, WebFront). Faustregel: eindeutschen, wo es das Verständnis
+   verbessert; stehen lassen, wo es das Verständnis erschwert.
+   Beim Ersetzen **Grammatik prüfen** — ändert sich das Genus (der Portcheck → die
+   Port-Prüfung), müssen Artikel und Adjektivendungen mitgezogen werden; deshalb den Diff
+   durchsehen statt blind zu ersetzen.
 
 ## Eigenständigkeit prüfen: `.tools/check-standalone.php`
 
