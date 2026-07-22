@@ -72,7 +72,7 @@ class ChargerHubDiscovery extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
-        $this->RegisterVariableBoolean('ScanAbort', 'Scan-Abbruch', '', 100);
+        $this->RegisterVariableBoolean('ScanAbort', 'Suche abbrechen (intern)', '', 100);
         IPS_SetHidden($this->GetIDForIdent('ScanAbort'), true);
     }
 
@@ -146,8 +146,8 @@ class ChargerHubDiscovery extends IPSModule
                         ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wallboxen auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs.'],
                         ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen, dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten — Klick auf „Erstellen" legt eine ChargerHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
                         ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+. Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
-                        ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP scannen — das nutzt einen langsameren, aber zuverlässigeren Portcheck.'],
-                        ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für den Scan unsichtbar. Real beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — Test: http://<wallbox-ip>/api/status?filter=men im Browser.'],
+                        ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP durchsuchen — das nutzt eine langsamere, aber zuverlässigere Port-Prüfung.'],
+                        ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für die Suche unsichtbar. Real beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — zum Prüfen im Browser aufrufen: http://<wallbox-ip>/api/status?filter=men'],
                     ],
                 ],
                 [
@@ -165,7 +165,7 @@ class ChargerHubDiscovery extends IPSModule
                             'type'  => 'RowLayout',
                             'items' => [
                                 ['type' => 'Button', 'name' => 'BtnScan',  'caption' => '🔎  Netzwerk durchsuchen', 'onClick' => 'CHUBD_Discover($id);'],
-                                ['type' => 'Button', 'name' => 'BtnAbort', 'caption' => '✖  Scan abbrechen', 'onClick' => 'CHUBD_AbortScan($id);', 'visible' => false],
+                                ['type' => 'Button', 'name' => 'BtnAbort', 'caption' => '✖  Suche abbrechen', 'onClick' => 'CHUBD_AbortScan($id);', 'visible' => false],
                             ],
                         ],
                         [
@@ -271,7 +271,7 @@ class ChargerHubDiscovery extends IPSModule
         }
 
         if ($aborted) {
-            $this->ShowProgress('Scan abgebrochen – ' . count($results) . ' Wallboxen bis dahin gefunden.', 100);
+            $this->ShowProgress('Suche abgebrochen – ' . count($results) . ' Wallboxen bis dahin gefunden.', 100);
         } else {
             $this->ShowProgress('Fertig: ' . count($results) . ' Wallboxen gefunden (von ' . $total . ' offenen Ports).', 100);
         }
@@ -330,7 +330,7 @@ class ChargerHubDiscovery extends IPSModule
             foreach ($ips as $ip) {
                 if ($this->scanAborted()) { break; }
                 $i++;
-                $this->ShowProgress("Portscan (genau) … $i von $total", (int)round(($i / max(1, $total)) * 90));
+                $this->ShowProgress("Port-Prüfung (genau) … $i von $total", (int)round(($i / max(1, $total)) * 90));
                 $s = @fsockopen($ip, $port, $errno, $errstr, min(0.8, $timeoutSec));
                 if ($s !== false) {
                     $open[] = $ip;
@@ -387,7 +387,7 @@ class ChargerHubDiscovery extends IPSModule
                 $elapsed = $now - $startTime;
                 $pct     = (int)round(min(95, ($elapsed / $timeoutSec) * 90));
                 $this->ShowProgress(
-                    "Portscan läuft … " . count($open) . " offen, " . count($pending) . " von $totalOpen noch offen",
+                    "Port-Prüfung läuft … " . count($open) . " offen, " . count($pending) . " von $totalOpen noch offen",
                     $pct
                 );
                 $deadline += microtime(true) - $now;

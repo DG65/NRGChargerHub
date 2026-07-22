@@ -31,7 +31,16 @@ Sitzungen** gearbeitet:
    Feldtabelle im README. Verträge werden dort konsumiert, wo aggregiert oder dargestellt
    wird (EMS, Kachel, Sankey) — nie Mess-Hub zu Mess-Hub.
 4. **Ein veröffentlichter Vertrag wird nicht umbenannt.** Sobald ein Modul im Store ist, sind
-   Feldnamen öffentliche API.
+   Feldnamen öffentliche API. Das gilt ausdrücklich auch für **Idents** (`ctl_*`,
+   `energy_total`, `vehicle_plugged` …) — Idents sind API und werden nie umbenannt.
+5. **Sprachregel: alles Nutzersichtbare auf Deutsch** (Anweisung Dietmar, 2026-07-22, gilt
+   verbundweit). Deutsch sind: Formularbeschriftungen, Hinweis-/Warntexte, Fehler- und
+   Statusmeldungen, Rückgabe-Texte, Log-Meldungen, Variablen- und Profil-**Anzeigenamen**,
+   README/Dokumentation. Vermeidbare Anglizismen ersetzen (Scan → Suche, Link → Verknüpfung,
+   Event → Ereignis, Button → Schaltfläche, Dry-Run → Probelauf).
+   **Ausgenommen** (bleibt englisch): Bezeichner im Code — Klassen-, Methoden-, Variablen-,
+   Property- und Ident-Namen sowie die `CHUB_GetFunctions`-Feldnamen — und feststehende
+   IP-Symcon-/Technikbegriffe (SelectVariable, WebFront, Modbus TCP, Holding-Register …).
 
 ## Eigenständigkeit prüfen: `.tools/check-standalone.php`
 

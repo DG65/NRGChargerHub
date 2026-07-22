@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.8.1-beta.1] - 2026-07-22
+
+### Changed
+- **Sprachregel des Verbunds umgesetzt** (Anweisung Dietmar): Nutzersichtbare Texte auf
+  Deutsch, vermeidbare Anglizismen ersetzt — „Scan abbrechen" → „Suche abbrechen",
+  „Portscan" → „Port-Prüfung", „Bug"/„Byte-Order-Bug" → deutsche Formulierung, „Test:" →
+  „zum Prüfen im Browser aufrufen". Idents, Property-Namen und die
+  `CHUB_GetFunctions`-Feldnamen bleiben unverändert (sind API).
+- CLAUDE.md: Sprachregel und der Grundsatz „Idents sind API" als Verbund-Regeln festgehalten.
+
 ## [0.8.0-beta.1] - 2026-07-22
 
 ### Added
