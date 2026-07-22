@@ -1416,31 +1416,54 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // WICHTIG: bewusst KEIN RegisterVariable*() — das bindet den Ident an die
+    // Instanzebene. Beim zweiten ApplyChanges (Configurator-Erstellung ruft es
+    // mehrfach) fände RegisterVariable* die längst in die Kategorie verschobene
+    // Variable nicht mehr, legte sie neu an und kollidierte beim Verschieben
+    // („Ident muss für jede Ebene eindeutig sein" — real gemeldet beim Anlegen
+    // aus der Discovery). Stattdessen das InverterHub-Muster: rekursiv suchen,
+    // sonst IPS_CreateVariable + IPS_SetIdent direkt unter der Kategorie.
     private function RegisterVar(array $def, int $pos)
     {
         [$ident, $caption, $type, $profile, $archive, $group, $reg] = $def;
 
-        $catID = $this->EnsureCategory($group);
+        $vtype = [
+            'F' => VARIABLETYPE_FLOAT,
+            'I' => VARIABLETYPE_INTEGER,
+            'B' => VARIABLETYPE_BOOLEAN,
+            'S' => VARIABLETYPE_STRING,
+        ][$type];
 
-        switch ($type) {
-            case 'F':
-                $vid = $this->RegisterVariableFloat($ident, $caption, $profile, $pos);
-                break;
-            case 'I':
-                $vid = $this->RegisterVariableInteger($ident, $caption, $profile, $pos);
-                break;
-            case 'B':
-                $vid = $this->RegisterVariableBoolean($ident, $caption, $profile, $pos);
-                break;
-            default:
-                $vid = $this->RegisterVariableString($ident, $caption, $profile, $pos);
-                break;
+        $vid = $this->FindVarByIdent($ident);
+        // Typ-Migration: IPS kann den Typ einer Variable nicht nachträglich
+        // ändern — bei Typwechsel neu anlegen.
+        if ($vid && IPS_GetVariable($vid)['VariableType'] !== $vtype) {
+            @IPS_DeleteVariable($vid);
+            $vid = 0;
         }
+        $created = false;
+        if (!$vid) {
+            $vid = IPS_CreateVariable($vtype);
+            IPS_SetIdent($vid, $ident);
+            $created = true;
+        }
+
+        $catID = $this->EnsureCategory($group);
         IPS_SetParent($vid, $catID);
-        if (function_exists('IPS_SetInfo')) {
+        IPS_SetPosition($vid, $pos);
+        IPS_SetName($vid, $caption);
+
+        // Profil nur bei Neuanlage setzen: Ab IPS 7 leert eine vom Nutzer
+        // gewählte Presentation das CustomProfile — bei jedem „Übernehmen"
+        // neu gesetzt, spränge die Variable auf „Legacy" zurück.
+        if ($profile !== '' && $created) {
+            if (@IPS_GetVariable($vid)['VariableCustomProfile'] !== $profile) {
+                IPS_SetVariableCustomProfile($vid, $profile);
+            }
+        }
+        if ($reg !== '') {
             @IPS_SetInfo($vid, (string)$reg);
         }
-
         if ($archive) {
             $this->SetArchive($vid);
         }
