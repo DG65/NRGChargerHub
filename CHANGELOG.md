@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.5.0-beta.1] - 2026-07-22
+
+### Removed
+- **go-e Controller wieder ausgebaut** (war in 0.3.0 dazugekommen): Als reine
+  Energiemess-Zentrale gehört er fachlich zu MeterHub, nicht zu ChargerHub — dorthin
+  wird er umgezogen (Registerkarte und Erkennungssignatur wurden an die
+  MeterHub-Entwicklung übergeben). `ModbusTcpClient::readDouble64()` bleibt als
+  generischer Helfer erhalten.
+
 ## [0.4.0-beta.1] - 2026-07-22
 
 ### Fixed

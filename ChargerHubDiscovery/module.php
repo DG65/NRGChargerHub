@@ -22,19 +22,17 @@ class ChargerHubDiscovery extends IPSModule
     // Kandidaten je Hersteller: Unit-IDs, die typischerweise/dokumentiert
     // Standard sind (kleine Liste statt vollem 1-247-Bereich).
     private const VENDOR_UNIT_IDS = [
-        'keba'          => [255, 1],
-        'alfen'         => [1],
-        'heidelberg'    => [1],
-        'goe'           => [1],
-        'goecontroller' => [1],
+        'keba'       => [255, 1],
+        'alfen'      => [1],
+        'heidelberg' => [1],
+        'goe'        => [1],
     ];
 
     private const VENDOR_LABELS = [
-        'keba'          => 'KEBA KeContact P30/P40',
-        'alfen'         => 'Alfen Eve Single/Double Pro-line',
-        'heidelberg'    => 'Heidelberg Energy Control',
-        'goe'           => 'go-eCharger Gemini/HOME+',
-        'goecontroller' => 'go-e Controller',
+        'keba'       => 'KEBA KeContact P30/P40',
+        'alfen'      => 'Alfen Eve Single/Double Pro-line',
+        'heidelberg' => 'Heidelberg Energy Control',
+        'goe'        => 'go-eCharger Gemini/HOME+',
     ];
 
     public function Create()
@@ -147,9 +145,9 @@ class ChargerHubDiscovery extends IPSModule
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wallboxen auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs.'],
                         ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen, dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten — Klick auf „Erstellen" legt eine ChargerHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
-                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+ und go-e Controller. Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
+                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+. Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
                         ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP scannen — das nutzt einen langsameren, aber zuverlässigeren Portcheck.'],
-                        ['type' => 'Label', 'caption' => '⚠️ go-eCharger/go-e Controller: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für den Scan unsichtbar. Real beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — Test: http://<wallbox-ip>/api/status?filter=men im Browser.'],
+                        ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für den Scan unsichtbar. Real beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — Test: http://<wallbox-ip>/api/status?filter=men im Browser.'],
                     ],
                 ],
                 [
@@ -480,32 +478,8 @@ class ChargerHubDiscovery extends IPSModule
                 $access = $this->readHolding($ip, $port, $unitId, 201, 1, 1.0);
                 return ($access !== null && $access[0] <= 3);
 
-            case 'goecontroller':
-                // go-e Controller (reine Energiemess-Zentrale): Spannung L1 und
-                // L2 als Float32 auf Input 1000/1002 (offizielle Doku
-                // go-eController-API). Zwei plausible Netzspannungen zusammen
-                // sind ein hartes Kriterium; ein go-eCharger antwortet auf
-                // diese Adressen nicht.
-                $u1 = $this->readFloatInput($ip, $port, $unitId, 1000);
-                if ($u1 === null || $u1 < 30.0 || $u1 > 500.0) {
-                    return false;
-                }
-                $u2 = $this->readFloatInput($ip, $port, $unitId, 1002);
-                return ($u2 !== null && $u2 >= 30.0 && $u2 <= 500.0);
         }
         return false;
-    }
-
-    // Einzelnes Float32 (Big-Endian) per FC 0x04 (Input-Register) — go-e Controller.
-    private function readFloatInput($ip, $port, $unitId, $reg)
-    {
-        $r = $this->readInput($ip, $port, $unitId, $reg, 2, 1.0);
-        if ($r === null || count($r) < 2) {
-            return null;
-        }
-        $raw = pack('nn', $r[0] & 0xFFFF, $r[1] & 0xFFFF);
-        $f   = unpack('G', $raw)[1] ?? null;
-        return ($f !== null && is_finite($f)) ? (float)$f : null;
     }
 
     private function readFloatHolding($ip, $port, $unitId, $reg)
