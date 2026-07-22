@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.8.0-beta.1] - 2026-07-22
+
+### Added
+- **go-eCharger: deutlich mehr Datenpunkte, v. a. Steuerung** (Rückmeldung aus dem
+  Live-Betrieb an zwei V3-Chargern — das Einlesen selbst lief fehlerfrei):
+  - Steuerung neu: **Phasenumschaltung** (Auto/1-/3-phasig, Reg 332 `psm` — wichtig fürs
+    Überschussladen), **Zugangskontrolle** (Offen/RFID/Strompreis/Scheduler, Reg 201),
+    **Kabelverriegelung** (Reg 204), **Energie-Limit je Ladevorgang** (Reg 333-336 `dwo`,
+    Float64 Wh, 0 = kein Limit → schreibt Inf), **LED-Helligkeit** (Reg 206).
+  - Steuerwerte werden jetzt **vom Gerät zurückgelesen** — die ctl_*-Variablen zeigen
+    damit auch Änderungen aus App/Cloud/anderen Reglern.
+  - Status neu: Leistung je Phase (146-151), Spannung N (144), **aktiv genutzte Phasen
+    nach dem Schütz** (Bitmaske Reg 205), Adapter-Erkennung (202), entsperrende
+    RFID-Karte (203).
+  - `ModbusTcpClient::writeDouble64()` (Float64 Big-Endian über FC 0x16).
+
 ## [0.7.0-beta.1] - 2026-07-22
 
 ### Added

@@ -225,6 +225,13 @@ class ModbusTcpClient
         return $this->writeMultiple($startReg, [$w[1], $w[2]]);
     }
 
+    public function writeDouble64($startReg, float $value)
+    {
+        $raw = pack('E', $value);
+        $w   = unpack('n4', $raw);
+        return $this->writeMultiple($startReg, [$w[1], $w[2], $w[3], $w[4]]);
+    }
+
     // IEEE-754 Float64 (Double) über 4 Register, Big-Endian (Reserve für
     // künftige Treiber mit Float64-Energiezählern, wie PAC2200 in MeterHub).
     public function readDouble64($regs, $offset)
@@ -784,7 +791,10 @@ class GoeChargerDriver implements ChargerDriverInterface
     const REG_ACCESS_STATE    = 201; // U16: 0=Offen,1=RFID/App,2=Strompreis/automatisch,3=Scheduler
     const REG_CABLE_LOCK_MODE = 204; // U16: 0=Verriegelt solange Auto an,1=Autom. entriegeln,2=Immer verriegelt
     const REG_AMPERE_MAX      = 211; // U16, absolutes Maximum (App-Einstellung)
+    const REG_LED_BRIGHTNESS  = 206; // U16, 0-255
     const REG_AMPERE_VOLATILE = 299; // U16, 6-32A, NICHT im EEPROM gespeichert — für Automatisierung vorgesehen
+    const REG_PHASE_SWITCH    = 332; // U16 (api key psm): 0=Auto,1=1-phasig,2=3-phasig (ab FW 55.5)
+    const REG_ENERGY_LIMIT    = 333; // Float64, 4 Register (api key dwo): Wh, Inf = kein Limit (ab FW 55.5)
     const REG_FORCE_STATE     = 337; // U16: 0=Neutral (automatisch/App),1=Aus (erzwungen),2=An (erzwungen)
 
     // Input-Register (FC 0x04, nur lesend)
@@ -805,6 +815,9 @@ class GoeChargerDriver implements ChargerDriverInterface
     const REG_POWER_L1    = 146; // U32, 2 Register, 0,1 kW
     const REG_POWER_L2    = 148;
     const REG_POWER_L3    = 150;
+    const REG_ADAPTER     = 202; // U16: 0=kein Adapter, 1=16A-Adapter
+    const REG_UNLOCKED_BY = 203; // U16: Nummer der RFID-Karte des akt. Ladevorgangs
+    const REG_PHASES      = 205; // U16 Bitmaske: Bits 0-2 = L1/L2/L3 NACH dem Schütz
     const REG_SNR         = 304; // ASCII, 6 Register (12 Byte)
 
     const CAR_STATES = [
@@ -816,6 +829,10 @@ class GoeChargerDriver implements ChargerDriverInterface
         0 => 'Kein Fehler', 1 => 'RCCB (Fehlerstromschutzschalter)', 3 => 'Phasenstörung',
         8 => 'Erdungsfehler', 10 => 'Interner Fehler',
     ];
+
+    const PHASE_MODES = [0 => 'Automatisch', 1 => '1-phasig', 2 => '3-phasig'];
+    const ACCESS_MODES = [0 => 'Offen', 1 => 'RFID/App', 2 => 'Strompreis/automatisch', 3 => 'Scheduler'];
+    const CABLE_LOCK_MODES = [0 => 'Verriegelt solange Auto angesteckt', 1 => 'Nach Ladevorgang entriegeln', 2 => 'Immer verriegelt'];
 
     // U32 mit optionalem Wort-Swap. Rückgabe null bei 0xFFFFFFFF: Unbelegte
     // Register beantwortet die go-e-Firmware mit 0xFF-Füllwerten statt einer
@@ -842,13 +859,18 @@ class GoeChargerDriver implements ChargerDriverInterface
     public function getOptionalGroups()
     {
         return [
-            'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
+            'GroupPhases' => ['caption' => 'Spannung/Strom/Leistung je Phase', 'vars' => [
                 ['voltage_l1', 'Spannung L1', 'F', 'CHB.Volt',   false, 'phases', 'Input 108-109 (V)'],
                 ['voltage_l2', 'Spannung L2', 'F', 'CHB.Volt',   false, 'phases', 'Input 110-111 (V)'],
                 ['voltage_l3', 'Spannung L3', 'F', 'CHB.Volt',   false, 'phases', 'Input 112-113 (V)'],
+                ['voltage_n',  'Spannung N',  'F', 'CHB.Volt',   false, 'phases', 'Input 144-145 (V)'],
                 ['current_l1', 'Strom L1',    'F', 'CHB.Ampere', false, 'phases', 'Input 114-115 (0,1 A)'],
                 ['current_l2', 'Strom L2',    'F', 'CHB.Ampere', false, 'phases', 'Input 116-117 (0,1 A)'],
                 ['current_l3', 'Strom L3',    'F', 'CHB.Ampere', false, 'phases', 'Input 118-119 (0,1 A)'],
+                ['power_l1',   'Leistung L1', 'F', 'CHB.Watt',   false, 'phases', 'Input 146-147 (0,1 kW)'],
+                ['power_l2',   'Leistung L2', 'F', 'CHB.Watt',   false, 'phases', 'Input 148-149 (0,1 kW)'],
+                ['power_l3',   'Leistung L3', 'F', 'CHB.Watt',   false, 'phases', 'Input 150-151 (0,1 kW)'],
+                ['phases_charging', 'Genutzte Phasen (nach Schütz)', 'I', 'CHB.GoePhaseCount', false, 'phases', 'Input 205 (Bitmaske)'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
                 ['dev_serial',    'Seriennummer',        'S', '', false, 'device', 'Input 304-309 (ASCII)'],
@@ -856,10 +878,17 @@ class GoeChargerDriver implements ChargerDriverInterface
                 ['energy_total',  'Energie gesamt',      'F', 'CHB.kWh', true, 'device', 'Input 128-129 (0,1 kWh)'],
                 ['dev_error',     'Fehlercode',          'I', 'CHB.GoeError', true, 'errors', 'Input 107'],
                 ['cable_current', 'Kabel-Strombegrenzung','I', 'CHB.Ampere6to32', false, 'device', 'Input 101 (13-32, 0=kein Kabel)'],
+                ['adapter',       'Adapter angesteckt',  'B', '~Switch', false, 'device', 'Input 202 (1=16A-Adapter)'],
+                ['unlocked_by',   'Entsperrt durch RFID-Karte', 'I', '', false, 'device', 'Input 203'],
             ]],
-            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',         false, 'control', 'RW Holding 337 (FORCE_STATE)'],
-                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to32', false, 'control', 'RW Holding 299 (AMPERE_VOLATILE)'],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit, Phasen, Energie-Limit …)', 'vars' => [
+                ['ctl_enable',       'Ladefreigabe',        'B', '~Switch',           false, 'control', 'RW Holding 337 (FORCE_STATE)'],
+                ['ctl_curr_limit',   'Stromlimit (A)',      'I', 'CHB.Ampere6to32',   false, 'control', 'RW Holding 299 (AMPERE_VOLATILE)'],
+                ['ctl_phase_mode',   'Phasenumschaltung',   'I', 'CHB.GoePhaseMode',  false, 'control', 'RW Holding 332 (psm, ab FW 55.5)'],
+                ['ctl_access',       'Zugangskontrolle',    'I', 'CHB.GoeAccess',     false, 'control', 'RW Holding 201 (ACCESS_STATE)'],
+                ['ctl_cable_lock',   'Kabelverriegelung',   'I', 'CHB.GoeCableLock',  false, 'control', 'RW Holding 204'],
+                ['ctl_energy_limit', 'Energie-Limit Ladevorgang (0 = kein Limit)', 'F', 'CHB.kWhLimit', false, 'control', 'RW Holding 333-336 (dwo, Float64 Wh)'],
+                ['ctl_led',          'LED-Helligkeit',      'I', 'CHB.Led255',        false, 'control', 'RW Holding 206 (0-255)'],
             ]],
             // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
             // generische Datenpunkt-Gruppen-Infrastruktur mit). Default AUS, da
@@ -879,6 +908,10 @@ class GoeChargerDriver implements ChargerDriverInterface
             'CHB.Volt'        => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
             'CHB.Ampere'      => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
             'CHB.Ampere6to32' => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
+            // Suffix bewusst NICHT " kWh": hält die MeterHub-Zählersuche fern
+            // (Limit-Sollwert, kein Zählerstand).
+            'CHB.kWhLimit'    => [VARIABLETYPE_FLOAT,   ' kWh (Limit)', 0.0, 200.0, 0.5, 1],
+            'CHB.Led255'      => [VARIABLETYPE_INTEGER, '', 0, 255, 5, 0],
         ];
     }
 
@@ -892,7 +925,24 @@ class GoeChargerDriver implements ChargerDriverInterface
         foreach (self::ERRORS as $k => $label) {
             $errors[$k] = [$label, $k === 0 ? 0x7A8A99 : 0xE74C3C];
         }
-        return ['CHB.GoeCarState' => $states, 'CHB.GoeError' => $errors];
+        $mk = function (array $map, $activeColor = 0x2BB3C0) {
+            $out = [];
+            foreach ($map as $k => $label) {
+                $out[$k] = [$label, $k === 0 ? 0x7A8A99 : $activeColor];
+            }
+            return $out;
+        };
+        return [
+            'CHB.GoeCarState'   => $states,
+            'CHB.GoeError'      => $errors,
+            'CHB.GoePhaseMode'  => $mk(self::PHASE_MODES),
+            'CHB.GoeAccess'     => $mk(self::ACCESS_MODES),
+            'CHB.GoeCableLock'  => $mk(self::CABLE_LOCK_MODES),
+            'CHB.GoePhaseCount' => [
+                0 => ['0 Phasen', 0x7A8A99], 1 => ['1 Phase', 0x2BB3C0],
+                2 => ['2 Phasen', 0x2BB3C0], 3 => ['3 Phasen', 0x27D07F],
+            ],
+        ];
     }
 
     public function readValues($mb, $hub)
@@ -933,6 +983,22 @@ class GoeChargerDriver implements ChargerDriverInterface
                 if ($i !== null) {
                     $hub->SetVarFloat('current_l' . $ph, $i / 10.0);
                 }
+                $pr = $mb->readInput(self::REG_POWER_L1 + ($ph - 1) * 2, 2);
+                $pw = ($pr !== null) ? $this->u32($mb, $hub, $pr, 0) : null;
+                if ($pw !== null) {
+                    $hub->SetVarFloat('power_l' . $ph, $pw * 100.0); // 0,1 kW -> W
+                }
+            }
+            $nr = $mb->readInput(self::REG_VOLT_N, 2);
+            $nv = ($nr !== null) ? $this->u32($mb, $hub, $nr, 0) : null;
+            if ($nv !== null) {
+                $hub->SetVarFloat('voltage_n', (float)$nv);
+            }
+            $phm = $mb->readInput(self::REG_PHASES, 1);
+            if ($phm !== null && $mb->u16($phm, 0) !== 0xFFFF) {
+                // Bits 0-2 = L1/L2/L3 NACH dem Schütz -> Anzahl aktiver Phasen
+                $mask = $mb->u16($phm, 0) & 0x07;
+                $hub->SetVarInt('phases_charging', substr_count(decbin($mask), '1'));
             }
         }
 
@@ -958,6 +1024,51 @@ class GoeChargerDriver implements ChargerDriverInterface
             if ($pp !== null && $mb->u16($pp, 0) !== 0xFFFF) {
                 $hub->SetVarInt('cable_current', $mb->u16($pp, 0));
             }
+            $ad = $mb->readInput(self::REG_ADAPTER, 1);
+            if ($ad !== null && $mb->u16($ad, 0) !== 0xFFFF) {
+                $hub->SetVarBool('adapter', $mb->u16($ad, 0) === 1);
+            }
+            $ub = $mb->readInput(self::REG_UNLOCKED_BY, 1);
+            if ($ub !== null && $mb->u16($ub, 0) !== 0xFFFF) {
+                $hub->SetVarInt('unlocked_by', $mb->u16($ub, 0));
+            }
+        }
+
+        // Steuerwerte vom Gerät zurücklesen — so zeigen die ctl_*-Variablen
+        // auch Änderungen aus App/Cloud/anderen Reglern, nicht nur eigene.
+        if ($hub->GroupActive('GroupControl')) {
+            $frc = $mb->readHolding(self::REG_FORCE_STATE, 1);
+            if ($frc !== null && $mb->u16($frc, 0) !== 0xFFFF) {
+                // FORCE_STATE: 0=Neutral (Gerät/App entscheidet), 1=Aus, 2=An.
+                // Als Bool: nur der erzwungene Aus-Zustand gilt als "gesperrt".
+                $hub->SetVarBool('ctl_enable', $mb->u16($frc, 0) !== 1);
+            }
+            $amp = $mb->readHolding(self::REG_AMPERE_VOLATILE, 1);
+            if ($amp !== null && $mb->u16($amp, 0) !== 0xFFFF) {
+                $hub->SetVarInt('ctl_curr_limit', $mb->u16($amp, 0));
+            }
+            $psm = $mb->readHolding(self::REG_PHASE_SWITCH, 1);
+            if ($psm !== null && $mb->u16($psm, 0) <= 2) {
+                $hub->SetVarInt('ctl_phase_mode', $mb->u16($psm, 0));
+            }
+            $acc = $mb->readHolding(self::REG_ACCESS_STATE, 1);
+            if ($acc !== null && $mb->u16($acc, 0) <= 3) {
+                $hub->SetVarInt('ctl_access', $mb->u16($acc, 0));
+            }
+            $cul = $mb->readHolding(self::REG_CABLE_LOCK_MODE, 1);
+            if ($cul !== null && $mb->u16($cul, 0) <= 2) {
+                $hub->SetVarInt('ctl_cable_lock', $mb->u16($cul, 0));
+            }
+            $led = $mb->readHolding(self::REG_LED_BRIGHTNESS, 1);
+            if ($led !== null && $mb->u16($led, 0) <= 255) {
+                $hub->SetVarInt('ctl_led', $mb->u16($led, 0));
+            }
+            $lim = $mb->readHolding(self::REG_ENERGY_LIMIT, 4);
+            if ($lim !== null) {
+                $wh = $mb->readDouble64($lim, 0);
+                // Inf/NaN = "kein Limit" (dwo=null) -> 0 anzeigen.
+                $hub->SetVarFloat('ctl_energy_limit', is_finite($wh) ? $wh / 1000.0 : 0.0);
+            }
         }
 
         return true;
@@ -980,6 +1091,46 @@ class GoeChargerDriver implements ChargerDriverInterface
                 $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
                 if ($mb->writeMultiple(self::REG_AMPERE_VOLATILE, [$amp])) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $val = (int)$value;
+                if ($val < 0 || $val > 2) { return; }
+                if ($mb->writeMultiple(self::REG_PHASE_SWITCH, [$val])) {
+                    $hub->SetVarInt('ctl_phase_mode', $val);
+                }
+                break;
+
+            case 'ctl_access':
+                $val = (int)$value;
+                if ($val < 0 || $val > 3) { return; }
+                if ($mb->writeMultiple(self::REG_ACCESS_STATE, [$val])) {
+                    $hub->SetVarInt('ctl_access', $val);
+                }
+                break;
+
+            case 'ctl_cable_lock':
+                $val = (int)$value;
+                if ($val < 0 || $val > 2) { return; }
+                if ($mb->writeMultiple(self::REG_CABLE_LOCK_MODE, [$val])) {
+                    $hub->SetVarInt('ctl_cable_lock', $val);
+                }
+                break;
+
+            case 'ctl_energy_limit':
+                $kwh = max(0.0, (float)$value);
+                // 0 = Limit deaktivieren -> laut Doku Float64 Inf schreiben.
+                $wh  = ($kwh <= 0.0) ? INF : $kwh * 1000.0;
+                if ($mb->writeDouble64(self::REG_ENERGY_LIMIT, $wh)) {
+                    $hub->SetVarFloat('ctl_energy_limit', $kwh);
+                }
+                break;
+
+            case 'ctl_led':
+                $val = max(0, min(255, (int)$value));
+                if ($mb->writeMultiple(self::REG_LED_BRIGHTNESS, [$val])) {
+                    $hub->SetVarInt('ctl_led', $val);
                 }
                 break;
         }
