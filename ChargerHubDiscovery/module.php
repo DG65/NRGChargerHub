@@ -430,14 +430,24 @@ class ChargerHubDiscovery extends IPSModule
     {
         switch ($vendor) {
             case 'keba':
-                // Input 1000: Ladestatus, plausibel 1..6.
-                $state = $this->readInput($ip, $port, $unitId, 1000, 1, 1.0);
-                if ($state === null || $state[0] < 1 || $state[0] > 6) {
+                // KEBA: alle Werte U32 über 2 Register, FC 0x03 (Holding) —
+                // Konvention aus der evcc-Referenzimplementierung.
+                // Holding 1000: Ladestatus, plausibel 0..5.
+                $state = $this->readHolding($ip, $port, $unitId, 1000, 2, 1.0);
+                if ($state === null || count($state) < 2) {
                     return false;
                 }
-                // Input 1002: Kabel-/Fahrzeugstatus, plausibel 0..7 (Bitmaske).
-                $cable = $this->readInput($ip, $port, $unitId, 1002, 1, 1.0);
-                return ($cable !== null && $cable[0] <= 7);
+                $stateVal = (($state[0] & 0xFFFF) << 16) | ($state[1] & 0xFFFF);
+                if ($stateVal > 5) {
+                    return false;
+                }
+                // Holding 1004: Kabelstatus, plausibel 0/1/3/5/7.
+                $cable = $this->readHolding($ip, $port, $unitId, 1004, 2, 1.0);
+                if ($cable === null || count($cable) < 2) {
+                    return false;
+                }
+                $cableVal = (($cable[0] & 0xFFFF) << 16) | ($cable[1] & 0xFFFF);
+                return in_array($cableVal, [0, 1, 3, 5, 7], true);
 
             case 'alfen':
                 // Holding 1200: Sockel-Verfügbarkeit, plausibel 0..2.

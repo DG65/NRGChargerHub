@@ -273,59 +273,86 @@ interface ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
-// KebaDriver — KEBA KeContact P30/P40, Modbus TCP (ab Firmware ~3.x),
-// Unit-ID standardmäßig 255. Registeradressen laut KEBA "Modbus TCP
-// Programmer's Guide" — UNGETESTET an echter Hardware, bitte verifizieren.
+// KebaDriver — KEBA KeContact P30/P40, Modbus TCP, Unit-ID standardmäßig 255.
+// Registeradressen und Eigenheiten gegen die evcc-Referenzimplementierung
+// (charger/keba-modbus.go, an realer Hardware erprobt) abgeglichen:
+// - ALLE Werte sind 32-Bit-Werte über 2 Register (auch Status/Kabelstatus) —
+//   ein 1-Register-Read liefert nur das (immer leere) High-Word.
+// - Gelesen wird per FC 0x03 (Holding), geschrieben per FC 0x06.
+// - KEBA unterstützt keine Block-Reads über Wertegrenzen hinweg — jeder
+//   Datenpunkt wird einzeln gelesen.
+// - 1036 ist die GESAMT-Energie, die Sitzungsenergie liegt auf 1502.
+// - Ladefreigabe: Holding 5014 (P30). P40-Geräte haben kein 5014 und werden
+//   über das Stromlimit 5004 freigegeben/gesperrt (evcc-Erkenntnis) — hier
+//   noch nicht gesondert behandelt.
+// Weiterhin UNGETESTET an echter Hardware in diesem Modul.
 // ---------------------------------------------------------------------------
 
 class KebaDriver implements ChargerDriverInterface
 {
-    // Input-Register (FC 0x04, nur lesend)
-    const REG_STATE        = 1000; // 1=Startet,2=Nicht bereit,3=Bereit,4=Lädt,5=Fehler,6=Unterbrochen
-    const REG_CABLE_STATE  = 1002; // 0=kein Kabel, 1/3/5/7=Kabel/Fahrzeug verriegelt (je nach Bit)
-    const REG_ERROR_CODE   = 1004;
-    const REG_CURRENTS     = 1008; // 1008/1010/1012 = L1/L2/L3 in mA
-    const REG_SERIAL       = 1014; // U32
-    const REG_POWER        = 1020; // U32, mW
-    const REG_ENERGY_SESS  = 1036; // U32, 0,1 Wh — Energie der aktuellen Ladesitzung
+    // Holding-Register (FC 0x03), alle Werte U32 über 2 Register
+    const REG_STATE        = 1000; // 0=Startet,1=Nicht bereit,2=Bereit,3=Lädt,4=Fehler,5=Unterbrochen
+    const REG_CABLE_STATE  = 1004; // 0=kein Kabel,1=Kabel an Station,3=verriegelt,5=+Fahrzeug,7=verriegelt+Fahrzeug
+    const REG_CURRENTS     = 1008; // 1008/1010/1012 = L1/L2/L3 in mA (je einzeln lesen!)
+    const REG_SERIAL       = 1014;
+    const REG_FIRMWARE     = 1018;
+    const REG_POWER        = 1020; // mW
+    const REG_ENERGY_TOTAL = 1036; // 0,1 Wh (P40 < FW 1.2.1: fälschlich Wh)
+    const REG_VOLTAGES     = 1040; // 1040/1042/1044 = L1/L2/L3 in V
+    const REG_ENERGY_SESS  = 1502; // 0,1 Wh — Energie der aktuellen Ladesitzung
 
-    // Holding-Register (FC 0x03/0x06, schreibbar)
-    const REG_ENABLE_SYS   = 5004; // 0/1 — Ladefreigabe über System (Enable input X1)
-    const REG_CURR_LIMIT   = 5010; // mA, 0 oder 6000–63000 — Stromlimit
-    const REG_CURR_FS      = 5012; // mA — Fail-Safe-Stromlimit (bei Kommunikationsausfall)
-    const REG_CURR_FS_TO   = 5014; // s — Fail-Safe-Timeout
+    // Schreibbare Holding-Register (FC 0x06)
+    const REG_CURR_LIMIT   = 5004; // mA, 0 oder 6000–63000
+    const REG_ENABLE       = 5014; // 0/1 — Ladefreigabe (P30)
 
     const STATES = [
-        1 => 'Startet', 2 => 'Nicht bereit', 3 => 'Bereit', 4 => 'Lädt',
-        5 => 'Fehler', 6 => 'Unterbrochen',
+        0 => 'Startet', 1 => 'Nicht bereit', 2 => 'Bereit', 3 => 'Lädt',
+        4 => 'Fehler', 5 => 'Unterbrochen',
     ];
+
+    const CABLE_STATES = [
+        0 => 'Kein Kabel', 1 => 'Kabel an Station', 3 => 'Kabel verriegelt',
+        5 => 'Kabel + Fahrzeug', 7 => 'Verriegelt + Fahrzeug',
+    ];
+
+    // Einzelner U32-Datenpunkt (2 Register). KEBA lehnt Reads über
+    // Wertegrenzen ab, daher kein Block-Read.
+    private function u32At($mb, int $reg)
+    {
+        $r = $mb->readHolding($reg, 2);
+        return ($r === null) ? null : $mb->u32($r, 0);
+    }
 
     public function getBaseVars()
     {
         return [
-            ['connected',      'Verbindung',            'B', '~Alert.Reversed', false, 'errors', ''],
-            ['state',          'Ladestatus',             'I', 'CHB.KebaState',  true,  'device', 'Input 1000'],
-            ['cable_plugged',  'Kabel/Fahrzeug erkannt', 'B', '~Switch',        false, 'device', 'Input 1002'],
-            ['power',          'Ladeleistung',           'F', 'CHB.Watt',       true,  'device', 'Input 1020-1021 (mW)'],
-            ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWh',        true,  'device', 'Input 1036-1037 (0,1 Wh)'],
+            ['connected',      'Verbindung',           'B', '~Alert.Reversed',  false, 'errors', ''],
+            ['state',          'Ladestatus',            'I', 'CHB.KebaState',   true,  'device', 'Holding 1000-1001 (U32)'],
+            ['cable_state',    'Kabelstatus',           'I', 'CHB.KebaCable',   false, 'device', 'Holding 1004-1005 (U32)'],
+            ['power',          'Ladeleistung',          'F', 'CHB.Watt',        true,  'device', 'Holding 1020-1021 (mW)'],
+            ['energy_total',   'Energie gesamt',        'F', 'CHB.kWh',         true,  'device', 'Holding 1036-1037 (0,1 Wh)'],
+            ['energy_session', 'Energie akt. Sitzung',  'F', 'CHB.kWhSession',  true,  'device', 'Holding 1502-1503 (0,1 Wh)'],
         ];
     }
 
     public function getOptionalGroups()
     {
         return [
-            'GroupPhases' => ['caption' => 'Strom je Phase', 'vars' => [
-                ['current_l1', 'Strom L1', 'F', 'CHB.Ampere', false, 'phases', 'Input 1008 (mA)'],
-                ['current_l2', 'Strom L2', 'F', 'CHB.Ampere', false, 'phases', 'Input 1010 (mA)'],
-                ['current_l3', 'Strom L3', 'F', 'CHB.Ampere', false, 'phases', 'Input 1012 (mA)'],
+            'GroupPhases' => ['caption' => 'Strom/Spannung je Phase', 'vars' => [
+                ['current_l1', 'Strom L1',    'F', 'CHB.Ampere', false, 'phases', 'Holding 1008-1009 (mA)'],
+                ['current_l2', 'Strom L2',    'F', 'CHB.Ampere', false, 'phases', 'Holding 1010-1011 (mA)'],
+                ['current_l3', 'Strom L3',    'F', 'CHB.Ampere', false, 'phases', 'Holding 1012-1013 (mA)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'CHB.Volt',   false, 'phases', 'Holding 1040-1041 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'CHB.Volt',   false, 'phases', 'Holding 1042-1043 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'CHB.Volt',   false, 'phases', 'Holding 1044-1045 (V)'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
-                ['dev_serial', 'Seriennummer', 'S', '', false, 'device', 'Input 1014-1015'],
-                ['dev_error',  'Fehlercode',   'I', '', true,  'errors', 'Input 1004'],
+                ['dev_serial',   'Seriennummer',     'S', '', false, 'device', 'Holding 1014-1015 (U32)'],
+                ['dev_firmware', 'Firmware-Version', 'S', '', false, 'device', 'Holding 1018-1019 (U32)'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',       'Ladefreigabe',   'B', '~Switch',   false, 'control', 'RW Holding 5004'],
-                ['ctl_curr_limit',   'Stromlimit (A)', 'I', 'CHB.Ampere10to63', false, 'control', 'RW Holding 5010 (mA)'],
+                ['ctl_enable',       'Ladefreigabe',   'B', '~Switch',          false, 'control', 'RW Holding 5014 (P30)'],
+                ['ctl_curr_limit',   'Stromlimit (A)', 'I', 'CHB.Ampere10to63', false, 'control', 'RW Holding 5004 (mA)'],
             ]],
         ];
     }
@@ -333,10 +360,15 @@ class KebaDriver implements ChargerDriverInterface
     public function getProfiles()
     {
         return [
-            'CHB.Watt'            => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
-            'CHB.kWh'             => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 999.0, 0.01, 2],
-            'CHB.Ampere'          => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
-            'CHB.Ampere10to63'    => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+            'CHB.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'CHB.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            // Eigenes Suffix, damit die MeterHub-Zählersuche (matcht auf
+            // normalisiertes Suffix "kwh") den Sitzungswert NICHT als
+            // Energiezähler aufnimmt — der springt je Ladevorgang zurück.
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'CHB.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'CHB.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
         ];
     }
 
@@ -344,54 +376,68 @@ class KebaDriver implements ChargerDriverInterface
     {
         $states = [];
         foreach (self::STATES as $k => $label) {
-            $color = ($k === 4) ? 0x27D07F : (($k === 5) ? 0xE74C3C : 0x7A8A99);
+            $color = ($k === 3) ? 0x27D07F : (($k === 4) ? 0xE74C3C : 0x7A8A99);
             $states[$k] = [$label, $color];
         }
-        return ['CHB.KebaState' => $states];
+        $cable = [];
+        foreach (self::CABLE_STATES as $k => $label) {
+            $cable[$k] = [$label, in_array($k, [5, 7], true) ? 0x27D07F : 0x7A8A99];
+        }
+        return ['CHB.KebaState' => $states, 'CHB.KebaCable' => $cable];
     }
 
     public function readValues($mb, $hub)
     {
-        $state = $mb->readInput(self::REG_STATE, 1);
+        $state = $this->u32At($mb, self::REG_STATE);
         $ok    = ($state !== null);
         $hub->SetVarBool('connected', $ok);
         if (!$ok) {
             return false;
         }
-        $hub->SetVarInt('state', $mb->u16($state, 0));
+        $hub->SetVarInt('state', $state);
 
-        $cable = $mb->readInput(self::REG_CABLE_STATE, 1);
+        $cable = $this->u32At($mb, self::REG_CABLE_STATE);
         if ($cable !== null) {
-            $hub->SetVarBool('cable_plugged', $mb->u16($cable, 0) > 0);
+            $hub->SetVarInt('cable_state', $cable);
         }
 
-        $power = $mb->readInput(self::REG_POWER, 2);
+        $power = $this->u32At($mb, self::REG_POWER);
         if ($power !== null) {
-            $hub->SetVarFloat('power', $mb->u32($power, 0) / 1000.0); // mW -> W
+            $hub->SetVarFloat('power', $power / 1000.0); // mW -> W
         }
 
-        $energy = $mb->readInput(self::REG_ENERGY_SESS, 2);
-        if ($energy !== null) {
-            $hub->SetVarFloat('energy_session', $mb->u32($energy, 0) / 10000.0); // 0,1 Wh -> kWh
+        $etot = $this->u32At($mb, self::REG_ENERGY_TOTAL);
+        if ($etot !== null) {
+            $hub->SetVarFloat('energy_total', $etot / 10000.0); // 0,1 Wh -> kWh
+        }
+
+        $esess = $this->u32At($mb, self::REG_ENERGY_SESS);
+        if ($esess !== null) {
+            $hub->SetVarFloat('energy_session', $esess / 10000.0);
         }
 
         if ($hub->GroupActive('GroupPhases')) {
-            $curr = $mb->readInput(self::REG_CURRENTS, 6);
-            if ($curr !== null) {
-                $hub->SetVarFloat('current_l1', $mb->u16($curr, 0) / 1000.0);
-                $hub->SetVarFloat('current_l2', $mb->u16($curr, 2) / 1000.0);
-                $hub->SetVarFloat('current_l3', $mb->u16($curr, 4) / 1000.0);
+            foreach ([1, 2, 3] as $ph) {
+                $i = $this->u32At($mb, self::REG_CURRENTS + ($ph - 1) * 2);
+                if ($i !== null) {
+                    $hub->SetVarFloat('current_l' . $ph, $i / 1000.0); // mA -> A
+                }
+                $u = $this->u32At($mb, self::REG_VOLTAGES + ($ph - 1) * 2);
+                if ($u !== null) {
+                    $hub->SetVarFloat('voltage_l' . $ph, (float)$u);
+                }
             }
         }
 
         if ($hub->GroupActive('GroupDevice')) {
-            $sn = $mb->readInput(self::REG_SERIAL, 2);
+            $sn = $this->u32At($mb, self::REG_SERIAL);
             if ($sn !== null) {
-                $hub->SetVarStr('dev_serial', (string)$mb->u32($sn, 0));
+                $hub->SetVarStr('dev_serial', (string)$sn);
             }
-            $err = $mb->readInput(self::REG_ERROR_CODE, 1);
-            if ($err !== null) {
-                $hub->SetVarInt('dev_error', $mb->u16($err, 0));
+            $fw = $this->u32At($mb, self::REG_FIRMWARE);
+            if ($fw !== null) {
+                // U32 wie 30107 = Version 3.1.7 (evcc-Deutung: Ziffernfolge)
+                $hub->SetVarStr('dev_firmware', (string)$fw);
             }
         }
 
@@ -403,7 +449,7 @@ class KebaDriver implements ChargerDriverInterface
         switch ($ident) {
             case 'ctl_enable':
                 $val = (bool)$value ? 1 : 0;
-                if ($mb->writeSingle(self::REG_ENABLE_SYS, $val)) {
+                if ($mb->writeSingle(self::REG_ENABLE, $val)) {
                     $hub->SetVarBool('ctl_enable', (bool)$value);
                 }
                 break;
@@ -768,7 +814,7 @@ class GoeChargerDriver implements ChargerDriverInterface
             ['connected',      'Verbindung',            'B', '~Alert.Reversed', false, 'errors', ''],
             ['state',          'Ladestatus',             'I', 'CHB.GoeCarState', true,  'device', 'Input 100'],
             ['power',          'Ladeleistung',           'F', 'CHB.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
-            ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWh',         true,  'device', 'Input 132-133 (Deka-Ws)'],
+            ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWhSession',  true,  'device', 'Input 132-133 (Deka-Ws)'],
         ];
     }
 
@@ -806,6 +852,9 @@ class GoeChargerDriver implements ChargerDriverInterface
         return [
             'CHB.Watt'        => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
             'CHB.kWh'         => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999.0, 0.01, 2],
+            // Eigenes Suffix: hält die MeterHub-Zählersuche vom rückspringenden
+            // Sitzungswert fern (siehe KebaDriver::getProfiles).
+            'CHB.kWhSession'  => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
             'CHB.Volt'        => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
             'CHB.Ampere'      => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
             'CHB.Ampere6to32' => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
@@ -1160,18 +1209,26 @@ class ChargerHub extends IPSModule
     // Immer hinter function_exists('CHUB_GetFunctions') beim Aufrufer, siehe
     // CLAUDE.md. Der Schreib-Teil (chargeEnableID/currentLimitID) ist ein
     // erster Vorschlag und noch mit der EMS-Sitzung abzustimmen, bevor er als
-    // stabiler Vertrag gilt.
+    // stabiler Vertrag gilt — die Steuer-IDs sind fürs EMS bestimmt, nicht für
+    // Anzeigemodule.
     public function GetFunctions(): array
     {
         $powerID = $this->FindVarByIdent('power');
         $enableID = $this->FindVarByIdent('ctl_enable');
         $limitID  = $this->FindVarByIdent('ctl_curr_limit');
 
+        // Energie: kumulierten Gesamtzähler bevorzugen — der Sitzungswert
+        // springt je Ladevorgang zurück und taugt nicht als Zählerstand.
+        $energyID = $this->FindVarByIdent('energy_total');
+        if (!$energyID) {
+            $energyID = $this->FindVarByIdent('energy_session');
+        }
+
         return [[
             'function'        => 'charger',
             'label'           => IPS_GetName($this->InstanceID),
             'powerID'         => $powerID ?: 0,
-            'energyImportID'  => $this->FindVarByIdent('energy_session') ?: 0,
+            'energyImportID'  => $energyID ?: 0,
             'measured'        => true,
             'chargeEnableID'  => $enableID ?: 0,
             'currentLimitID'  => $limitID ?: 0,

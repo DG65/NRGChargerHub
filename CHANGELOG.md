@@ -3,6 +3,30 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.4.0-beta.1] - 2026-07-22
+
+### Fixed
+- **KEBA-Treiber gegen die evcc-Referenzimplementierung korrigiert** (charger/keba-modbus.go,
+  an realer Hardware erprobt) — mehrere echte Fehler: Alle KEBA-Werte sind U32 über
+  2 Register (der bisherige 1-Register-Read des Ladestatus hätte immer 0 geliefert);
+  gelesen wird per FC 0x03 (Holding), nicht FC 0x04; Kabelstatus liegt auf 1004 (nicht
+  1002); 1036 ist die GESAMT-Energie, die Sitzungsenergie liegt auf 1502; Ladefreigabe
+  auf Holding 5014 (nicht 5004 — dort liegt das Stromlimit); Status-Enum beginnt bei 0.
+  Kein Block-Read über Wertegrenzen (KEBA lehnt das ab) — jeder Datenpunkt einzeln.
+  Neu dabei: Energie gesamt, Spannungen je Phase, Firmware-Version, Kabelstatus-Enum.
+- Discovery-Sonde für KEBA entsprechend auf U32/FC 0x03 umgestellt (bisher hätte sie
+  echte KEBAs praktisch nie erkannt).
+
+### Changed
+- **Abstimmung mit MeterHub umgesetzt** (Zählersuche matcht auf Profil-Suffix):
+  Sitzungsenergie (`energy_session`) trägt jetzt bei KEBA und go-eCharger ein eigenes
+  Profil `CHB.kWhSession` mit Suffix „ kWh (Sitzung)" — damit nimmt die
+  MeterHubVirtual-Zählersuche nur noch den kumulativen Gesamtzähler (`energy_total`,
+  Suffix „ kWh") auf und nicht den je Ladevorgang zurückspringenden Sitzungswert.
+- `CHUB_GetFunctions`: `energyImportID` liefert bevorzugt `energy_total` (kumulativ),
+  Fallback `energy_session`; Hinweis ergänzt, dass die Steuer-IDs fürs EMS bestimmt
+  sind, nicht für Anzeigemodule.
+
 ## [0.3.0-beta.1] - 2026-07-22
 
 ### Added
