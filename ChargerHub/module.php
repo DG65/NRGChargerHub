@@ -984,6 +984,15 @@ class ChargerHub extends IPSModule
         $this->RegisterPropertyInteger('Port', 502);
         $this->RegisterPropertyInteger('UnitId', 255);
         $this->RegisterPropertyInteger('IntervalFast', 10);
+        // Zwei-Regler-Schutz: true, wenn ein externes Lastmanagement (z. B.
+        // go-e Controller) diesen Ladepunkt bereits selbst regelt. Per Modbus
+        // ist das nicht erkennbar (die Lastmanagement-Zustände loe/loa liegen
+        // nur in der HTTP/MQTT-API), daher manuelle Kennzeichnung. Wird über
+        // CHUB_GetFunctions als 'externallyManaged' gemeldet, damit das EMS
+        // solche Ladepunkte von der eigenen Steuerung ausnimmt — sonst
+        // überschreiben sich EMS und Controller gegenseitig (AMPERE_VOLATILE
+        // würde ständig zurückgesetzt).
+        $this->RegisterPropertyBoolean('ExternallyManaged', false);
 
         // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
         // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
@@ -1081,13 +1090,18 @@ class ChargerHub extends IPSModule
         }
 
         return [[
-            'function'        => 'charger',
-            'label'           => IPS_GetName($this->InstanceID),
-            'powerID'         => $powerID ?: 0,
-            'energyImportID'  => $energyID ?: 0,
-            'measured'        => true,
-            'chargeEnableID'  => $enableID ?: 0,
-            'currentLimitID'  => $limitID ?: 0,
+            'function'           => 'charger',
+            'label'              => IPS_GetName($this->InstanceID),
+            'powerID'            => $powerID ?: 0,
+            'energyImportID'     => $energyID ?: 0,
+            'measured'           => true,
+            'chargeEnableID'     => $enableID ?: 0,
+            'currentLimitID'     => $limitID ?: 0,
+            // true = ein externes Lastmanagement (z. B. go-e Controller) regelt
+            // diesen Ladepunkt bereits — EMS soll ihn NICHT selbst steuern
+            // (Zwei-Regler-Konflikt). Manuell in der Instanz gekennzeichnet,
+            // da per Modbus nicht erkennbar.
+            'externallyManaged'  => $this->ReadPropertyBoolean('ExternallyManaged'),
         ]];
     }
 
@@ -1138,6 +1152,17 @@ class ChargerHub extends IPSModule
                 'caption' => $group['caption'],
             ];
         }
+        // Zwei-Regler-Schutz (siehe Create): manuelle Kennzeichnung, wird über
+        // CHUB_GetFunctions als 'externallyManaged' gemeldet.
+        $groupItems[] = [
+            'type'    => 'CheckBox',
+            'name'    => 'ExternallyManaged',
+            'caption' => 'Ladepunkt wird bereits extern geregelt (z. B. go-e Controller Lastmanagement) — von der EMS-Steuerung ausnehmen',
+        ];
+        $groupItems[] = [
+            'type'    => 'Label',
+            'caption' => '⚠️ Zwei-Regler-Warnung: Steuert ein go-e Controller (oder ein anderes Lastmanagement) diese Wallbox bereits selbst, dürfen EMS/Skripte hier nicht parallel Ladefreigabe/Stromlimit schreiben — beide Regler überschreiben sich sonst gegenseitig. Entweder das Lastmanagement am Controller deaktivieren ODER diese Kennzeichnung setzen.',
+        ];
 
         $form = [
             'elements' => [
@@ -1151,7 +1176,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• KEBA KeContact P30/P40: Standard-Unit-ID 255, Port 502.'],
                         ['type' => 'Label', 'caption' => '• Alfen Eve Single/Double Pro-line: Standard-Unit-ID 1, Port 502. Nur Sockel 1 wird bedient.'],
                         ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
-                        ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 hatte einen Byte-Order-Bug (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben).'],
+                        ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 hatte einen Byte-Order-Bug (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits per Lastmanagement/Überschussladen, nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Datenpunkte".'],
                     ],
                 ],
                 ['type' => 'CheckBox', 'name' => 'Active', 'caption' => 'Kommunikation aktiv'],

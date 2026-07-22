@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.6.0-beta.1] - 2026-07-22
+
+### Added
+- **Zwei-Regler-Schutz** (Hinweis vom EMS): Der go-e Controller kann Wallboxen selbst per
+  Lastmanagement/Überschussladen regeln — parallele EMS-Steuerung würde sich mit ihm
+  gegenseitig überschreiben. Neue Kennzeichnung „Ladepunkt wird bereits extern geregelt"
+  in der Instanz, gemeldet über `CHUB_GetFunctions` als neues Feld `externallyManaged`
+  (bool), damit das EMS solche Ladepunkte automatisch von der eigenen Steuerung ausnimmt.
+  Automatische Erkennung ist per Modbus nicht möglich (die Lastmanagement-Zustände
+  `loe`/`loa` existieren nur in der HTTP/MQTT-API) — daher manuelle Kennzeichnung.
+  Warnhinweise in Formular und README ergänzt.
+
 ## [0.5.0-beta.1] - 2026-07-22
 
 ### Removed
