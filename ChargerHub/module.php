@@ -660,7 +660,9 @@ class HeidelbergDriver implements ChargerDriverInterface
                 break;
 
             case 'ctl_curr_limit':
-                $amp = max(6, min(32, (int)$value));
+                // 0 = Laden sperren (siehe Profil CHB.Ampere6to32, das 0 erlaubt);
+                // sonst laut Doku nur 6–32 A gültig.
+                $amp = (int)$value === 0 ? 0 : max(6, min(32, (int)$value));
                 if ($mb->writeSingle(self::REG_CURR_LIMIT, $amp * 10)) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
                 }
@@ -1040,20 +1042,33 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // Variablen liegen in Untergruppen-Kategorien (siehe EnsureCategory), nicht
+    // direkt unter der Instanz — daher rekursiv sammeln (Muster wie
+    // InverterHub), sonst würden Variablen eines abgewählten Herstellers/einer
+    // deaktivierten Gruppe nie erkannt und blieben stehen.
     private function PruneForeignObjects(array $validIdents)
     {
-        $children = @IPS_GetChildrenIDs($this->InstanceID);
-        if (!is_array($children)) {
-            return;
-        }
-        foreach ($children as $cid) {
-            $obj = IPS_GetObject($cid);
-            if ($obj['ObjectType'] !== 2) { // nur Variablen prüfen, Kategorien belassen
+        $all = [];
+        $collect = function ($pid) use (&$collect, &$all) {
+            foreach (@IPS_GetChildrenIDs($pid) ?: [] as $cid) {
+                $all[] = $cid;
+                if (IPS_GetObject($cid)['ObjectType'] === 0) {
+                    $collect($cid);
+                }
+            }
+        };
+        $collect($this->InstanceID);
+
+        foreach ($all as $cid) {
+            if (!IPS_ObjectExists($cid)) {
                 continue;
             }
-            $ident = $obj['ObjectIdent'];
-            if ($ident !== '' && !isset($validIdents[$ident])) {
-                IPS_DeleteVariable($cid);
+            $obj = IPS_GetObject($cid);
+            if ($obj['ObjectType'] !== 2 || $obj['ObjectIdent'] === '') {
+                continue;
+            }
+            if (!isset($validIdents[$obj['ObjectIdent']])) {
+                @IPS_DeleteVariable($cid);
             }
         }
     }
