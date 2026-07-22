@@ -5,9 +5,9 @@ per Modbus TCP — analog zu [InverterHub](https://github.com/DG65/InverterHub) 
 und [MeterHub](https://github.com/DG65/MeterHub) (Energiezähler).
 
 **Status: Beta.** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
-Modbus-Dokumentationen der Hersteller, sind aber **noch nicht an echter Hardware verifiziert**.
-Rückmeldungen zu falschen/fehlenden Werten sind willkommen — bitte mit Wallbox-Typ und
-betroffenem Register melden.
+Modbus-Dokumentationen der Hersteller, sind aber — mit Ausnahme von go-eCharger (siehe unten) —
+**noch nicht an echter Hardware verifiziert**. Rückmeldungen zu falschen/fehlenden Werten sind
+willkommen — bitte mit Wallbox-Typ und betroffenem Register melden.
 
 ## Unterstützte Wallboxen
 
@@ -16,7 +16,7 @@ betroffenem Register melden.
 | **KEBA KeContact P30/P40** | Ladestatus, Ladeleistung, Energie akt. Sitzung, optional Strom je Phase, Seriennummer/Fehlercode, Steuerung (Ladefreigabe, Stromlimit 6–63 A) | Input-Register (FC 0x04) ab 1000, Unit-ID standardmäßig 255. |
 | **Alfen Eve Single/Double Pro-line, NG9xx** | Sockel-Status, Ladeleistung, angewandtes Stromlimit, optional Spannung/Strom je Phase, Steuerung (Ladefreigabe, Stromlimit) | Holding-Register (FC 0x03), Float32 Big-Endian. Nur Sockel 1 (Basisadresse ohne Offset) wird bedient. |
 | **Heidelberg Energy Control** | Ladestatus, Leistung, optional Strom/Spannung je Phase, PCB-Temperatur, Steuerung (Ladefreigabe, Stromlimit 6–32 A) | Holding-Register (FC 0x03), Unit-ID standardmäßig 1. |
-| **go-eCharger Gemini/HOME+** | Ladestatus, optional Fehlercode, Steuerung (Ladefreigabe, Stromlimit 6–32 A) | Bewusst nur Basisfunktionen umgesetzt — die Registeradressen für Leistungs-/Energiewerte lagen nicht mit ausreichender Sicherheit vor. |
+| **go-eCharger Gemini/HOME+** | Ladestatus, Ladeleistung, Energie akt. Sitzung/gesamt, optional Spannung/Strom je Phase, Kabel-Codierung, Fehlercode, Seriennummer/Firmware, Steuerung (Ladefreigabe über FORCE_STATE, Stromlimit über AMPERE_VOLATILE 6–32 A) | Gegen die offizielle Herstellerdoku ([go-eCharger-API-v2](https://github.com/goecharger/go-eCharger-API-v2), modbus-de.md) geprüft — als einziger der vier Treiber. FC 0x06 wird von go-e nicht unterstützt, Schreibzugriffe laufen über FC 0x16. Firmware 60.3 hatte einen dokumentierten Byte-Order-Bug (Schalter „Byte-Reihenfolge getauscht"), seit 60.4 behoben. |
 
 Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Manager, Spalte
 „Beschreibung") — praktisch zum Abgleich mit dem Herstellerhandbuch.

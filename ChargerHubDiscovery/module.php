@@ -457,14 +457,15 @@ class ChargerHubDiscovery extends IPSModule
                 return ($state !== null && $state[0] >= 2 && $state[0] <= 8);
 
             case 'goe':
-                // Holding 1000: Ladestatus ("car"), plausibel 1..5.
-                $car = $this->readHolding($ip, $port, $unitId, 1000, 1, 1.0);
-                if ($car === null || $car[0] < 1 || $car[0] > 5) {
+                // Input-Register 100: CAR_STATE, plausibel 0..4 (offizielle
+                // go-e-Modbus-Doku, https://github.com/goecharger/go-eCharger-API-v2).
+                $car = $this->readInput($ip, $port, $unitId, 100, 1, 1.0);
+                if ($car === null || $car[0] > 4) {
                     return false;
                 }
-                // Holding 1006: Ladefreigabe ("alw"), plausibel 0/1.
-                $alw = $this->readHolding($ip, $port, $unitId, 1006, 1, 1.0);
-                return ($alw !== null && ($alw[0] === 0 || $alw[0] === 1));
+                // Holding-Register 201: ACCESS_STATE, plausibel 0..3.
+                $access = $this->readHolding($ip, $port, $unitId, 201, 1, 1.0);
+                return ($access !== null && $access[0] <= 3);
         }
         return false;
     }

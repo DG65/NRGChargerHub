@@ -191,6 +191,13 @@ class ModbusTcpClient
         return $v > 2147483647 ? $v - 4294967296 : $v;
     }
 
+    // 32-Bit mit getauschter Wortreihenfolge (CDAB) — go-eCharger-Firmware 60.3
+    // hatte laut offizieller Modbus-Doku vertauschte Bytes, seit 60.4 behoben.
+    public function u32sw($regs, $offset)
+    {
+        return (($this->u16($regs, $offset + 1) << 16) | $this->u16($regs, $offset));
+    }
+
     public function readStr($regs, $offset, int $regCount)
     {
         $s = '';
@@ -672,51 +679,120 @@ class HeidelbergDriver implements ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
-// GoeChargerDriver — go-eCharger Gemini/HOME+ (API v2, Modbus TCP ab
-// Firmware, die den Modbus-Server unterstützt). go-e veröffentlicht eine
-// API-Key-zu-Register-Zuordnung ("apikeys-modbus.csv"); hier ist bewusst nur
-// eine SCHMALE Teilmenge (Status, Ladefreigabe, Stromlimit) umgesetzt, da die
-// genauen Registeradressen für Leistungs-/Energiewerte nicht mit ausreichender
-// Sicherheit vorlagen. UNGETESTET an echter Hardware — vor Nutzung unbedingt
-// gegen die aktuelle go-e-Modbus-Dokumentation prüfen und ggf. ergänzen.
+// GoeChargerDriver — go-eCharger Gemini/HOME+ (API v2, Modbus TCP; muss laut
+// offizieller Doku erst über App/HTTP-API aktiviert werden). Registeradressen
+// gemäß offizieller Doku https://github.com/goecharger/go-eCharger-API-v2
+// (modbus-de.md, Stand des dortigen main-Branchs), am 2026-07-22 abgerufen —
+// im Unterschied zu den anderen drei Treibern also gegen die verbindliche
+// Herstellerquelle geprüft, aber weiterhin NICHT an echter Hardware getestet.
+//
+// Wichtige Eigenheiten laut Doku:
+// - FC 0x06 (Preset Single Register) wird NICHT unterstützt — Schreiben
+//   erfolgt immer über FC 0x16 (writeMultiple), auch für ein einzelnes
+//   Register.
+// - Registeradressen hier sind die "wire format"-Adressen (Wert in Klammern
+//   in der Doku, z. B. 200 für ALLOW/40201) — dieselbe 0-basierte Konvention
+//   wie bei den anderen drei Treibern.
+// - Firmware 60.3 hatte laut Doku eine vertauschte Byte-Reihenfolge bei
+//   32-Bit-Werten, seit 60.4 behoben. Für 60.3 die Option "Byte-Reihenfolge
+//   getauscht" aktivieren.
+// - Ladefreigabe: FORCE_STATE (Register 337) ist laut HTTP-API-Doku (api key
+//   "frc") die für Automatisierung vorgesehene R/W-Steuerung
+//   (Neutral=0, Off=1, On=2) — nicht das ebenfalls vorhandene ALLOW-Register
+//   (200), das laut HTTP-API nur lesend ("alw") als reiner Status gedacht ist.
 // ---------------------------------------------------------------------------
 
 class GoeChargerDriver implements ChargerDriverInterface
 {
-    const REG_CAR      = 1000; // U16: 1=Bereit(kein Fzg),2=Lädt,3=Wartet auf Fzg,4=Fertig,5=Fehler
-    const REG_AMP       = 1002; // U16, Stromlimit in A (6-32)
-    const REG_ERR        = 1004; // U16, Fehlercode
-    const REG_ALW        = 1006; // U16, Ladefreigabe (0/1)
+    // Holding-Register (FC 0x03 lesend, FC 0x16 schreibend)
+    const REG_ALLOW           = 200; // U16, RO-Status laut HTTP-API (alw) — nur informativ
+    const REG_ACCESS_STATE    = 201; // U16: 0=Offen,1=RFID/App,2=Strompreis/automatisch,3=Scheduler
+    const REG_CABLE_LOCK_MODE = 204; // U16: 0=Verriegelt solange Auto an,1=Autom. entriegeln,2=Immer verriegelt
+    const REG_AMPERE_MAX      = 211; // U16, absolutes Maximum (App-Einstellung)
+    const REG_AMPERE_VOLATILE = 299; // U16, 6-32A, NICHT im EEPROM gespeichert — für Automatisierung vorgesehen
+    const REG_FORCE_STATE     = 337; // U16: 0=Neutral (automatisch/App),1=Aus (erzwungen),2=An (erzwungen)
 
-    const STATES = [
-        1 => 'Bereit (kein Fahrzeug)', 2 => 'Lädt', 3 => 'Wartet auf Fahrzeug',
-        4 => 'Fertig', 5 => 'Fehler',
+    // Input-Register (FC 0x04, nur lesend)
+    const REG_CAR_STATE   = 100; // U16: 0=unbekannt/defekt,1=bereit(kein Fzg),2=lädt,3=wartet auf Fzg,4=beendet(Fzg verbunden)
+    const REG_PP_CABLE    = 101; // U16: 13-32=Kabel-Ampere-Codierung, 0=kein Kabel
+    const REG_FWV         = 105; // ASCII, 2 Register (4 Byte)
+    const REG_ERROR       = 107; // U16: 1=RCCB,3=Phasenstörung,8=Erdungsfehler,10=INTERNAL(Standard bei Fehler)
+    const REG_VOLT_L1     = 108; // U32, 2 Register, V
+    const REG_VOLT_L2     = 110;
+    const REG_VOLT_L3     = 112;
+    const REG_AMP_L1      = 114; // U32, 2 Register, 0,1 A
+    const REG_AMP_L2      = 116;
+    const REG_AMP_L3      = 118;
+    const REG_POWER_TOTAL = 120; // U32, 2 Register, 0,01 W
+    const REG_ENERGY_TOTAL  = 128; // U32, 2 Register, 0,1 kWh (Gesamt seit Inbetriebnahme)
+    const REG_ENERGY_CHARGE = 132; // U32, 2 Register, Deka-Wattsekunden (Ws*10) — aktuelle/letzte Ladesitzung
+    const REG_VOLT_N      = 144;
+    const REG_POWER_L1    = 146; // U32, 2 Register, 0,1 kW
+    const REG_POWER_L2    = 148;
+    const REG_POWER_L3    = 150;
+    const REG_SNR         = 304; // ASCII, 6 Register (12 Byte)
+
+    const CAR_STATES = [
+        0 => 'Unbekannt / Ladestation defekt', 1 => 'Bereit, kein Fahrzeug', 2 => 'Fahrzeug lädt',
+        3 => 'Wartet auf Fahrzeug', 4 => 'Ladung beendet, Fahrzeug verbunden',
     ];
+
+    const ERRORS = [
+        0 => 'Kein Fehler', 1 => 'RCCB (Fehlerstromschutzschalter)', 3 => 'Phasenstörung',
+        8 => 'Erdungsfehler', 10 => 'Interner Fehler',
+    ];
+
+    private function u32($mb, $hub, $regs, $offset)
+    {
+        return $hub->GroupActive('GoeWordSwap') ? $mb->u32sw($regs, $offset) : $mb->u32($regs, $offset);
+    }
 
     public function getBaseVars()
     {
         return [
-            ['connected', 'Verbindung', 'B', '~Alert.Reversed', false, 'errors', ''],
-            ['state',     'Ladestatus', 'I', 'CHB.GoeState',    true,  'device', 'Holding 1000'],
+            ['connected',      'Verbindung',            'B', '~Alert.Reversed', false, 'errors', ''],
+            ['state',          'Ladestatus',             'I', 'CHB.GoeCarState', true,  'device', 'Input 100'],
+            ['power',          'Ladeleistung',           'F', 'CHB.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
+            ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWh',         true,  'device', 'Input 132-133 (Deka-Ws)'],
         ];
     }
 
     public function getOptionalGroups()
     {
         return [
+            'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
+                ['voltage_l1', 'Spannung L1', 'F', 'CHB.Volt',   false, 'phases', 'Input 108-109 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'CHB.Volt',   false, 'phases', 'Input 110-111 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'CHB.Volt',   false, 'phases', 'Input 112-113 (V)'],
+                ['current_l1', 'Strom L1',    'F', 'CHB.Ampere', false, 'phases', 'Input 114-115 (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'CHB.Ampere', false, 'phases', 'Input 116-117 (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'CHB.Ampere', false, 'phases', 'Input 118-119 (0,1 A)'],
+            ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
-                ['dev_error', 'Fehlercode', 'I', '', true, 'errors', 'Holding 1004'],
+                ['dev_serial',    'Seriennummer',        'S', '', false, 'device', 'Input 304-309 (ASCII)'],
+                ['dev_firmware',  'Firmware-Version',    'S', '', false, 'device', 'Input 105-106 (ASCII)'],
+                ['energy_total',  'Energie gesamt',      'F', 'CHB.kWh', true, 'device', 'Input 128-129 (0,1 kWh)'],
+                ['dev_error',     'Fehlercode',          'I', 'CHB.GoeError', true, 'errors', 'Input 107'],
+                ['cable_current', 'Kabel-Strombegrenzung','I', 'CHB.Ampere6to32', false, 'device', 'Input 101 (13-32, 0=kein Kabel)'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',        false, 'control', 'RW Holding 1006'],
-                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to32',false, 'control', 'RW Holding 1002'],
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',         false, 'control', 'RW Holding 337 (FORCE_STATE)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to32', false, 'control', 'RW Holding 299 (AMPERE_VOLATILE)'],
             ]],
+            // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
+            // generische Datenpunkt-Gruppen-Infrastruktur mit). Default AUS, da
+            // nur die veraltete Firmware 60.3 betroffen ist.
+            'GoeWordSwap' => ['caption' => 'Byte-Reihenfolge getauscht (nur Firmware 60.3 — 60.4 hat den Bug behoben)', 'vars' => [], 'default' => false],
         ];
     }
 
     public function getProfiles()
     {
         return [
+            'CHB.Watt'        => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'CHB.kWh'         => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999.0, 0.01, 2],
+            'CHB.Volt'        => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'CHB.Ampere'      => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
             'CHB.Ampere6to32' => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
         ];
     }
@@ -724,15 +800,19 @@ class GoeChargerDriver implements ChargerDriverInterface
     public function getEnumProfiles()
     {
         $states = [];
-        foreach (self::STATES as $k => $label) {
-            $states[$k] = [$label, $k === 2 ? 0x27D07F : (($k === 5) ? 0xE74C3C : 0x7A8A99)];
+        foreach (self::CAR_STATES as $k => $label) {
+            $states[$k] = [$label, $k === 2 ? 0x27D07F : (($k === 0) ? 0xE74C3C : 0x7A8A99)];
         }
-        return ['CHB.GoeState' => $states];
+        $errors = [];
+        foreach (self::ERRORS as $k => $label) {
+            $errors[$k] = [$label, $k === 0 ? 0x7A8A99 : 0xE74C3C];
+        }
+        return ['CHB.GoeCarState' => $states, 'CHB.GoeError' => $errors];
     }
 
     public function readValues($mb, $hub)
     {
-        $car = $mb->readHolding(self::REG_CAR, 1);
+        $car = $mb->readInput(self::REG_CAR_STATE, 1);
         $ok  = ($car !== null);
         $hub->SetVarBool('connected', $ok);
         if (!$ok) {
@@ -740,29 +820,74 @@ class GoeChargerDriver implements ChargerDriverInterface
         }
         $hub->SetVarInt('state', $mb->u16($car, 0));
 
+        $power = $mb->readInput(self::REG_POWER_TOTAL, 2);
+        if ($power !== null) {
+            $hub->SetVarFloat('power', $this->u32($mb, $hub, $power, 0) / 100.0); // 0,01 W -> W
+        }
+
+        $energy = $mb->readInput(self::REG_ENERGY_CHARGE, 2);
+        if ($energy !== null) {
+            // Deka-Wattsekunden (Ws*10) -> kWh: Ws = Rohwert*10, kWh = Ws/3.600.000
+            $hub->SetVarFloat('energy_session', $this->u32($mb, $hub, $energy, 0) * 10.0 / 3600000.0);
+        }
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $v1 = $mb->readInput(self::REG_VOLT_L1, 2);
+            $v2 = $mb->readInput(self::REG_VOLT_L2, 2);
+            $v3 = $mb->readInput(self::REG_VOLT_L3, 2);
+            $i1 = $mb->readInput(self::REG_AMP_L1, 2);
+            $i2 = $mb->readInput(self::REG_AMP_L2, 2);
+            $i3 = $mb->readInput(self::REG_AMP_L3, 2);
+            if ($v1 !== null) { $hub->SetVarFloat('voltage_l1', (float)$this->u32($mb, $hub, $v1, 0)); }
+            if ($v2 !== null) { $hub->SetVarFloat('voltage_l2', (float)$this->u32($mb, $hub, $v2, 0)); }
+            if ($v3 !== null) { $hub->SetVarFloat('voltage_l3', (float)$this->u32($mb, $hub, $v3, 0)); }
+            if ($i1 !== null) { $hub->SetVarFloat('current_l1', $this->u32($mb, $hub, $i1, 0) / 10.0); }
+            if ($i2 !== null) { $hub->SetVarFloat('current_l2', $this->u32($mb, $hub, $i2, 0) / 10.0); }
+            if ($i3 !== null) { $hub->SetVarFloat('current_l3', $this->u32($mb, $hub, $i3, 0) / 10.0); }
+        }
+
         if ($hub->GroupActive('GroupDevice')) {
-            $err = $mb->readHolding(self::REG_ERR, 1);
+            $sn = $mb->readInput(self::REG_SNR, 6);
+            if ($sn !== null) {
+                $hub->SetVarStr('dev_serial', $mb->readStr($sn, 0, 6));
+            }
+            $fw = $mb->readInput(self::REG_FWV, 2);
+            if ($fw !== null) {
+                $hub->SetVarStr('dev_firmware', $mb->readStr($fw, 0, 2));
+            }
+            $etot = $mb->readInput(self::REG_ENERGY_TOTAL, 2);
+            if ($etot !== null) {
+                $hub->SetVarFloat('energy_total', $this->u32($mb, $hub, $etot, 0) / 10.0);
+            }
+            $err = $mb->readInput(self::REG_ERROR, 1);
             if ($err !== null) {
                 $hub->SetVarInt('dev_error', $mb->u16($err, 0));
+            }
+            $pp = $mb->readInput(self::REG_PP_CABLE, 1);
+            if ($pp !== null) {
+                $hub->SetVarInt('cable_current', $mb->u16($pp, 0));
             }
         }
 
         return true;
     }
 
+    // go-e unterstützt FC 0x06 nicht (siehe Klassenkommentar) — jeder
+    // Schreibzugriff muss über writeMultiple (FC 0x16) laufen, auch für ein
+    // einzelnes Register.
     public function writeControl($mb, $hub, string $ident, $value)
     {
         switch ($ident) {
             case 'ctl_enable':
-                $val = (bool)$value ? 1 : 0;
-                if ($mb->writeSingle(self::REG_ALW, $val)) {
+                $val = (bool)$value ? 2 : 1; // FORCE_STATE: 1=Aus (erzwungen), 2=An (erzwungen)
+                if ($mb->writeMultiple(self::REG_FORCE_STATE, [$val])) {
                     $hub->SetVarBool('ctl_enable', (bool)$value);
                 }
                 break;
 
             case 'ctl_curr_limit':
                 $amp = max(6, min(32, (int)$value));
-                if ($mb->writeSingle(self::REG_AMP, $amp)) {
+                if ($mb->writeMultiple(self::REG_AMPERE_VOLATILE, [$amp])) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
                 }
                 break;
@@ -806,7 +931,7 @@ class ChargerHub extends IPSModule
             $drv = new $driverClass();
             foreach ($drv->getOptionalGroups() as $propName => $group) {
                 if (!array_key_exists($propName, $allProps)) {
-                    $allProps[$propName] = true;
+                    $allProps[$propName] = $group['default'] ?? true;
                 }
             }
         }

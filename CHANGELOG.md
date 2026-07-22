@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.2.1-beta.1] - 2026-07-22
+
+### Fixed
+- **go-eCharger-Treiber komplett neu**, gegen die offizielle Herstellerdoku
+  ([go-eCharger-API-v2](https://github.com/goecharger/go-eCharger-API-v2), modbus-de.md)
+  geprüft — der bisherige Registersatz (Platzhalter, Register 1000ff.) war frei erfunden und
+  falsch. Neu: korrekte Input-/Holding-Register (CAR_STATE @100, POWER_TOTAL @120,
+  ENERGY_CHARGE @132, Phasenspannungen/-ströme, Fehlercode, Seriennummer/Firmware),
+  Ladefreigabe über FORCE_STATE (Holding 337, nicht das rein informative ALLOW-Register),
+  Stromlimit über AMPERE_VOLATILE (Holding 299, EEPROM-schonend). Schreibzugriffe laufen
+  jetzt über FC 0x16 (writeMultiple) statt FC 0x06, da go-e Einzelregister-Schreiben laut
+  Doku nicht unterstützt. Neuer Schalter „Byte-Reihenfolge getauscht" für den dokumentierten
+  Firmware-60.3-Bug (behoben mit 60.4).
+- `ModbusTcpClient::u32sw()` ergänzt (wortgetauschte 32-Bit-Werte, analog zu MeterHub).
+- Discovery-Sonde für go-eCharger auf die echten Register (Input 100, Holding 201) umgestellt.
+
 ## [0.2.0-beta.1] - 2026-07-22
 
 ### Added
