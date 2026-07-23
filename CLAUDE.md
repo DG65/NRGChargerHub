@@ -53,6 +53,14 @@ Sitzungen** gearbeitet:
       grammatisch richtig, inhaltlich falsch — korrekt: „… findet die Suche nicht
       zuverlässig". Im Englischen steht beide Male „scan".
    3. *Fachbegriffe nicht überdehnen* (siehe Ausnahmeliste oben).
+6. **Emojis sind erwünscht, wo sie Nutzen stiften** (Entscheidung Dietmar, 2026-07-23, gilt
+   verbundweit; ersetzt jede frühere „keine Emojis"-Regel). Zwei legitime Verwendungen:
+   (1) als **Panel-Icon** — ein Zeichen am Anfang einer ExpansionPanel-Überschrift
+   (📖 🔌 📊 🔎), Ersatz fürs fehlende `icon`-Feld; (2) als **Status-/Aufmerksamkeitssymbol**
+   (✅ ❌ ⚠️ 💡 ℹ️) dort, wo etwas beim Lesen Fokus braucht (Status, Warnungen, wichtige
+   Hinweise) — z. B. die ⚠️ Zwei-Regler-Warnung. Kein Symcon-Store-Review hat Emojis je
+   beanstandet. *Beobachtungsklausel:* bemängelt ein Stable-Review sie doch, entscheidet der
+   Verbund neu (Rückfall: gemeinsam emoji-frei).
 
 ## Eigenständigkeit prüfen: `.tools/check-standalone.php`
 
