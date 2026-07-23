@@ -4,6 +4,9 @@ IP-Symcon-Modul für Wallboxen (Ladestationen für Elektrofahrzeuge) verschieden
 per Modbus TCP — analog zu [InverterHub](https://github.com/DG65/InverterHub) (Wechselrichter)
 und [MeterHub](https://github.com/DG65/MeterHub) (Energiezähler).
 
+Teil der DG65 Energie-Suite — welche Modulstände zusammenpassen, listet
+[SUITE.md](https://github.com/DG65/EMS/blob/main/SUITE.md).
+
 **Status: Beta.** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
 Modbus-Dokumentationen der Hersteller, sind aber — mit Ausnahme von go-eCharger (siehe unten) —
 **noch nicht an echter Hardware verifiziert**. Rückmeldungen zu falschen/fehlenden Werten sind
@@ -54,6 +57,7 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (v1); je Ladepunkt 
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
+| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.0'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
 | `function` | string | `'charger'` |
 | `label` | string | Instanzname |
 | `powerID` | int | Variablen-ID Ladeleistung (W); 0 falls nicht verfügbar |

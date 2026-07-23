@@ -1291,6 +1291,10 @@ class ChargerHub extends IPSModule
         }
 
         return [[
+            // Vertragsversion Major.Minor (Verbund-Konvention, siehe SUITE.md
+            // im EMS-Repo). Konsumenten prüfen die Major; additive Felder
+            // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
+            'contractVersion'    => '1.0',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
