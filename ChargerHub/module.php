@@ -1199,6 +1199,13 @@ class ChargerHub extends IPSModule
         $this->RegisterAttributeString('SeenNews', '');
         $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
 
+        // TEMPORÄRE DIAGNOSE (Custom-Action-Bug): Testvariable ganz normal
+        // über RegisterVariableBoolean angelegt (statt unseres rohen
+        // IPS_CreateVariable-Wegs in RegisterVar/SetControlActions) — prüft,
+        // ob GENAU DAS der Unterschied ist. Wird nach Ursachenklärung wieder
+        // entfernt.
+        $this->RegisterVariableBoolean('DiagTestAction', '🧪 Diagnose Testaktion', '~Switch', 999);
+
         $this->RegisterPropertyBoolean('Active', true);
         $this->RegisterPropertyString('Manufacturer', 'keba');
         $this->RegisterPropertyString('Host', '');
@@ -1302,6 +1309,20 @@ class ChargerHub extends IPSModule
                     }
                 }
             }
+        }
+        // A/B-Test: dieselbe Aktion auf eine ganz normal per
+        // RegisterVariableBoolean() angelegte Variable (statt unseres rohen
+        // IPS_CreateVariable-Wegs) — Kontrollgruppe.
+        $diagVid = @$this->GetIDForIdent('DiagTestAction');
+        if ($diagVid) {
+            try {
+                IPS_SetVariableCustomAction($diagVid, $this->InstanceID);
+                $report[] = 'DiagTestAction(RegisterVariableBoolean)=OK(vid ' . $diagVid . ')';
+            } catch (Throwable $e) {
+                $report[] = 'DiagTestAction(RegisterVariableBoolean)=FEHLER: ' . $e->getMessage();
+            }
+        } else {
+            $report[] = 'DiagTestAction=NICHT GEFUNDEN';
         }
         IPS_LogMessage('ChargerHub-Diagnose', 'Instanz ' . $this->InstanceID . ': ' . implode(' | ', $report));
     }
@@ -1474,7 +1495,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.6-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.7-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

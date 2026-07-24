@@ -3,6 +3,17 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.7-beta.1] - 2026-07-24
+
+### Changed
+- **Diagnose erweitert (A/B-Test)**: Der "Skript #<InstanceID> existiert nicht"-Fehler tritt
+  laut Log auch über den `TimerPool`-Weg auf (nicht nur synchron aus `ApplyChanges()`) — die
+  Transaktions-Theorie aus 0.9.6 ist damit widerlegt. Neue temporäre Testvariable
+  `🧪 Diagnose Testaktion`, ganz normal über `RegisterVariableBoolean()` angelegt (statt
+  unseres bisherigen rohen `IPS_CreateVariable()`-Wegs für Steuer-Variablen), bekommt in
+  `SetControlActions()` versuchsweise ebenfalls eine Custom Action. Klärt, ob die
+  Anlage-Methode der Variable der Unterschied ist.
+
 ## [0.9.6-beta.1] - 2026-07-24
 
 ### Fixed
