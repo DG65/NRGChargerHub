@@ -139,11 +139,13 @@ Wer eine Modbus-Adressliste oder eine funktionierende Symcon-Vorlage hat: her da
 nicht — falsche Registeradressen liefern still falsche Werte, und bei einem Gerät, das 11 kW
 schaltet, ist das keine akademische Frage.
 
-## Die Modulfamilie
+## Die Modulfamilie: der NRG-Stack
 
-ChargerHub steht nicht allein. Über die Zeit ist ein ganzer Baukasten entstanden, dessen Teile
-zusammenarbeiten — aber **jedes Modul läuft auch für sich**. Es gibt keine Pflichtabhängigkeiten:
-Fehlt der Partner, fällt nur dessen Zusatzfunktion weg.
+ChargerHub steht nicht allein. Über die Zeit ist ein ganzer Baukasten entstanden — der
+**NRG-Stack** —, dessen Teile zusammenarbeiten, aber **jedes Modul läuft auch für sich**. Es gibt
+keine Pflichtabhängigkeiten: Fehlt der Partner, fällt nur dessen Zusatzfunktion weg. Welche
+Modulstände zusammen getestet sind, listet
+[SUITE.md](https://github.com/DG65/EMS/blob/main/SUITE.md).
 
 > **[hier `suite.png` einfügen]**
 

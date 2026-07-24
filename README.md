@@ -4,7 +4,7 @@ IP-Symcon-Modul für Wallboxen (Ladestationen für Elektrofahrzeuge) verschieden
 per Modbus TCP — analog zu [InverterHub](https://github.com/DG65/InverterHub) (Wechselrichter)
 und [MeterHub](https://github.com/DG65/MeterHub) (Energiezähler).
 
-Teil der DG65 Energie-Suite — welche Modulstände zusammenpassen, listet
+Teil des **NRG-Stack** — welche Modulstände zusammenpassen, listet
 [SUITE.md](https://github.com/DG65/EMS/blob/main/SUITE.md).
 
 **Status: Beta.** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
