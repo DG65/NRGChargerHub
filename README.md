@@ -19,7 +19,7 @@ willkommen — bitte mit Wallbox-Typ und betroffenem Register melden.
 | **KEBA KeContact P30/P40** | Ladestatus, Kabelstatus, Ladeleistung, Energie gesamt + akt. Sitzung, optional Strom/Spannung je Phase, Seriennummer/Firmware, Steuerung (Ladefreigabe, Stromlimit 6–63 A) | Holding-Register (FC 0x03) ab 1000, alle Werte U32 über 2 Register, Unit-ID standardmäßig 255. Gegen die evcc-Referenzimplementierung (an realer Hardware erprobt) abgeglichen. P40: Ladefreigabe läuft über das Stromlimit (5004), Register 5014 existiert dort nicht — noch nicht gesondert behandelt. |
 | **Alfen Eve Single/Double Pro-line, NG9xx** | Sockel-Status, Ladeleistung, angewandtes Stromlimit, optional Spannung/Strom je Phase, Steuerung (Ladefreigabe, Stromlimit) | Holding-Register (FC 0x03), Float32 Big-Endian. Nur Sockel 1 (Basisadresse ohne Offset) wird bedient. |
 | **Heidelberg Energy Control** | Ladestatus, Leistung, optional Strom/Spannung je Phase, PCB-Temperatur, Steuerung (Ladefreigabe, Stromlimit 6–32 A) | Holding-Register (FC 0x03), Unit-ID standardmäßig 1. |
-| **go-eCharger Gemini/HOME+** | Ladestatus, Ladeleistung, Energie akt. Sitzung/gesamt, optional Spannung/Strom/Leistung je Phase (+ N), genutzte Phasen nach Schütz, Kabel-Codierung, Adapter, RFID-Karte, Fehlercode, Seriennummer/Firmware; Steuerung: Ladefreigabe (FORCE_STATE), Stromlimit (AMPERE_VOLATILE 6–32 A), **Phasenumschaltung** (Auto/1-/3-phasig), Zugangskontrolle, Kabelverriegelung, Energie-Limit je Ladevorgang, LED-Helligkeit — Steuerwerte werden vom Gerät zurückgelesen | Gegen die offizielle Herstellerdoku ([go-eCharger-API-v2](https://github.com/goecharger/go-eCharger-API-v2), modbus-de.md) geprüft. FC 0x06 wird von go-e nicht unterstützt, Schreibzugriffe laufen über FC 0x16. Firmware 60.3 hatte einen dokumentierten Byte-Order-Bug (Schalter „Byte-Reihenfolge getauscht"), seit 60.4 behoben. **Modbus muss erst per App/HTTP-API aktiviert werden** (`men=true`) — sonst bleibt Port 502 geschlossen. ⚠️ **Zwei-Regler-Warnung:** Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), schließen sich EMS-Steuerung und Controller-Regelung gegenseitig aus — eins von beiden deaktivieren, oder in der Instanz „Ladepunkt wird bereits extern geregelt" setzen (wird als `externallyManaged` über `CHUB_GetFunctions` gemeldet, per Modbus ist der Lastmanagement-Status nicht auslesbar). |
+| **go-eCharger Gemini/HOME+** | Ladestatus, Ladeleistung, Energie akt. Sitzung/gesamt, optional Spannung/Strom/Leistung je Phase (+ N), genutzte Phasen nach Schütz, Kabel-Codierung, Adapter, RFID-Karte, Fehlercode, Seriennummer/Firmware; Steuerung: Ladefreigabe (FORCE_STATE), Stromlimit (AMPERE_VOLATILE 6–32 A), **Phasenumschaltung** (Auto/1-/3-phasig), Zugangskontrolle, Kabelverriegelung, Energie-Limit je Ladevorgang, LED-Helligkeit — Steuerwerte werden vom Gerät zurückgelesen | Gegen die offizielle Herstellerdoku ([go-eCharger-API-v2](https://github.com/goecharger/go-eCharger-API-v2), modbus-de.md) geprüft. FC 0x06 wird von go-e nicht unterstützt, Schreibzugriffe laufen über FC 0x16. Firmware 60.3 hatte einen dokumentierten Byte-Order-Bug (Schalter „Byte-Reihenfolge getauscht"), seit 60.4 behoben. **Modbus muss erst per App/HTTP-API aktiviert werden** (`men=true`) — sonst bleibt Port 502 geschlossen. ⚠️ **Zwei-Regler-Warnung:** Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), schließen sich EMS-Steuerung und Controller-Regelung gegenseitig aus — eins von beiden deaktivieren, oder in der Instanz beim Auswahlfeld „Wer regelt diesen Ladepunkt?" den go-e Controller wählen (wird als `managedBy`/`externallyManaged` über `CHUB_GetFunctions` gemeldet, per Modbus ist der Lastmanagement-Status nicht auslesbar). |
 
 Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Manager, Spalte
 „Beschreibung") — praktisch zum Abgleich mit dem Herstellerhandbuch.
@@ -53,11 +53,11 @@ MeterHubDiscovery.
 
 ChargerHub bietet analog zu `MHUB_GetFunctions` eine Funktion `CHUB_GetFunctions($id)` an, über
 die ein EMS oder eine Kachel Ladepunkte, Momentanleistung und Steuerungsmöglichkeiten abfragen
-kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (v1); je Ladepunkt ein Eintrag:
+kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.1); je Ladepunkt ein Eintrag:
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.0'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
+| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.1'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
 | `function` | string | `'charger'` |
 | `label` | string | Instanzname |
 | `powerID` | int | Variablen-ID Ladeleistung (W); 0 falls nicht verfügbar |
@@ -68,7 +68,10 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (v1); je Ladepunkt 
 | `plugStateID` | int | Variablen-ID „Fahrzeug verbunden" (Bool); 0 wenn die Wallbox es nicht liefert (z. B. Alfen) |
 | `minCurrent` | int | Wert (A): kleinster gültiger Ladestrom (6 A). Fällt das EMS-Budget darunter, pausiert es über `chargeEnableID` statt ein ungültiges Limit zu setzen |
 | `maxCurrent` | int | Wert (A): wirksame Obergrenze = min(Hardware-Limit des Herstellers, Property „Maximaler Anschlussstrom"). Jeder Schreibzugriff wird im Treiber zusätzlich hart darauf geklemmt |
-| `externallyManaged` | bool | `true` = ein externes Lastmanagement (z. B. go-e Controller) regelt diesen Ladepunkt bereits — EMS darf nur lesen, nie schreiben |
+| `managedBy` | string | Wer hat die Hoheit über den Ladepunkt: `none`, `ems`, `goe-controller`, `tibber`, `p14a`, `marketer`, `other`. Bei allem außer `none`/`ems` steuert das EMS **nicht** selbst; `tibber` gilt als harte Sperre (Regelenergie, Pönale-Risiko). In der Instanz als Auswahlfeld, je Hersteller passende Teilmenge (`goe-controller` nur beim go-eCharger) |
+| `externallyManaged` | bool | Abgeleitet aus `managedBy` (`true`, sobald ein anderer Regler als `none`/`ems` die Hoheit hat). Bleibt aus Kompatibilität zu Vertrag 1.0 erhalten |
+
+Vertragsversion (`contractVersion`): aktuell **`1.1`** (managedBy ergänzt; abwärtskompatibel zu 1.0).
 
 Siehe [CLAUDE.md](CLAUDE.md) für die Konventionen des Verbunds.
 
@@ -85,4 +88,4 @@ Kennzeichnung in der Instanz.
 
 ## Lizenz
 
-MIT, siehe [LICENSE](LICENSE).
+PolyForm Noncommercial 1.0.0 — privat/nicht-kommerziell frei, gewerbliche Nutzung lizenzpflichtig (Kontakt: DG65). Siehe [LICENSE](LICENSE).

@@ -1160,6 +1160,23 @@ class ChargerHub extends IPSModule
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
 
+    // Regler-Kennzeichnung (Verbund-Vokabular, mit EMS abgestimmt). Wer hat die
+    // Hoheit über diesen Ladepunkt? Wird als 'managedBy' im Vertrag gemeldet;
+    // bei allem außer 'none'/'ems' steuert das EMS NICHT selbst.
+    private const MANAGEDBY_ALL = ['none', 'ems', 'goe-controller', 'tibber', 'p14a', 'marketer', 'other'];
+    private const MANAGEDBY_LABELS = [
+        'none'           => 'Niemand — frei / manuell (Standard)',
+        'ems'            => 'Energiemanagement (EMS)',
+        'goe-controller' => 'go-e Controller (Überschussladen)',
+        'tibber'         => 'Tibber (Regelenergie / Grid Rewards)',
+        'p14a'           => '§14a-Steuerung (Netzbetreiber)',
+        'marketer'       => 'Direktvermarkter',
+        'other'          => 'Anderes externes Lastmanagement',
+    ];
+    // 'goe-controller' ist nur für den go-eCharger sinnvoll (der go-e Controller
+    // regelt nur go-e-Wallboxen). Andere Hersteller bekommen die Auswahl nicht.
+    private const MANAGEDBY_ONLY_GOE = ['goe-controller'];
+
     private $driver = null;
 
     public function Create()
@@ -1172,14 +1189,17 @@ class ChargerHub extends IPSModule
         $this->RegisterPropertyInteger('Port', 502);
         $this->RegisterPropertyInteger('UnitId', 255);
         $this->RegisterPropertyInteger('IntervalFast', 10);
-        // Zwei-Regler-Schutz: true, wenn ein externes Lastmanagement (z. B.
-        // go-e Controller) diesen Ladepunkt bereits selbst regelt. Per Modbus
-        // ist das nicht erkennbar (die Lastmanagement-Zustände loe/loa liegen
-        // nur in der HTTP/MQTT-API), daher manuelle Kennzeichnung. Wird über
-        // CHUB_GetFunctions als 'externallyManaged' gemeldet, damit das EMS
-        // solche Ladepunkte von der eigenen Steuerung ausnimmt — sonst
-        // überschreiben sich EMS und Controller gegenseitig (AMPERE_VOLATILE
-        // würde ständig zurückgesetzt).
+        // Zwei-Regler-Schutz: WER hat die Hoheit über diesen Ladepunkt?
+        // (Verbund-Vokabular, siehe MANAGEDBY_ALL). Per Modbus nicht erkennbar
+        // (die Lastmanagement-Zustände loe/loa liegen nur in der HTTP/MQTT-API),
+        // daher manuelle Auswahl. Wird über CHUB_GetFunctions als 'managedBy'
+        // gemeldet; bei allem außer 'none'/'ems' nimmt das EMS den Ladepunkt von
+        // der eigenen Steuerung aus, sonst überschreiben sich zwei Regler.
+        $this->RegisterPropertyString('ManagedBy', 'none');
+        // Alt-Property (bis 0.8.x): boolescher Schalter. Bleibt registriert,
+        // damit bestehende Instanzen nach dem Update nicht mit „Eigenschaft
+        // nicht gefunden" scheitern; wird als Rückfall gelesen (siehe
+        // GetManagedBy) und im Formular nicht mehr angezeigt.
         $this->RegisterPropertyBoolean('ExternallyManaged', false);
         // Maximaler Anschlussstrom (A) der Zuleitung/Absicherung dieses
         // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
@@ -1277,6 +1297,37 @@ class ChargerHub extends IPSModule
         return ($cfg >= self::MIN_CURRENT) ? min($hw, $cfg) : $hw;
     }
 
+    // Für diesen Hersteller zulässige managedBy-Werte (Teilmenge des Gesamt-
+    // Vokabulars): 'goe-controller' nur beim go-eCharger.
+    private function ManagedByAllowed(): array
+    {
+        $all = self::MANAGEDBY_ALL;
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe') {
+            $all = array_values(array_diff($all, self::MANAGEDBY_ONLY_GOE));
+        }
+        return $all;
+    }
+
+    // Aufgelöste Regler-Kennzeichnung. Rückfall auf die Alt-Property
+    // ExternallyManaged (bool) für Instanzen von vor 0.9.0. Ist der gespeicherte
+    // Wert für den aktuellen Hersteller nicht zulässig (z. B. 'goe-controller'
+    // nach Wechsel goe→keba), wird konservativ auf 'other' abgebildet — dann
+    // bleibt das EMS read-only, statt den Ladepunkt fälschlich zu übernehmen.
+    public function GetManagedBy(): string
+    {
+        $v = $this->ReadPropertyString('ManagedBy');
+        if ($v === 'none' && $this->ReadPropertyBoolean('ExternallyManaged')) {
+            $v = 'other'; // Migration: alter Haken „extern geregelt"
+        }
+        if (!in_array($v, self::MANAGEDBY_ALL, true)) {
+            $v = 'none';
+        }
+        if (!in_array($v, $this->ManagedByAllowed(), true)) {
+            $v = 'other';
+        }
+        return $v;
+    }
+
     public function GetFunctions(): array
     {
         $powerID = $this->FindVarByIdent('power');
@@ -1294,7 +1345,8 @@ class ChargerHub extends IPSModule
             // Vertragsversion Major.Minor (Verbund-Konvention, siehe SUITE.md
             // im EMS-Repo). Konsumenten prüfen die Major; additive Felder
             // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
-            'contractVersion'    => '1.0',
+            // 1.1: managedBy ergänzt.
+            'contractVersion'    => '1.1',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -1309,11 +1361,14 @@ class ChargerHub extends IPSModule
             // EMS; unter minCurrent pausiert das EMS über chargeEnableID.
             'minCurrent'         => self::MIN_CURRENT,
             'maxCurrent'         => $this->GetMaxCurrentA(),
-            // true = ein externes Lastmanagement (z. B. go-e Controller) regelt
-            // diesen Ladepunkt bereits — EMS soll ihn NICHT selbst steuern
-            // (Zwei-Regler-Konflikt). Manuell in der Instanz gekennzeichnet,
-            // da per Modbus nicht erkennbar.
-            'externallyManaged'  => $this->ReadPropertyBoolean('ExternallyManaged'),
+            // Wer hat die Hoheit über diesen Ladepunkt (Verbund-Vokabular):
+            // none/ems/goe-controller/tibber/p14a/marketer/other. Bei allem
+            // außer none/ems steuert das EMS NICHT selbst; 'tibber' ist eine
+            // harte Sperre (Regelenergie, Pönale-Risiko).
+            'managedBy'          => $this->GetManagedBy(),
+            // Kompatibilität (Vertrag 1.0): abgeleitet aus managedBy — true,
+            // sobald ein anderer Regler als none/ems die Hoheit hat.
+            'externallyManaged'  => !in_array($this->GetManagedBy(), ['none', 'ems'], true),
         ]];
     }
 
@@ -1364,16 +1419,22 @@ class ChargerHub extends IPSModule
                 'caption' => $group['caption'],
             ];
         }
-        // Zwei-Regler-Schutz (siehe Create): manuelle Kennzeichnung, wird über
-        // CHUB_GetFunctions als 'externallyManaged' gemeldet.
+        // Zwei-Regler-Schutz (siehe Create): Auswahlfeld „Wer regelt?", wird
+        // über CHUB_GetFunctions als 'managedBy' gemeldet. Nur die für den
+        // gewählten Hersteller sinnvollen Werte anbieten.
+        $managedByOptions = [];
+        foreach ($this->ManagedByAllowed() as $key) {
+            $managedByOptions[] = ['caption' => self::MANAGEDBY_LABELS[$key], 'value' => $key];
+        }
         $groupItems[] = [
-            'type'    => 'CheckBox',
-            'name'    => 'ExternallyManaged',
-            'caption' => 'Ladepunkt wird bereits extern geregelt (z. B. go-e Controller Lastmanagement) — von der EMS-Steuerung ausnehmen',
+            'type'    => 'Select',
+            'name'    => 'ManagedBy',
+            'caption' => 'Wer regelt diesen Ladepunkt?',
+            'options' => $managedByOptions,
         ];
         $groupItems[] = [
             'type'    => 'Label',
-            'caption' => '⚠️ Zwei-Regler-Warnung: Steuert ein go-e Controller (oder ein anderes Lastmanagement) diese Wallbox bereits selbst, dürfen EMS/Skripte hier nicht parallel Ladefreigabe/Stromlimit schreiben — beide Regler überschreiben sich sonst gegenseitig. Entweder das Lastmanagement am Controller deaktivieren ODER diese Kennzeichnung setzen.',
+            'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards oder eine §14a-Steuerung —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit.',
         ];
 
         $form = [

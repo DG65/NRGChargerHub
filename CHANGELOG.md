@@ -13,6 +13,20 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   `CHUB_GetFunctions`-Feldnamen bleiben unverändert (sind API).
 - CLAUDE.md: Sprachregel und der Grundsatz „Idents sind API" als Verbund-Regeln festgehalten.
 
+## [0.9.0-beta.1] - 2026-07-23
+
+### Changed
+- **Lizenz: MIT → PolyForm Noncommercial 1.0.0** (verbundweit, nur nach vorn wirkend;
+  ältere Versionen bleiben MIT).
+- **Regler-Kennzeichnung `managedBy`** (Vertrag `contractVersion` → **1.1**, additiv): Aus der
+  Checkbox „extern geregelt" wird ein Auswahlfeld „Wer regelt diesen Ladepunkt?" mit dem
+  Verbund-Vokabular `none`/`ems`/`goe-controller`/`tibber`/`p14a`/`marketer`/`other`. Je
+  Hersteller nur die passende Teilmenge (`goe-controller` nur beim go-eCharger). `managedBy`
+  kommt neu in `CHUB_GetFunctions`; `externallyManaged` bleibt und wird daraus abgeleitet
+  (true außer bei `none`/`ems`). Alt-Property `ExternallyManaged` wird als Migrationsrückfall
+  weitergelesen (alter Haken → `other`), ein für den Hersteller ungültiger gespeicherter Wert
+  wird konservativ auf `other` abgebildet (EMS bleibt dann read-only).
+
 ## [0.8.1-beta.1] - 2026-07-23
 
 ### Added

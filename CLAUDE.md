@@ -23,12 +23,13 @@ Sitzungen** gearbeitet:
    niemals voraussetzen oder danach suchen.
 3. **`*_GetFunctions`-Konvention** (Referenz: `MHUB_GetFunctions` in MeterHub) — eine Liste von
    Einträgen mit `function`/`label`/`powerID`/`energyImportID`/`energyExportID`/`measured`.
-   `CHUB_GetFunctions` ist **mit der EMS-Sitzung abgestimmt (v1, 2026-07-22)** und um die
-   Charger-spezifischen Felder erweitert: `chargeEnableID`/`currentLimitID` (Steuer-IDs, nur
-   fürs EMS — Anzeigemodule dürfen darüber nicht schalten), `plugStateID` (optional),
-   `minCurrent`/`maxCurrent` (Werte, keine IDs) und `externallyManaged` (bool; true = ein
-   externes Lastmanagement wie der go-e Controller regelt bereits, EMS liest dann nur).
-   Feldtabelle im README. Verträge werden dort konsumiert, wo aggregiert oder dargestellt
+   `CHUB_GetFunctions` ist **mit der EMS-Sitzung abgestimmt** und um die Charger-spezifischen
+   Felder erweitert: `chargeEnableID`/`currentLimitID` (Steuer-IDs, nur fürs EMS —
+   Anzeigemodule dürfen darüber nicht schalten), `plugStateID` (optional), `minCurrent`/
+   `maxCurrent` (Werte, keine IDs), `managedBy` (Regler-Hoheit: none/ems/goe-controller/
+   tibber/p14a/marketer/other; je Hersteller passende Teilmenge) und `externallyManaged`
+   (bool, aus managedBy abgeleitet — Kompatibilität zu Vertrag 1.0). Additiv versioniert über
+   `contractVersion` (aktuell '1.1'); Major nur bei Bruch. Feldtabelle im README. Verträge werden dort konsumiert, wo aggregiert oder dargestellt
    wird (EMS, Kachel, Sankey) — nie Mess-Hub zu Mess-Hub.
 4. **Ein veröffentlichter Vertrag wird nicht umbenannt.** Sobald ein Modul im Store ist, sind
    Feldnamen öffentliche API. Das gilt ausdrücklich auch für **Idents** (`ctl_*`,
