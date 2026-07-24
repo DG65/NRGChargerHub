@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.8-beta.1] - 2026-07-24
+
+### Changed
+- Diagnose-Experiment aus 0.9.7 zurückgebaut (Testvariable `DiagTestAction` samt A/B-Vergleich
+  entfernt) — die Objekt-ID-Änderung der Instanz zwischen zwei Tests stellte sich als manuelle
+  Neuanlage durch den Nutzer heraus, nicht als Nebeneffekt unseres Codes. `SetControlActions()`
+  bleibt auf dem einfachen Diagnose-Stand aus 0.9.6 (Log je Steuer-Ident), Ursache des
+  `IPS_SetVariableCustomAction`-Fehlers weiterhin offen.
+
 ## [0.9.7-beta.1] - 2026-07-24
 
 ### Changed

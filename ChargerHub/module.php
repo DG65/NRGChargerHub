@@ -1199,13 +1199,6 @@ class ChargerHub extends IPSModule
         $this->RegisterAttributeString('SeenNews', '');
         $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
 
-        // TEMPORÄRE DIAGNOSE (Custom-Action-Bug): Testvariable ganz normal
-        // über RegisterVariableBoolean angelegt (statt unseres rohen
-        // IPS_CreateVariable-Wegs in RegisterVar/SetControlActions) — prüft,
-        // ob GENAU DAS der Unterschied ist. Wird nach Ursachenklärung wieder
-        // entfernt.
-        $this->RegisterVariableBoolean('DiagTestAction', '🧪 Diagnose Testaktion', '~Switch', 999);
-
         $this->RegisterPropertyBoolean('Active', true);
         $this->RegisterPropertyString('Manufacturer', 'keba');
         $this->RegisterPropertyString('Host', '');
@@ -1271,14 +1264,8 @@ class ChargerHub extends IPSModule
     }
 
     // Wird 200 ms nach ApplyChanges einmalig aufgerufen (Muster wie
-    // InverterHub). WICHTIG, real bestätigt (live getestet 2026-07-24):
-    // IPS_SetVariableCustomAction($vid, $this->InstanceID) schlägt mit
-    // "Skript #<InstanceID> existiert nicht" fehl, wenn es SYNCHRON aus der
-    // eigenen laufenden ApplyChanges()-Transaktion heraus aufgerufen wird —
-    // nicht nur bei der Instanz-Erstellung, sondern bei JEDEM "Übernehmen".
-    // Ein vorheriger Versuch, das zusätzlich synchron in ApplyChanges() zu
-    // erledigen, wurde deshalb wieder entfernt — ausschließlich über diesen
-    // Timer aufrufen, nie synchron aus ApplyChanges() heraus.
+    // InverterHub) — setzt die Custom Action, die Ladefreigabe/Stromlimit
+    // etc. in der Konsole bedienbar macht.
     public function EnableActions()
     {
         $this->SetTimerInterval('EnableActionsTimer', 0);
@@ -1309,20 +1296,6 @@ class ChargerHub extends IPSModule
                     }
                 }
             }
-        }
-        // A/B-Test: dieselbe Aktion auf eine ganz normal per
-        // RegisterVariableBoolean() angelegte Variable (statt unseres rohen
-        // IPS_CreateVariable-Wegs) — Kontrollgruppe.
-        $diagVid = @$this->GetIDForIdent('DiagTestAction');
-        if ($diagVid) {
-            try {
-                IPS_SetVariableCustomAction($diagVid, $this->InstanceID);
-                $report[] = 'DiagTestAction(RegisterVariableBoolean)=OK(vid ' . $diagVid . ')';
-            } catch (Throwable $e) {
-                $report[] = 'DiagTestAction(RegisterVariableBoolean)=FEHLER: ' . $e->getMessage();
-            }
-        } else {
-            $report[] = 'DiagTestAction=NICHT GEFUNDEN';
         }
         IPS_LogMessage('ChargerHub-Diagnose', 'Instanz ' . $this->InstanceID . ': ' . implode(' | ', $report));
     }
@@ -1495,7 +1468,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.7-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.8-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
