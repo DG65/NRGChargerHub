@@ -88,6 +88,17 @@ Sitzungen** gearbeitet:
    Modul-Präfix. **Kein Eigentümer-Modul:** `IPS_VariableProfileExists('NRG.Watt')` prüfen, nur
    bei Fehlen anlegen — wer zuerst startet, erzeugt es; ein bereits vorhandenes `NRG.*`-Profil
    wird nie überschrieben (sonst überschrieben sich mehrere Module gegenseitig die Definition).
+9. **Einheitliche Formular-Optik** (Dietmar, 2026-07-24, gilt verbundweit, Details in
+   EMS/SUITE.md, Referenzimplementierung InverterHub). Reihenfolge von oben:
+   (1) „🆕 Neu in Version X.Y" — aufgeklappt, je Version einmalig ausblendbar (Attribut
+   speichert die zuletzt bestätigte Version, erscheint bei neuer Version automatisch wieder),
+   keine Versionsnummer in diesem Panel selbst. (2) „📖 Dokumentation & Hilfe" — eingeklappt,
+   hier gehört die Versionsnummer rein. (3) Fachpanels, neue/wichtige Felder mit `🆕`-Präfix im
+   Label (nach ein paar Versionen wieder entfernen). (4) Symcon-Forum-Hinweis nach den
+   Haupteinstellungen, einmalig ausblendbar (nicht versionsscharf). Muster: `UpdateFormField`
+   + Attribut fürs Ausblenden, nie `IPS_SetProperty`+`ApplyChanges`. Bei ChargerHub zeigt der
+   Forum-Hinweis vorerst auf GitHub statt auf einen Forum-Link, da der Beitrag noch nicht
+   veröffentlicht ist (Entwurf in `.forum/`).
 
 ## Eigenständigkeit prüfen: `.tools/check-standalone.php`
 

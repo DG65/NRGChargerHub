@@ -3,6 +3,17 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.2-beta.1] - 2026-07-24
+
+### Added
+- **Einheitliche Formular-Optik** (Verbund-Konvention, SUITE.md, Referenz InverterHub):
+  „🆕 Neu in Version …"-Banner (aufgeklappt, je Version einmalig ausblendbar über ein
+  Attribut, erscheint bei neuer Version automatisch wieder), Versionsnummer im
+  „📖 Dokumentation & Hilfe"-Panel, `🆕`-Präfix am neuen Auswahlfeld „Wer regelt diesen
+  Ladepunkt?", sowie ein einmalig ausblendbarer Rückmeldungs-Hinweis nach den
+  Haupteinstellungen (noch ohne Forum-Link, da noch nicht gepostet — verweist vorerst auf
+  GitHub). Muster: `UpdateFormField` + Attribut, nie `IPS_SetProperty`+`ApplyChanges`.
+
 ## [0.8.1-beta.1] - 2026-07-22
 
 ### Changed

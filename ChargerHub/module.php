@@ -1143,6 +1143,19 @@ class GoeChargerDriver implements ChargerDriverInterface
 
 class ChargerHub extends IPSModule
 {
+    private const ATTR_REVIEW_HINT_GONE = 'ReviewHintDismissed';
+
+    // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
+    // für die Formular-Optik (SUITE.md, Referenz InverterHub).
+    private const NEWS_VERSION = '0.9.2';
+    private const NEWS_ITEMS = [
+        'Neues Auswahlfeld „Wer regelt diesen Ladepunkt?" ersetzt die alte Checkbox „extern geregelt" — bitte einmal prüfen und den passenden Regler eintragen (z. B. go-e Controller, Tibber).',
+        'go-eCharger: viele neue Steuerungsmöglichkeiten (Phasenumschaltung, Zugangskontrolle, Kabelverriegelung, Energielimit je Ladevorgang, LED-Helligkeit) sowie mehr Statuswerte (Leistung je Phase, genutzte Phasen, Adapter, RFID-Karte).',
+        'KEBA-Registerkarte korrigiert (war fehlerhaft) — bitte Werte an echter Hardware neu prüfen.',
+        'Neue Property „Maximaler Anschlussstrom" — harte Grenze für jeden Schreibvorgang, unabhängig vom anfragenden Regler.',
+        'Gemeinsame Variablenprofile (NRG.Watt, NRG.kWh, NRG.Ampere, NRG.Volt, NRG.Celsius) statt eigener CHB.*-Profile — eine selbst gewählte „Wertanzeige" bitte einmal prüfen.',
+    ];
+
     private const DRIVERS = [
         'keba'       => 'KebaDriver',
         'alfen'      => 'AlfenDriver',
@@ -1182,6 +1195,9 @@ class ChargerHub extends IPSModule
     public function Create()
     {
         parent::Create();
+
+        $this->RegisterAttributeString('SeenNews', '');
+        $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
 
         $this->RegisterPropertyBoolean('Active', true);
         $this->RegisterPropertyString('Manufacturer', 'keba');
@@ -1429,7 +1445,7 @@ class ChargerHub extends IPSModule
         $groupItems[] = [
             'type'    => 'Select',
             'name'    => 'ManagedBy',
-            'caption' => 'Wer regelt diesen Ladepunkt?',
+            'caption' => '🆕 Wer regelt diesen Ladepunkt?',
             'options' => $managedByOptions,
         ];
         $groupItems[] = [
@@ -1441,7 +1457,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.2-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1501,7 +1517,55 @@ class ChargerHub extends IPSModule
             ],
         ];
 
+        // Symcon-Forum-Hinweis nach den Haupteinstellungen, einmalig
+        // ausblendbar (nicht versionsscharf) — noch kein Beitrag online,
+        // daher vorerst Verweis auf die GitHub-Rückmeldungen statt Link.
+        if (!$this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE)) {
+            $form['elements'][] = [
+                'type' => 'RowLayout',
+                'name' => 'ReviewHint',
+                'items' => [
+                    ['type' => 'Label', 'caption' => '🧪 ChargerHub ist Beta — Rückmeldungen sind willkommen, bitte über die GitHub-Seite (github.com/DG65/ChargerHub) oder demnächst im Symcon-Forum:'],
+                    ['type' => 'Button', 'caption' => 'Nicht mehr anzeigen', 'onClick' => 'CHUB_DismissReviewHint($id);'],
+                ],
+            ];
+        }
+
+        // „Was ist neu"-Banner nach einem Update ganz oben.
+        $banner = $this->newsBanner();
+        if ($banner !== null) {
+            array_unshift($form['elements'], $banner);
+        }
+
         return json_encode($form);
+    }
+
+    // „Was ist neu"-Banner: erscheint nach einem Update (Attribut startet
+    // leer), bis der Nutzer „Verstanden" klickt. Neuinstallation sieht es
+    // einmalig.
+    private function newsBanner()
+    {
+        if ($this->ReadAttributeString('SeenNews') === self::NEWS_VERSION) {
+            return null;
+        }
+        $items = [['type' => 'Label', 'caption' => '🆕 Neu in diesem Modul — bitte kurz ansehen und ggf. die Einstellungen prüfen:']];
+        foreach (self::NEWS_ITEMS as $line) {
+            $items[] = ['type' => 'Label', 'caption' => '• ' . $line];
+        }
+        $items[] = ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUB_AckNews($id);'];
+        return ['type' => 'ExpansionPanel', 'name' => 'NewsPanel', 'caption' => '🆕 Neu in Version ' . self::NEWS_VERSION, 'expanded' => true, 'items' => $items];
+    }
+
+    public function AckNews()
+    {
+        $this->WriteAttributeString('SeenNews', self::NEWS_VERSION);
+        $this->UpdateFormField('NewsPanel', 'visible', false);
+    }
+
+    public function DismissReviewHint()
+    {
+        $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
+        $this->UpdateFormField('ReviewHint', 'visible', false);
     }
 
     // -----------------------------------------------------------------------
