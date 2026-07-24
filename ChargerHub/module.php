@@ -1437,27 +1437,20 @@ class ChargerHub extends IPSModule
         }
         // Zwei-Regler-Schutz (siehe Create): Auswahlfeld „Wer regelt?", wird
         // über CHUB_GetFunctions als 'managedBy' gemeldet. Nur die für den
-        // gewählten Hersteller sinnvollen Werte anbieten.
+        // gewählten Hersteller sinnvollen Werte anbieten. Eigenes Panel
+        // "Steuerungshoheit & Sicherheit" zusammen mit MaxCurrent (siehe
+        // unten) — beides Steuer-/Sicherheitsfelder, gehört weder zu
+        // "Verbindung" noch zu "Datenpunkte" (Layout-Konvention Verbund).
         $managedByOptions = [];
         foreach ($this->ManagedByAllowed() as $key) {
             $managedByOptions[] = ['caption' => self::MANAGEDBY_LABELS[$key], 'value' => $key];
         }
-        $groupItems[] = [
-            'type'    => 'Select',
-            'name'    => 'ManagedBy',
-            'caption' => '🆕 Wer regelt diesen Ladepunkt?',
-            'options' => $managedByOptions,
-        ];
-        $groupItems[] = [
-            'type'    => 'Label',
-            'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards oder eine §14a-Steuerung —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit.',
-        ];
 
         $form = [
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.2-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.3-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1465,7 +1458,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• KEBA KeContact P30/P40: Standard-Unit-ID 255, Port 502.'],
                         ['type' => 'Label', 'caption' => '• Alfen Eve Single/Double Pro-line: Standard-Unit-ID 1, Port 502. Nur Sockel 1 wird bedient.'],
                         ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
-                        ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Datenpunkte".'],
+                        ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
                     ],
                 ],
                 ['type' => 'CheckBox', 'name' => 'Active', 'caption' => 'Kommunikation aktiv'],
@@ -1488,8 +1481,6 @@ class ChargerHub extends IPSModule
                         ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
                         ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535],
                         ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247],
-                        ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A) — Zuleitung/Absicherung dieses Ladepunkts', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
-                        ['type' => 'Label', 'caption' => 'Harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox) — unabhängig davon, was ein EMS anfordert.'],
                     ],
                 ],
                 [
@@ -1498,6 +1489,17 @@ class ChargerHub extends IPSModule
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'NumberSpinner', 'name' => 'IntervalFast', 'caption' => 'Lese-Intervall (Sekunden)', 'minimum' => 5, 'maximum' => 300, 'suffix' => 's'],
+                    ],
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🛡️  Steuerungshoheit & Sicherheit',
+                    'expanded' => true,
+                    'items'    => [
+                        ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Wer regelt diesen Ladepunkt?', 'options' => $managedByOptions],
+                        ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards oder eine §14a-Steuerung —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit.'],
+                        ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
+                        ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
                     ],
                 ],
                 [

@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.3-beta.1] - 2026-07-24
+
+### Changed
+- **Layout-Nachbesserung** (Verbund-Konvention „logische Gruppierung", Pflicht-Prüfung bei
+  jedem Fix): `ManagedBy` (Regler-Hoheit) und `MaxCurrent` (Anschlussstrom) waren
+  sachfremd verstreut — `MaxCurrent` unter „Verbindung", `ManagedBy` unter „Datenpunkte".
+  Beides sind Steuer-/Sicherheitsfelder, jetzt gemeinsam im neuen Panel
+  „🛡️ Steuerungshoheit & Sicherheit" zwischen Polling und Datenpunkte.
+
 ## [0.9.2-beta.1] - 2026-07-24
 
 ### Added
