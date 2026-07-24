@@ -3,6 +3,21 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.6-beta.1] - 2026-07-24
+
+### Fixed
+- **Ursache des "Ladefreigabe/Stromlimit nicht bedienbar"-Bugs live bestätigt und behoben.**
+  Der in 0.9.4 ergänzte synchrone `SetControlActions()`-Aufruf am Ende von `ApplyChanges()`
+  war der eigentliche Fehler: `IPS_SetVariableCustomAction($vid, $this->InstanceID)`,
+  aus der EIGENEN laufenden `ApplyChanges()`-Transaktion heraus aufgerufen, schlägt mit
+  `Warning: Skript #<InstanceID> existiert nicht` fehl (live reproduziert — Symcon
+  behandelt die eigene Instanz während der eigenen Transaktion als ungültiges Aktionsziel,
+  nicht nur bei der Instanz-Erstellung, sondern bei jedem "Übernehmen"). Der synchrone
+  Aufruf ist wieder entfernt; einziger Weg ist jetzt wie ursprünglich vorgesehen der
+  200-ms-`EnableActionsTimer`, der außerhalb der Transaktion feuert.
+- Diagnose-Log (`IPS_LogMessage('ChargerHub-Diagnose', …)`) bleibt vorerst zur Bestätigung
+  bestehen, dass der Timer-Weg jetzt fehlerfrei durchläuft.
+
 ## [0.9.4-beta.1] - 2026-07-24
 
 ### Fixed
