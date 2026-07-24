@@ -1283,16 +1283,29 @@ class ChargerHub extends IPSModule
     private function SetControlActions()
     {
         $driver = $this->GetDriver();
+        // TEMPORÄRE DIAGNOSE (Live-Test Ladefreigabe/Stromlimit nicht
+        // schaltbar): protokolliert je Steuer-Ident, ob die Variable
+        // gefunden wurde und ob IPS_SetVariableCustomAction einen Fehler
+        // wirft — wird wieder entfernt, sobald die Ursache feststeht.
+        $report = [];
         foreach ($driver->getOptionalGroups() as $group) {
             foreach ($group['vars'] as $v) {
                 if ($v[5] === 'control') {
                     $vid = $this->FindVarByIdent($v[0]);
-                    if ($vid) {
-                        @IPS_SetVariableCustomAction($vid, $this->InstanceID);
+                    if (!$vid) {
+                        $report[] = $v[0] . '=NICHT GEFUNDEN';
+                        continue;
+                    }
+                    try {
+                        IPS_SetVariableCustomAction($vid, $this->InstanceID);
+                        $report[] = $v[0] . '=OK(vid ' . $vid . ')';
+                    } catch (Throwable $e) {
+                        $report[] = $v[0] . '=FEHLER: ' . $e->getMessage();
                     }
                 }
             }
         }
+        IPS_LogMessage('ChargerHub-Diagnose', 'Instanz ' . $this->InstanceID . ': ' . implode(' | ', $report));
     }
 
     public function Update()
@@ -1463,7 +1476,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.4-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.5-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
