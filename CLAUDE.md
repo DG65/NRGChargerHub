@@ -31,6 +31,12 @@ Sitzungen** gearbeitet:
    (bool, aus managedBy abgeleitet — Kompatibilität zu Vertrag 1.0). Additiv versioniert über
    `contractVersion` (aktuell '1.1'); Major nur bei Bruch. Feldtabelle im README. Verträge werden dort konsumiert, wo aggregiert oder dargestellt
    wird (EMS, Kachel, Sankey) — nie Mess-Hub zu Mess-Hub.
+   **Situation A vs. B** (EMS-Prioritätshierarchie, Dietmar, 2026-07-24): `managedBy: ems`
+   (und die interne EMS-Optimierung/§14a/Direktvermarktung) ist Situation A — das EMS besitzt
+   den Schreibkanal und ordnet intern Prioritäten. `managedBy` in `goe-controller`/`tibber`/…
+   ist Situation B — ein externer Akteur besitzt den Schreibkanal komplett außerhalb des EMS;
+   das EMS kann das nur erkennen und zurückweichen, nie übersteuern. Kein Abfangen/Nachahmen
+   fremder Hersteller-Protokolle (MITM/Impersonation) — nur offizielle dokumentierte APIs.
 4. **Ein veröffentlichter Vertrag wird nicht umbenannt.** Sobald ein Modul im Store ist, sind
    Feldnamen öffentliche API. Das gilt ausdrücklich auch für **Idents** (`ctl_*`,
    `energy_total`, `vehicle_plugged` …) — Idents sind API und werden nie umbenannt.
