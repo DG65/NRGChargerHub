@@ -3,6 +3,20 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.4-beta.1] - 2026-07-24
+
+### Fixed
+- **Steuer-Variablen (Ladefreigabe, Stromlimit, Phasenumschaltung, …) blieben nicht
+  bedienbar** — echter Fund aus dem Live-Test: `IPS_SetVariableCustomAction` lief bislang
+  nur über einen 200-ms-Timer nach `ApplyChanges`, der bei bestehenden Instanzen (nach
+  einem Modul-Update, ohne dass "Übernehmen" die Timing-Kette erneut anstößt) nicht
+  zuverlässig griff — die Variablen blieben reine Anzeige (kein fett dargestelltes
+  Bedienelement in der Konsole), Schreibversuche liefen ins Leere. Jetzt zusätzlich
+  **synchron am Ende von `ApplyChanges()`** versucht (`SetControlActions()`, mit `@`
+  gegen die bekannte Erstellungs-Transaktions-Race abgesichert); der Timer bleibt als
+  Rückfallebene für die Instanz-Neuanlage bestehen. **Bestehende Instanzen brauchen nach
+  dem Update einmal "Übernehmen".**
+
 ## [0.9.3-beta.1] - 2026-07-24
 
 ### Changed

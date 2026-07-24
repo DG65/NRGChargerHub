@@ -1261,21 +1261,34 @@ class ChargerHub extends IPSModule
         $this->SetTimerInterval('FastTimer', $this->ReadPropertyInteger('IntervalFast') * 1000);
         $this->SetTimerInterval('EnableActionsTimer', 200);
         $this->SetStatus(102);
+
+        // Synchron versuchen (deckt jedes "Übernehmen" nach der Erstellung ab
+        // — dort existiert die Instanz längst, die Transaktion aus der
+        // Erstellung ist vorbei). @-unterdrückt: schlägt es dennoch fehl
+        // (z. B. weil "Übernehmen" Teil eines Konfigurator-Erstellungslaufs
+        // ist), bleibt der Timer als Rückfallebene 200 ms später scharf.
+        $this->SetControlActions();
     }
 
     // Wird kurz nach ApplyChanges einmalig aufgerufen, sobald die Instanz die
-    // Erstellungstransaktion sicher verlassen hat (Muster wie InverterHub).
+    // Erstellungstransaktion sicher verlassen hat (Muster wie InverterHub) —
+    // Rückfallebene, falls der synchrone Versuch in ApplyChanges() an der
+    // Erstellungstransaktion gescheitert ist.
     public function EnableActions()
     {
         $this->SetTimerInterval('EnableActionsTimer', 0);
+        $this->SetControlActions();
+    }
 
+    private function SetControlActions()
+    {
         $driver = $this->GetDriver();
         foreach ($driver->getOptionalGroups() as $group) {
             foreach ($group['vars'] as $v) {
                 if ($v[5] === 'control') {
                     $vid = $this->FindVarByIdent($v[0]);
                     if ($vid) {
-                        IPS_SetVariableCustomAction($vid, $this->InstanceID);
+                        @IPS_SetVariableCustomAction($vid, $this->InstanceID);
                     }
                 }
             }
@@ -1450,7 +1463,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.3-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.4-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
