@@ -62,6 +62,16 @@ Sitzungen** gearbeitet:
    Hinweise) — z. B. die ⚠️ Zwei-Regler-Warnung. Kein Symcon-Store-Review hat Emojis je
    beanstandet. *Beobachtungsklausel:* bemängelt ein Stable-Review sie doch, entscheidet der
    Verbund neu (Rückfall: gemeinsam emoji-frei).
+7. **Zugangsdaten-Konvention** (Dietmar, 2026-07-23, gilt für jedes Modul mit Cloud-/API-Zugang
+   — für ChargerHub aktuell nicht anwendbar, da reines Modbus TCP ohne Zugangsdaten; relevant
+   erst für einen künftigen go-e-HTTP-Nebenkanal, siehe README-Abschnitt „go-e Eco-Modus"):
+   Handshake-/Token-Verfahren bevorzugen (OAuth o. ä.) — ein Passwort dient dann nur dem
+   einmaligen Handshake und wird danach NICHT gespeichert, nur das Token/Secret bleibt liegen.
+   Passwörter nur dauerhaft speichern, wenn wirklich wiederholt gebraucht. Speicherort
+   `RegisterAttributeString` (nicht Property — nicht im Formular sichtbar). IP-Symcon
+   verschlüsselt nicht at rest — „sicher" heißt hier „nicht im Formular/Log/Anzeigetext
+   sichtbar", nicht „verschlüsselt". Formulareingabe über `PasswordTextBox`, Wert nach dem
+   Handshake sofort leeren.
 
 ## Eigenständigkeit prüfen: `.tools/check-standalone.php`
 
