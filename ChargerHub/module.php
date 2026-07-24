@@ -343,8 +343,8 @@ class KebaDriver implements ChargerDriverInterface
             ['state',          'Ladestatus',            'I', 'CHB.KebaState',   true,  'device', 'Holding 1000-1001 (U32)'],
             ['cable_state',    'Kabelstatus',           'I', 'CHB.KebaCable',   false, 'device', 'Holding 1004-1005 (U32)'],
             ['vehicle_plugged','Fahrzeug verbunden',    'B', '~Switch',         false, 'device', 'abgeleitet: Kabelstatus >= 5'],
-            ['power',          'Ladeleistung',          'F', 'CHB.Watt',        true,  'device', 'Holding 1020-1021 (mW)'],
-            ['energy_total',   'Energie gesamt',        'F', 'CHB.kWh',         true,  'device', 'Holding 1036-1037 (0,1 Wh)'],
+            ['power',          'Ladeleistung',          'F', 'NRG.Watt',        true,  'device', 'Holding 1020-1021 (mW)'],
+            ['energy_total',   'Energie gesamt',        'F', 'NRG.kWh',         true,  'device', 'Holding 1036-1037 (0,1 Wh)'],
             ['energy_session', 'Energie akt. Sitzung',  'F', 'CHB.kWhSession',  true,  'device', 'Holding 1502-1503 (0,1 Wh)'],
         ];
     }
@@ -353,12 +353,12 @@ class KebaDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Strom/Spannung je Phase', 'vars' => [
-                ['current_l1', 'Strom L1',    'F', 'CHB.Ampere', false, 'phases', 'Holding 1008-1009 (mA)'],
-                ['current_l2', 'Strom L2',    'F', 'CHB.Ampere', false, 'phases', 'Holding 1010-1011 (mA)'],
-                ['current_l3', 'Strom L3',    'F', 'CHB.Ampere', false, 'phases', 'Holding 1012-1013 (mA)'],
-                ['voltage_l1', 'Spannung L1', 'F', 'CHB.Volt',   false, 'phases', 'Holding 1040-1041 (V)'],
-                ['voltage_l2', 'Spannung L2', 'F', 'CHB.Volt',   false, 'phases', 'Holding 1042-1043 (V)'],
-                ['voltage_l3', 'Spannung L3', 'F', 'CHB.Volt',   false, 'phases', 'Holding 1044-1045 (V)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', false, 'phases', 'Holding 1008-1009 (mA)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', false, 'phases', 'Holding 1010-1011 (mA)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', false, 'phases', 'Holding 1012-1013 (mA)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   false, 'phases', 'Holding 1040-1041 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   false, 'phases', 'Holding 1042-1043 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   false, 'phases', 'Holding 1044-1045 (V)'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
                 ['dev_serial',   'Seriennummer',     'S', '', false, 'device', 'Holding 1014-1015 (U32)'],
@@ -374,14 +374,14 @@ class KebaDriver implements ChargerDriverInterface
     public function getProfiles()
     {
         return [
-            'CHB.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
-            'CHB.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
             // Eigenes Suffix, damit die MeterHub-Zählersuche (matcht auf
             // normalisiertes Suffix "kwh") den Sitzungswert NICHT als
             // Energiezähler aufnimmt — der springt je Ladevorgang zurück.
             'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
-            'CHB.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
-            'CHB.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
             'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
         ];
     }
@@ -514,8 +514,8 @@ class AlfenDriver implements ChargerDriverInterface
         return [
             ['connected',   'Verbindung',        'B', '~Alert.Reversed', false, 'errors', ''],
             ['state',       'Sockel-Status',      'I', 'CHB.AlfenAvail',  true,  'device', 'Holding 1200'],
-            ['power',       'Ladeleistung',       'F', 'CHB.Watt',        true,  'device', 'Holding 344'],
-            ['actual_curr', 'Angewandtes Limit',  'F', 'CHB.Ampere',      false, 'device', 'Holding 1206'],
+            ['power',       'Ladeleistung',       'F', 'NRG.Watt',        true,  'device', 'Holding 344'],
+            ['actual_curr', 'Angewandtes Limit',  'F', 'NRG.Ampere',      false, 'device', 'Holding 1206'],
         ];
     }
 
@@ -523,16 +523,16 @@ class AlfenDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
-                ['voltage_l1', 'Spannung L1', 'F', 'CHB.Volt',   false, 'phases', 'Holding 308'],
-                ['voltage_l2', 'Spannung L2', 'F', 'CHB.Volt',   false, 'phases', 'Holding 310'],
-                ['voltage_l3', 'Spannung L3', 'F', 'CHB.Volt',   false, 'phases', 'Holding 312'],
-                ['current_l1', 'Strom L1',    'F', 'CHB.Ampere', false, 'phases', 'Holding 322'],
-                ['current_l2', 'Strom L2',    'F', 'CHB.Ampere', false, 'phases', 'Holding 324'],
-                ['current_l3', 'Strom L3',    'F', 'CHB.Ampere', false, 'phases', 'Holding 326'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   false, 'phases', 'Holding 308'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   false, 'phases', 'Holding 310'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   false, 'phases', 'Holding 312'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', false, 'phases', 'Holding 322'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', false, 'phases', 'Holding 324'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', false, 'phases', 'Holding 326'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
                 ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',    false, 'control', 'RW Holding 1210/1214'],
-                ['ctl_curr_limit', 'Stromlimit (A)', 'F', 'CHB.Ampere', false, 'control', 'RW Holding 1210'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'F', 'NRG.Ampere', false, 'control', 'RW Holding 1210'],
             ]],
         ];
     }
@@ -540,9 +540,9 @@ class AlfenDriver implements ChargerDriverInterface
     public function getProfiles()
     {
         return [
-            'CHB.Watt'   => [VARIABLETYPE_FLOAT, ' W', 0.0, 22000.0, 1.0, 0],
-            'CHB.Volt'   => [VARIABLETYPE_FLOAT, ' V', 0.0, 260.0, 0.1, 1],
-            'CHB.Ampere' => [VARIABLETYPE_FLOAT, ' A', 0.0, 80.0, 0.1, 1],
+            'NRG.Watt'   => [VARIABLETYPE_FLOAT, ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.Volt'   => [VARIABLETYPE_FLOAT, ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere' => [VARIABLETYPE_FLOAT, ' A', 0.0, 80.0, 0.1, 1],
         ];
     }
 
@@ -648,7 +648,7 @@ class HeidelbergDriver implements ChargerDriverInterface
             ['connected', 'Verbindung',  'B', '~Alert.Reversed', false, 'errors', ''],
             ['state',     'Ladestatus',  'I', 'CHB.HdbState',    true,  'device', 'Holding 5'],
             ['vehicle_plugged', 'Fahrzeug verbunden', 'B', '~Switch', false, 'device', 'abgeleitet: Status 3-8 (ohne 6)'],
-            ['power',     'Leistung',    'F', 'CHB.Watt',        true,  'device', 'Holding 14'],
+            ['power',     'Leistung',    'F', 'NRG.Watt',        true,  'device', 'Holding 14'],
         ];
     }
 
@@ -656,13 +656,13 @@ class HeidelbergDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Spannung/Strom je Phase + Temperatur', 'vars' => [
-                ['current_l1', 'Strom L1',      'F', 'CHB.Ampere', false, 'phases', 'Holding 6'],
-                ['current_l2', 'Strom L2',      'F', 'CHB.Ampere', false, 'phases', 'Holding 7'],
-                ['current_l3', 'Strom L3',      'F', 'CHB.Ampere', false, 'phases', 'Holding 8'],
-                ['voltage_l1', 'Spannung L1',   'F', 'CHB.Volt',   false, 'phases', 'Holding 10'],
-                ['voltage_l2', 'Spannung L2',   'F', 'CHB.Volt',   false, 'phases', 'Holding 11'],
-                ['voltage_l3', 'Spannung L3',   'F', 'CHB.Volt',   false, 'phases', 'Holding 12'],
-                ['pcb_temp',   'PCB-Temperatur','F', 'CHB.Celsius',false, 'device', 'Holding 9'],
+                ['current_l1', 'Strom L1',      'F', 'NRG.Ampere', false, 'phases', 'Holding 6'],
+                ['current_l2', 'Strom L2',      'F', 'NRG.Ampere', false, 'phases', 'Holding 7'],
+                ['current_l3', 'Strom L3',      'F', 'NRG.Ampere', false, 'phases', 'Holding 8'],
+                ['voltage_l1', 'Spannung L1',   'F', 'NRG.Volt',   false, 'phases', 'Holding 10'],
+                ['voltage_l2', 'Spannung L2',   'F', 'NRG.Volt',   false, 'phases', 'Holding 11'],
+                ['voltage_l3', 'Spannung L3',   'F', 'NRG.Volt',   false, 'phases', 'Holding 12'],
+                ['pcb_temp',   'PCB-Temperatur','F', 'NRG.Celsius',false, 'device', 'Holding 9'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
                 ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',   false, 'control', 'RW Holding 261'],
@@ -674,10 +674,10 @@ class HeidelbergDriver implements ChargerDriverInterface
     public function getProfiles()
     {
         return [
-            'CHB.Watt'          => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
-            'CHB.Volt'          => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
-            'CHB.Ampere'        => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
-            'CHB.Celsius'       => [VARIABLETYPE_FLOAT,   ' °C', -20.0, 100.0, 0.1, 1],
+            'NRG.Watt'          => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.Volt'          => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'        => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'NRG.Celsius'       => [VARIABLETYPE_FLOAT,   ' °C', -20.0, 100.0, 0.1, 1],
             'CHB.Ampere6to32'   => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
         ];
     }
@@ -851,7 +851,7 @@ class GoeChargerDriver implements ChargerDriverInterface
             ['connected',      'Verbindung',            'B', '~Alert.Reversed', false, 'errors', ''],
             ['state',          'Ladestatus',             'I', 'CHB.GoeCarState', true,  'device', 'Input 100'],
             ['vehicle_plugged','Fahrzeug verbunden',     'B', '~Switch',         false, 'device', 'abgeleitet: CAR_STATE 2/3/4'],
-            ['power',          'Ladeleistung',           'F', 'CHB.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
+            ['power',          'Ladeleistung',           'F', 'NRG.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
             ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWhSession',  true,  'device', 'Input 132-133 (Deka-Ws)'],
         ];
     }
@@ -860,22 +860,22 @@ class GoeChargerDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Spannung/Strom/Leistung je Phase', 'vars' => [
-                ['voltage_l1', 'Spannung L1', 'F', 'CHB.Volt',   false, 'phases', 'Input 108-109 (V)'],
-                ['voltage_l2', 'Spannung L2', 'F', 'CHB.Volt',   false, 'phases', 'Input 110-111 (V)'],
-                ['voltage_l3', 'Spannung L3', 'F', 'CHB.Volt',   false, 'phases', 'Input 112-113 (V)'],
-                ['voltage_n',  'Spannung N',  'F', 'CHB.Volt',   false, 'phases', 'Input 144-145 (V)'],
-                ['current_l1', 'Strom L1',    'F', 'CHB.Ampere', false, 'phases', 'Input 114-115 (0,1 A)'],
-                ['current_l2', 'Strom L2',    'F', 'CHB.Ampere', false, 'phases', 'Input 116-117 (0,1 A)'],
-                ['current_l3', 'Strom L3',    'F', 'CHB.Ampere', false, 'phases', 'Input 118-119 (0,1 A)'],
-                ['power_l1',   'Leistung L1', 'F', 'CHB.Watt',   false, 'phases', 'Input 146-147 (0,1 kW)'],
-                ['power_l2',   'Leistung L2', 'F', 'CHB.Watt',   false, 'phases', 'Input 148-149 (0,1 kW)'],
-                ['power_l3',   'Leistung L3', 'F', 'CHB.Watt',   false, 'phases', 'Input 150-151 (0,1 kW)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   false, 'phases', 'Input 108-109 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   false, 'phases', 'Input 110-111 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   false, 'phases', 'Input 112-113 (V)'],
+                ['voltage_n',  'Spannung N',  'F', 'NRG.Volt',   false, 'phases', 'Input 144-145 (V)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', false, 'phases', 'Input 114-115 (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', false, 'phases', 'Input 116-117 (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', false, 'phases', 'Input 118-119 (0,1 A)'],
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   false, 'phases', 'Input 146-147 (0,1 kW)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   false, 'phases', 'Input 148-149 (0,1 kW)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   false, 'phases', 'Input 150-151 (0,1 kW)'],
                 ['phases_charging', 'Genutzte Phasen (nach Schütz)', 'I', 'CHB.GoePhaseCount', false, 'phases', 'Input 205 (Bitmaske)'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
                 ['dev_serial',    'Seriennummer',        'S', '', false, 'device', 'Input 304-309 (ASCII)'],
                 ['dev_firmware',  'Firmware-Version',    'S', '', false, 'device', 'Input 105-106 (ASCII)'],
-                ['energy_total',  'Energie gesamt',      'F', 'CHB.kWh', true, 'device', 'Input 128-129 (0,1 kWh)'],
+                ['energy_total',  'Energie gesamt',      'F', 'NRG.kWh', true, 'device', 'Input 128-129 (0,1 kWh)'],
                 ['dev_error',     'Fehlercode',          'I', 'CHB.GoeError', true, 'errors', 'Input 107'],
                 ['cable_current', 'Kabel-Strombegrenzung','I', 'CHB.Ampere6to32', false, 'device', 'Input 101 (13-32, 0=kein Kabel)'],
                 ['adapter',       'Adapter angesteckt',  'B', '~Switch', false, 'device', 'Input 202 (1=16A-Adapter)'],
@@ -900,13 +900,13 @@ class GoeChargerDriver implements ChargerDriverInterface
     public function getProfiles()
     {
         return [
-            'CHB.Watt'        => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
-            'CHB.kWh'         => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999.0, 0.01, 2],
+            'NRG.Watt'        => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'         => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
             // Eigenes Suffix: hält die MeterHub-Zählersuche vom rückspringenden
             // Sitzungswert fern (siehe KebaDriver::getProfiles).
             'CHB.kWhSession'  => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
-            'CHB.Volt'        => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
-            'CHB.Ampere'      => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'NRG.Volt'        => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'      => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
             'CHB.Ampere6to32' => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
             // Suffix bewusst NICHT " kWh": hält die MeterHub-Zählersuche fern
             // (Limit-Sollwert, kein Zählerstand).
@@ -1717,6 +1717,14 @@ class ChargerHub extends IPSModule
         $driver = $this->GetDriver();
 
         foreach ($driver->getProfiles() as $name => $p) {
+            // Gemeinsame NRG.*-Profile (Verbund-Konvention, siehe SUITE.md):
+            // kein Eigentümer-Modul — nur anlegen, falls es noch fehlt, sonst
+            // unangetastet lassen. Wer zuerst startet, erzeugt es; würde jedes
+            // Modul seine eigenen Werte bei jedem ApplyChanges neu draufschreiben,
+            // überschrieben sich mehrere Module gegenseitig die Definition.
+            if (strncmp($name, 'NRG.', 4) === 0 && IPS_VariableProfileExists($name)) {
+                continue;
+            }
             [$type, $suffix, $min, $max, $step, $digits] = $p;
             if (!IPS_VariableProfileExists($name)) {
                 IPS_CreateVariableProfile($name, $type);

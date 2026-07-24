@@ -72,6 +72,16 @@ Sitzungen** gearbeitet:
    verschlüsselt nicht at rest — „sicher" heißt hier „nicht im Formular/Log/Anzeigetext
    sichtbar", nicht „verschlüsselt". Formulareingabe über `PasswordTextBox`, Wert nach dem
    Handshake sofort leeren.
+8. **Gemeinsame Variablenprofile `NRG.*`** (Dietmar, 2026-07-24, gilt verbundweit, Details in
+   EMS/SUITE.md). Physikalische Grundgrößen bekommen ein gemeinsames Profil statt je Modul ein
+   eigenes (`CHB.Watt` → `NRG.Watt`) — bewusst klein gehalten: `NRG.Watt`, `NRG.kWh` (kumulativ),
+   `NRG.Ampere`, `NRG.Volt`, `NRG.Percent`, `NRG.Celsius`. Modulspezifische Status-/Enum-Profile
+   (z. B. `CHB.GoeCarState`) sowie Profile mit abweichender Bedeutung/Skala für Steuerzwecke
+   (z. B. `CHB.Ampere6to32`, `CHB.kWhSession` — bewusst NICHT `NRG.kWh`, damit die
+   MeterHub-Zählersuche den rückspringenden Sitzungswert nicht aufnimmt) bleiben beim eigenen
+   Modul-Präfix. **Kein Eigentümer-Modul:** `IPS_VariableProfileExists('NRG.Watt')` prüfen, nur
+   bei Fehlen anlegen — wer zuerst startet, erzeugt es; ein bereits vorhandenes `NRG.*`-Profil
+   wird nie überschrieben (sonst überschrieben sich mehrere Module gegenseitig die Definition).
 
 ## Eigenständigkeit prüfen: `.tools/check-standalone.php`
 

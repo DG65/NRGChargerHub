@@ -13,6 +13,21 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   `CHUB_GetFunctions`-Feldnamen bleiben unverändert (sind API).
 - CLAUDE.md: Sprachregel und der Grundsatz „Idents sind API" als Verbund-Regeln festgehalten.
 
+## [0.9.1-beta.1] - 2026-07-24
+
+### Changed
+- **Migration auf gemeinsame `NRG.*`-Variablenprofile** (Verbund-Konvention, SUITE.md):
+  `CHB.Watt`/`CHB.kWh`/`CHB.Ampere`/`CHB.Volt`/`CHB.Celsius` → `NRG.Watt`/`NRG.kWh`/
+  `NRG.Ampere`/`NRG.Volt`/`NRG.Celsius`. Anlage bleibt idempotent und ohne Eigentümer-Modul:
+  ein bereits vorhandenes `NRG.*`-Profil wird nicht mehr überschrieben, nur bei Fehlen angelegt.
+  `NRG.kWh`-Wertebereich vereinheitlicht (0–9.999.999 kWh).
+  Modulspezifische Steuer-/Status-Profile (`CHB.Ampere6to32`, `CHB.Ampere10to63`,
+  `CHB.kWhSession`, `CHB.kWhLimit`, `CHB.Led255`, alle `CHB.*State`/`CHB.*Mode`-Enums) bleiben
+  bewusst unter `CHB.*` — sie tragen keine austauschbare physikalische Einheit oder haben eine
+  Sonderbedeutung (z. B. `CHB.kWhSession`, damit die MeterHub-Zählersuche den je Ladevorgang
+  zurückspringenden Sitzungswert nicht als Energiezähler aufnimmt).
+  Reine Anzeige-Migration, keine Vertrags-/Ident-Änderung.
+
 ## [0.9.0-beta.1] - 2026-07-23
 
 ### Changed
