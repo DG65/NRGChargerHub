@@ -1242,6 +1242,13 @@ class ChargerHub extends IPSModule
 
         $this->RegisterAttributeString('SeenNews', '');
         $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
+        // Einmal-Marker für die 0.9.14-Migration (control-Variablen ohne
+        // Kernel-Standardaktion neu anlegen, siehe RegisterVar()). Ein
+        // Attribut statt einer Live-Zustandsprüfung, weil sich Letzteres live
+        // als nicht zuverlässig herausstellte — 0.9.14 löschte/erzeugte die
+        // Steuervariablen dadurch bei JEDEM Übernehmen neu (IDs wechselten
+        // ständig), statt nur einmalig zu migrieren.
+        $this->RegisterAttributeBoolean('ControlActionsMigrated', false);
 
         $this->RegisterPropertyBoolean('Active', true);
         $this->RegisterPropertyString('Manufacturer', 'keba');
@@ -1513,7 +1520,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.14-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.15-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1666,6 +1673,10 @@ class ChargerHub extends IPSModule
                 }
             }
         }
+
+        // Migration abgeschlossen — ab hier nie wieder Steuervariablen
+        // löschen/neu anlegen (siehe RegisterVar()).
+        $this->WriteAttributeBoolean('ControlActionsMigrated', true);
     }
 
     // Variablen liegen in Untergruppen-Kategorien (siehe EnsureCategory), nicht
@@ -1725,14 +1736,16 @@ class ChargerHub extends IPSModule
             $vid = 0;
         }
         // Einmalige Migration für "control"-Variablen, die noch VOR dem
-        // RegisterVariableX-Fix per rohem IPS_CreateVariable() erzeugt wurden:
-        // ohne Kernel-Standardaktion (VariableAction=0) bleibt
-        // IPS_SetVariableCustomAction($vid, 0) wirkungslos, und diese
-        // Bindung lässt sich an einer bestehenden Variable NICHT nachträglich
-        // setzen — nur eine frische RegisterVariableX-Neuanlage trägt sie ein.
-        // Danach ist VariableAction dauerhaft gesetzt, dieser Zweig greift ab
-        // dann nie wieder (reiner Einmal-Heilungsschritt).
-        if ($vid && $group === 'control' && (int)(@IPS_GetVariable($vid)['VariableAction'] ?? 0) === 0) {
+        // RegisterVariableX-Fix per rohem IPS_CreateVariable() erzeugt wurden
+        // (fehlende Kernel-Standardaktion). Steuerung über ein PERSISTENTES
+        // Attribut, NICHT über eine Live-Zustandsprüfung von VariableAction:
+        // Live bestätigt (25.07.2026) lieferte IPS_GetVariable()['VariableAction']
+        // nach der Migration weiterhin 0 zurück (das Feld spiegelt offenbar
+        // etwas anderes als die per RegisterVariableX/IPS_SetVariableCustomAction
+        // gesetzte Bindung), wodurch dieser Zweig bei JEDEM Übernehmen erneut
+        // feuerte und die IDs bei jedem Aufruf neu vergeben wurden — ein
+        // Attribut kann das nicht, es wird exakt einmal auf true gesetzt.
+        if ($vid && $group === 'control' && !$this->ReadAttributeBoolean('ControlActionsMigrated')) {
             @IPS_DeleteVariable($vid);
             $vid = 0;
         }

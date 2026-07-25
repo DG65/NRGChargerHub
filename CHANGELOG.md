@@ -3,6 +3,17 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.15-beta.1] - 2026-07-25
+
+### Fixed
+- Live entdeckt (Dietmar konnte die von EMS bestätigt funktionierenden IDs 31315/55705 danach
+  nicht mehr finden): Die 0.9.14-Migrationsbedingung prüfte `IPS_GetVariable()['VariableAction']`
+  live erneut nach jedem Übernehmen und fand weiterhin `0` — dadurch wurden die
+  Steuervariablen bei **jedem** ApplyChanges neu gelöscht und angelegt, mit jeweils neuer ID,
+  statt nur einmalig zu migrieren. Ersetzt durch ein persistentes Attribut
+  (`ControlActionsMigrated`), das nach der ersten erfolgreichen `RegisterVariables()`-Runde
+  dauerhaft auf `true` gesetzt wird — unabhängig davon, was `VariableAction` live zurückgibt.
+
 ## [0.9.14-beta.1] - 2026-07-25
 
 ### Fixed
