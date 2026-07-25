@@ -1513,7 +1513,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.11-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.12-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1724,11 +1724,30 @@ class ChargerHub extends IPSModule
             @IPS_DeleteVariable($vid);
             $vid = 0;
         }
-        $created = false;
-        if (!$vid) {
-            $vid = IPS_CreateVariable($vtype);
-            IPS_SetIdent($vid, $ident);
-            $created = true;
+        // WICHTIG: Erzeugung/Registrierung MUSS über RegisterVariableX laufen,
+        // nicht über rohes IPS_CreateVariable()+IPS_SetIdent(). Nur
+        // RegisterVariableX trägt beim Kernel eine Standardaktion ein, die
+        // diese Variable an DIESE Instanz (RequestAction) bindet — ohne diesen
+        // Eintrag bleibt IPS_SetVariableCustomAction($vid, 0) ein wirkungsloser
+        // No-Op (live bestätigt am 25.07.2026: VariableAction UND
+        // VariableCustomAction blieben beide 0, auch nach explizitem Aufruf).
+        // RegisterVariableX ist idempotent (legt nur bei fehlender Variable
+        // neu an) und darf daher bei jedem ApplyChanges erneut aufgerufen
+        // werden. Die anschließende Verschiebung in die Kategorie per
+        // IPS_SetParent ändert nichts an dieser Kernel-Zuordnung.
+        switch ($type) {
+            case 'F':
+                $vid = $this->RegisterVariableFloat($ident, $caption, $profile, $pos);
+                break;
+            case 'I':
+                $vid = $this->RegisterVariableInteger($ident, $caption, $profile, $pos);
+                break;
+            case 'B':
+                $vid = $this->RegisterVariableBoolean($ident, $caption, $profile, $pos);
+                break;
+            case 'S':
+                $vid = $this->RegisterVariableString($ident, $caption, $profile, $pos);
+                break;
         }
 
         $catID = $this->EnsureCategory($group);
@@ -1736,17 +1755,13 @@ class ChargerHub extends IPSModule
         IPS_SetPosition($vid, $pos);
         IPS_SetName($vid, $caption);
 
-        // Profil bei jedem Übernehmen unconditional setzen. Die vorherige
-        // Beschränkung auf Neuanlage (bzw. "nur wenn aktuell leer") sollte ein
-        // von Nutzer:innen selbst gewähltes Profil schützen, hat aber live
-        // reproduzierbar dazu geführt, dass Ladefreigabe UND reine
-        // Anzeigevariablen (z. B. Ladeleistung) dauerhaft ganz ohne Profil
-        // blieben — die Bedingung selbst war fehlerhaft/zu vorsichtig. Ein
-        // bewusst individuelles Profil ist für diese generierten Variablen
-        // kein unterstützter Anwendungsfall, daher einfach und robust: immer
-        // setzen, kein Sonderfall.
+        // Profil bei jedem Übernehmen unconditional nachziehen (siehe oben,
+        // 0.9.11) — RegisterVariableX setzt es zwar schon bei Neuanlage, aber
+        // ein Hersteller-/Typwechsel kann ein anderes Profil erfordern.
         if ($profile !== '') {
-            IPS_SetVariableCustomProfile($vid, $profile);
+            if (@IPS_GetVariable($vid)['VariableCustomProfile'] !== $profile) {
+                IPS_SetVariableCustomProfile($vid, $profile);
+            }
         }
         if ($reg !== '') {
             @IPS_SetInfo($vid, (string)$reg);

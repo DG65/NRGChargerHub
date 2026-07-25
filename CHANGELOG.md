@@ -3,6 +3,24 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.12-beta.1] - 2026-07-25
+
+### Fixed
+- Root Cause für "Ladefreigabe/Stromlimit lassen sich nicht bedienen" endlich gefunden (Live-
+  Diagnose der EMS-Sitzung an Instanz #30324, während ein Fahrzeug real angesteckt war):
+  `RegisterVar()` erzeugte Steuervariablen bisher über rohes `IPS_CreateVariable()` +
+  `IPS_SetIdent()`. Damit trägt der Symcon-Kernel **keine Standardaktion** ein, die die
+  Variable an diese Instanz (`RequestAction()`) bindet — `IPS_SetVariableCustomAction($vid, 0)`
+  lief dadurch immer ohne Fehler durch, änderte aber nachweislich nichts
+  (`VariableAction`/`VariableCustomAction` blieben beide `0`). Variablen werden jetzt über
+  `RegisterVariableBoolean()`/`Integer()`/`Float()`/`String()` erzeugt (wie beim SDK
+  vorgesehen) und danach wie bisher per `IPS_SetParent()` in die passende Kategorie
+  verschoben — das ändert nichts an der Kernel-Standardaktions-Zuordnung.
+- Ident-Kollisionsrisiko aus einer früheren Version (Grund für den ursprünglichen Wechsel weg
+  von `RegisterVariableX`) betraf laut Analyse nur den mehrstufigen Instanz-Anlage-Ablauf über
+  die Discovery — dort bitte nach diesem Update einmal eine Testinstanz neu anlegen, um das zu
+  bestätigen.
+
 ## [0.9.11-beta.1] - 2026-07-25
 
 ### Fixed
