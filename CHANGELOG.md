@@ -3,6 +3,28 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.14-beta.1] - 2026-07-25
+
+### Fixed
+- 0.9.13 löste den fehlenden VariableAction-Eintrag, brach aber `ApplyChanges()` live komplett
+  (`IPS_ApplyChanges()` gab `false` zurück, Log voller „Ident muss für jede Ebene eindeutig
+  sein" + „Kann Schnittstellen-Instanz nicht erstellen", Instanz #30324 nicht mehr sauber
+  durchlaufbar, live reproduziert während ein Fahrzeug angesteckt war). Ursache:
+  `RegisterVariableX()` registriert den Ident instanzweit, nicht nur bei den direkten Kindern —
+  ein erneuter Aufruf, NACHDEM die Variable längst per `IPS_SetParent()` in eine
+  Kategorie-Unterordner verschoben wurde, kollidierte dort mit sich selbst. Das war exakt der
+  Grund, warum eine frühere Version überhaupt von `RegisterVariableX` auf rohes
+  `IPS_CreateVariable()` umgestiegen war — dieser Kollisionsmechanismus wurde beim 0.9.12-Fix
+  übersehen.
+  - `RegisterVariableX()` läuft jetzt nur noch bei echter Neuanlage (`!$vid`), nicht mehr bei
+    jedem `ApplyChanges()`. Die dabei gesetzte Kernel-Standardaktion bleibt über das spätere
+    `IPS_SetParent()` in die Kategorie hinweg erhalten.
+  - Für "control"-Variablen, die noch vor dem 0.9.12-Fix per rohem `IPS_CreateVariable()`
+    erzeugt wurden (`VariableAction` weiterhin `0`), läuft einmalig eine gezielte
+    Migration: löschen und über `RegisterVariableX()` neu anlegen — nur für diese betroffenen
+    Variablen, nicht für alle. Die IDs von `ctl_enable`/`ctl_curr_limit` ändern sich dadurch
+    einmalig; `CHUB_GetFunctions()` liefert die neuen IDs beim nächsten Aufruf automatisch.
+
 ## [0.9.13-beta.1] - 2026-07-25
 
 ### Fixed

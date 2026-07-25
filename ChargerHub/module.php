@@ -1513,7 +1513,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.13-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.14-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1724,30 +1724,43 @@ class ChargerHub extends IPSModule
             @IPS_DeleteVariable($vid);
             $vid = 0;
         }
-        // WICHTIG: Erzeugung/Registrierung MUSS über RegisterVariableX laufen,
-        // nicht über rohes IPS_CreateVariable()+IPS_SetIdent(). Nur
-        // RegisterVariableX trägt beim Kernel eine Standardaktion ein, die
-        // diese Variable an DIESE Instanz (RequestAction) bindet — ohne diesen
-        // Eintrag bleibt IPS_SetVariableCustomAction($vid, 0) ein wirkungsloser
-        // No-Op (live bestätigt am 25.07.2026: VariableAction UND
-        // VariableCustomAction blieben beide 0, auch nach explizitem Aufruf).
-        // RegisterVariableX ist idempotent (legt nur bei fehlender Variable
-        // neu an) und darf daher bei jedem ApplyChanges erneut aufgerufen
-        // werden. Die anschließende Verschiebung in die Kategorie per
-        // IPS_SetParent ändert nichts an dieser Kernel-Zuordnung.
-        switch ($type) {
-            case 'F':
-                $vid = $this->RegisterVariableFloat($ident, $caption, $profile, $pos);
-                break;
-            case 'I':
-                $vid = $this->RegisterVariableInteger($ident, $caption, $profile, $pos);
-                break;
-            case 'B':
-                $vid = $this->RegisterVariableBoolean($ident, $caption, $profile, $pos);
-                break;
-            case 'S':
-                $vid = $this->RegisterVariableString($ident, $caption, $profile, $pos);
-                break;
+        // Einmalige Migration für "control"-Variablen, die noch VOR dem
+        // RegisterVariableX-Fix per rohem IPS_CreateVariable() erzeugt wurden:
+        // ohne Kernel-Standardaktion (VariableAction=0) bleibt
+        // IPS_SetVariableCustomAction($vid, 0) wirkungslos, und diese
+        // Bindung lässt sich an einer bestehenden Variable NICHT nachträglich
+        // setzen — nur eine frische RegisterVariableX-Neuanlage trägt sie ein.
+        // Danach ist VariableAction dauerhaft gesetzt, dieser Zweig greift ab
+        // dann nie wieder (reiner Einmal-Heilungsschritt).
+        if ($vid && $group === 'control' && (int)(@IPS_GetVariable($vid)['VariableAction'] ?? 0) === 0) {
+            @IPS_DeleteVariable($vid);
+            $vid = 0;
+        }
+        // RegisterVariableX NUR bei echter Neuanlage aufrufen (!$vid), nicht
+        // bei jedem ApplyChanges: der Ident-Registrierung dieser SDK-Methode
+        // ist instanzweit, nicht nur auf direkte Kinder beschränkt — ein
+        // erneuter Aufruf NACHDEM die Variable längst in eine Kategorie
+        // verschoben wurde, kollidiert dort mit sich selbst ("Ident muss für
+        // jede Ebene eindeutig sein", live reproduziert 25.07.2026). Die bei
+        // der Neuanlage gesetzte Kernel-Standardaktion bleibt beim späteren
+        // IPS_SetParent in die Kategorie erhalten, muss also nicht erneut
+        // durch RegisterVariableX bestätigt werden — nur das explizite
+        // IPS_SetVariableCustomAction($vid, 0) weiter unten läuft jedes Mal.
+        if (!$vid) {
+            switch ($type) {
+                case 'F':
+                    $vid = $this->RegisterVariableFloat($ident, $caption, $profile, $pos);
+                    break;
+                case 'I':
+                    $vid = $this->RegisterVariableInteger($ident, $caption, $profile, $pos);
+                    break;
+                case 'B':
+                    $vid = $this->RegisterVariableBoolean($ident, $caption, $profile, $pos);
+                    break;
+                case 'S':
+                    $vid = $this->RegisterVariableString($ident, $caption, $profile, $pos);
+                    break;
+            }
         }
 
         $catID = $this->EnsureCategory($group);
