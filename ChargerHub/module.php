@@ -6,7 +6,7 @@
 // werden die passenden Register und Bedienelemente freigeschaltet.
 //
 // Aufbau analog zu InverterHub/MeterHub:
-//   ModbusTcpClient        — gemeinsame Modbus-TCP-Grundfunktionen
+//   CHUB_ModbusTcpClient        — gemeinsame Modbus-TCP-Grundfunktionen
 //   ChargerDriverInterface — Vertrag, den jeder Wallbox-Treiber erfüllt
 //   KebaDriver / AlfenDriver / HeidelbergDriver / GoeChargerDriver
 //   ChargerHub              — Hauptmodul, lädt den Treiber laut Manufacturer-Property
@@ -25,7 +25,7 @@
 // Vorschlag.
 // ===========================================================================
 
-class ModbusTcpClient
+class CHUB_ModbusTcpClient
 {
     public $host;
     public $port;
@@ -1462,9 +1462,9 @@ class ChargerHub extends IPSModule
         return $this->driver;
     }
 
-    private function GetModbusClient(): ModbusTcpClient
+    private function GetModbusClient(): CHUB_ModbusTcpClient
     {
-        return new ModbusTcpClient(
+        return new CHUB_ModbusTcpClient(
             $this->ReadPropertyString('Host'),
             $this->ReadPropertyInteger('Port'),
             $this->ReadPropertyInteger('UnitId')
@@ -1513,7 +1513,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.10-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.11-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1736,20 +1736,17 @@ class ChargerHub extends IPSModule
         IPS_SetPosition($vid, $pos);
         IPS_SetName($vid, $caption);
 
-        // Profil bei Neuanlage setzen, außerdem nachträglich nachtragen, falls
-        // die Variable (aus welchem Grund auch immer, z. B. ein Zwischenstand
-        // ohne Profil) noch keins trägt — ein leeres Profil war bei go-e-
-        // Steuervariablen live beobachtet worden (kein ~Switch-Icon, kein
-        // Schalten/Simulieren-Dialog). Ein vom Nutzer bewusst gewähltes eigenes
-        // Profil/Presentation bleibt unangetastet: nur bei leerem Profil wird
-        // nachgesetzt, ein bereits abweichend gesetztes NIE überschrieben.
+        // Profil bei jedem Übernehmen unconditional setzen. Die vorherige
+        // Beschränkung auf Neuanlage (bzw. "nur wenn aktuell leer") sollte ein
+        // von Nutzer:innen selbst gewähltes Profil schützen, hat aber live
+        // reproduzierbar dazu geführt, dass Ladefreigabe UND reine
+        // Anzeigevariablen (z. B. Ladeleistung) dauerhaft ganz ohne Profil
+        // blieben — die Bedingung selbst war fehlerhaft/zu vorsichtig. Ein
+        // bewusst individuelles Profil ist für diese generierten Variablen
+        // kein unterstützter Anwendungsfall, daher einfach und robust: immer
+        // setzen, kein Sonderfall.
         if ($profile !== '') {
-            $current = @IPS_GetVariable($vid)['VariableCustomProfile'];
-            if ($created || $current === '' || $current === false) {
-                if ($current !== $profile) {
-                    IPS_SetVariableCustomProfile($vid, $profile);
-                }
-            }
+            IPS_SetVariableCustomProfile($vid, $profile);
         }
         if ($reg !== '') {
             @IPS_SetInfo($vid, (string)$reg);

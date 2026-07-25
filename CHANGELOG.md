@@ -3,6 +3,23 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.11-beta.1] - 2026-07-25
+
+### Fixed
+- Live-Vergleich mit der funktionierenden Referenzinstanz „go-e Controller" (anderes Modul, selbes
+  System) zeigte: dessen Schalter-Variable trägt korrekt `~Switch` als Profil, unsere Instanz
+  dagegen bei JEDER Variable — auch reinen Anzeigevariablen wie „Ladeleistung", nicht nur den
+  Steuervariablen — kein Profil, trotz bestätigtem Code-Update, Kern-Neustart UND explizitem
+  „Übernehmen". Die in 0.9.10 eingeführte Bedingung „nur setzen, wenn `$created` oder aktuell
+  leer" verhinderte das Setzen offenbar unabhängig vom eigentlichen Zustand der Variable.
+  `RegisterVar()` setzt das Profil jetzt unconditional bei jedem Übernehmen, ohne Sonderfall.
+
+### Changed
+- Globale Klasse `ModbusTcpClient` in `CHUB_ModbusTcpClient` umbenannt (Verbund-Fund von der
+  EMS-Sitzung: MeterHub deklariert ebenfalls eine globale Klasse `ModbusTcpClient` — sobald ein
+  Konsument beide Module im selben PHP-Prozess lädt, kollidiert das mit `Fatal error: Cannot
+  redeclare class ModbusTcpClient`). InverterHub/MeterHub ziehen denselben Präfix-Ansatz nach.
+
 ## [0.9.10-beta.1] - 2026-07-25
 
 ### Fixed
