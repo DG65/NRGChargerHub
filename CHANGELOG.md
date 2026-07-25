@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.9-beta.1] - 2026-07-25
+
+### Fixed
+- Steuer-Variablen (Ladefreigabe, Stromlimit (A) etc.) waren in der Konsole nicht bedienbar
+  (nicht fett dargestellt), Klick auf „Übernehmen" bzw. der `EnableActionsTimer` warfen
+  `Warning: Skript #<InstanceID> existiert nicht`. Ursache: `IPS_SetVariableCustomAction()`
+  erwartet als zweiten Parameter laut Doku **keine** Instanz-ID, sondern 0 (Standardaktion
+  aktivieren), 1 (deaktivieren) oder eine echte Skript-ID (>1). Es wurde durchgängig
+  `$this->InstanceID` übergeben — Symcon deutete diese Zahl als Skript-ID und meldete
+  zurecht, dass kein Skript mit dieser Nummer existiert. Ersetzt durch die dokumentierte
+  Konstante `0`.
+
 ## [0.9.8-beta.1] - 2026-07-24
 
 ### Changed
