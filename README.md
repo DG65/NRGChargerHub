@@ -38,7 +38,7 @@ InverterHub als an MeterHub.
 ## Installation
 
 1. In der IP-Symcon-Konsole: **Modulverwaltung → Hinzufügen** und die URL dieses Repositories
-   eintragen: `https://github.com/DG65/ChargerHub` (Branch **beta**, Default-Branch).
+   eintragen: `https://github.com/DG65/NRGChargerHub` (Branch **beta**, Default-Branch).
 2. Eine neue Instanz vom Typ **„ChargerHub"** anlegen — oder **„ChargerHub Suche"**
    (ChargerHubDiscovery) für einen automatischen Netzwerk-Scan.
 
