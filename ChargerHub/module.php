@@ -1513,7 +1513,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.12-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.13-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1754,6 +1754,19 @@ class ChargerHub extends IPSModule
         IPS_SetParent($vid, $catID);
         IPS_SetPosition($vid, $pos);
         IPS_SetName($vid, $caption);
+
+        // Custom Action bei jedem Übernehmen unconditional nachziehen — nicht
+        // nur bei Neuanlage. Live bestätigt (EMS-Sitzung, 25.07.2026): für
+        // VOR diesem Fix bereits bestehende Variablen (Ident/ID unverändert,
+        // ursprünglich per rohem IPS_CreateVariable() erzeugt) trägt ein
+        // erneuter RegisterVariableX-Aufruf die Standardaktion nicht
+        // nachträglich nach, wenn die Variable schon existiert — nur ein
+        // expliziter IPS_SetVariableCustomAction($vid, 0) tut das
+        // zuverlässig, unabhängig davon, ob die Variable neu oder schon vor
+        // diesem Fix vorhanden war.
+        if ($group === 'control') {
+            IPS_SetVariableCustomAction($vid, 0);
+        }
 
         // Profil bei jedem Übernehmen unconditional nachziehen (siehe oben,
         // 0.9.11) — RegisterVariableX setzt es zwar schon bei Neuanlage, aber

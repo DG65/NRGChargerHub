@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.13-beta.1] - 2026-07-25
+
+### Fixed
+- Live bestätigt (EMS-Sitzung, Fahrzeug an WB1 angesteckt): 0.9.12 reichte bei bereits
+  bestehenden Steuervariablen (Ident/ID unverändert, ursprünglich vor dem Fix per rohem
+  IPS_CreateVariable() erzeugt) nicht — ein erneuter RegisterVariableX()-Aufruf trägt die
+  Standardaktion für schon existierende Objekte offenbar nicht nachträglich nach.
+  `RegisterVar()` ruft jetzt zusätzlich unconditional `IPS_SetVariableCustomAction($vid, 0)`
+  für alle Variablen der Gruppe „control" auf, unabhängig vom Neu-/Bestandsstatus.
+
 ## [0.9.12-beta.1] - 2026-07-25
 
 ### Fixed
