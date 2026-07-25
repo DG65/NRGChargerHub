@@ -31,6 +31,11 @@ class ModbusTcpClient
     public $port;
     public $unitId;
 
+    // Klartext-Grund des letzten fehlgeschlagenen Schreibzugriffs (writeSingle/
+    // writeMultiple) — von der aufrufenden Instanz nach jedem Schreibversuch
+    // auslesbar, damit ein stiller false-Rückgabewert nicht mehr unbegründet bleibt.
+    public $lastWriteError = '';
+
     private $batchSock = null;
 
     public function beginBatch()
@@ -127,8 +132,10 @@ class ModbusTcpClient
 
     public function writeSingle($reg, $value)
     {
+        $this->lastWriteError = '';
         $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
         if ($sock === false) {
+            $this->lastWriteError = "Verbindung fehlgeschlagen: $errstr ($errno)";
             return false;
         }
         stream_set_timeout($sock, 3);
@@ -141,13 +148,15 @@ class ModbusTcpClient
         $resp = @fread($sock, 64);
         fclose($sock);
 
-        return ($resp !== false && strlen($resp) >= 8 && ord($resp[7]) === 0x06);
+        return $this->CheckWriteResponse($resp, 0x06);
     }
 
     public function writeMultiple($startReg, $values)
     {
+        $this->lastWriteError = '';
         $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
         if ($sock === false) {
+            $this->lastWriteError = "Verbindung fehlgeschlagen: $errstr ($errno)";
             return false;
         }
         stream_set_timeout($sock, 3);
@@ -166,7 +175,42 @@ class ModbusTcpClient
         $resp = @fread($sock, 64);
         fclose($sock);
 
-        return ($resp !== false && strlen($resp) >= 8 && ord($resp[7]) === 0x10);
+        return $this->CheckWriteResponse($resp, 0x10);
+    }
+
+    // Wertet die Modbus-TCP-Antwort auf einen Schreibzugriff aus und trägt bei
+    // Misserfolg eine Klartext-Ursache in $lastWriteError ein (Timeout, leere
+    // Antwort, oder eine echte Modbus-Exception mit Exception-Code laut
+    // Spezifikation) — bislang wurde jeder dieser Fälle undiagnostizierbar als
+    // simples false durchgereicht.
+    private function CheckWriteResponse($resp, int $expectedFc): bool
+    {
+        if ($resp === false || $resp === '') {
+            $this->lastWriteError = 'Keine Antwort vom Gerät (Timeout)';
+            return false;
+        }
+        if (strlen($resp) < 8) {
+            $this->lastWriteError = 'Antwort zu kurz (' . strlen($resp) . ' Byte)';
+            return false;
+        }
+        $fc = ord($resp[7]);
+        if ($fc === $expectedFc) {
+            return true;
+        }
+        if ($fc === ($expectedFc | 0x80) && strlen($resp) >= 9) {
+            $excCode = ord($resp[8]);
+            $labels = [
+                1 => 'Illegal Function (FC nicht unterstützt)',
+                2 => 'Illegal Data Address (Register nicht vorhanden)',
+                3 => 'Illegal Data Value (Wert außerhalb des zulässigen Bereichs)',
+                4 => 'Slave Device Failure',
+                6 => 'Slave Device Busy',
+            ];
+            $this->lastWriteError = 'Modbus-Exception Code ' . $excCode . ' (' . ($labels[$excCode] ?? 'unbekannt') . ')';
+            return false;
+        }
+        $this->lastWriteError = 'Unerwarteter Function Code in Antwort: 0x' . dechex($fc);
+        return false;
     }
 
     public function u16($regs, $offset)
@@ -1305,7 +1349,16 @@ class ChargerHub extends IPSModule
         if (!$this->ReadPropertyBoolean('Active')) {
             return;
         }
-        $this->GetDriver()->writeControl($this->GetModbusClient(), $this, $Ident, $Value);
+        $mb = $this->GetModbusClient();
+        $this->GetDriver()->writeControl($mb, $this, $Ident, $Value);
+        // writeControl setzt den Variablenwert nur bei erfolgreichem Schreiben
+        // (siehe Treiber) — schlägt der Modbus-Zugriff fehl, bleibt der Wert in
+        // der Konsole unverändert (springt nach dem nächsten Poll sichtbar
+        // zurück) und blieb bisher ohne jede Fehlermeldung. Jetzt sichtbar im
+        // Meldungen-Log unter "ChargerHub-Schreibfehler".
+        if ($mb->lastWriteError !== '') {
+            IPS_LogMessage('ChargerHub-Schreibfehler', 'Instanz ' . $this->InstanceID . ', ' . $Ident . ': ' . $mb->lastWriteError);
+        }
     }
 
     // Vertrag für Partnermodule (EMS, Kacheln) — Muster wie MHUB_GetFunctions.
@@ -1460,7 +1513,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.9-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.10-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1683,12 +1736,19 @@ class ChargerHub extends IPSModule
         IPS_SetPosition($vid, $pos);
         IPS_SetName($vid, $caption);
 
-        // Profil nur bei Neuanlage setzen: Ab IPS 7 leert eine vom Nutzer
-        // gewählte Presentation das CustomProfile — bei jedem „Übernehmen"
-        // neu gesetzt, spränge die Variable auf „Legacy" zurück.
-        if ($profile !== '' && $created) {
-            if (@IPS_GetVariable($vid)['VariableCustomProfile'] !== $profile) {
-                IPS_SetVariableCustomProfile($vid, $profile);
+        // Profil bei Neuanlage setzen, außerdem nachträglich nachtragen, falls
+        // die Variable (aus welchem Grund auch immer, z. B. ein Zwischenstand
+        // ohne Profil) noch keins trägt — ein leeres Profil war bei go-e-
+        // Steuervariablen live beobachtet worden (kein ~Switch-Icon, kein
+        // Schalten/Simulieren-Dialog). Ein vom Nutzer bewusst gewähltes eigenes
+        // Profil/Presentation bleibt unangetastet: nur bei leerem Profil wird
+        // nachgesetzt, ein bereits abweichend gesetztes NIE überschrieben.
+        if ($profile !== '') {
+            $current = @IPS_GetVariable($vid)['VariableCustomProfile'];
+            if ($created || $current === '' || $current === false) {
+                if ($current !== $profile) {
+                    IPS_SetVariableCustomProfile($vid, $profile);
+                }
             }
         }
         if ($reg !== '') {

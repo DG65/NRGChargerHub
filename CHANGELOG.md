@@ -3,6 +3,25 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.10-beta.1] - 2026-07-25
+
+### Fixed
+- Live-Check an Instanz #30324 (Konsole zeigte weiterhin kein Schalter-Icon, keinen
+  „Schalten/Simulieren"-Dialog, geschriebene Werte sprangen nach wenigen Sekunden zurück)
+  ergab zwei getrennte Ursachen:
+  - `RegisterVar()` setzte das Variablenprofil (`~Switch` etc.) bisher nur bei echter
+    Neuanlage der Variable (`$created === true`). Bei dieser Instanz blieb das Profil dadurch
+    dauerhaft leer — kein Schalter-Icon, kein Schalten/Simulieren-Dialog. Wird jetzt zusätzlich
+    nachgetragen, wenn die Variable aktuell kein Profil trägt; ein bewusst vom Nutzer gesetztes
+    eigenes Profil bleibt unangetastet.
+  - `ModbusTcpClient::writeSingle()`/`writeMultiple()` gaben bei einer Modbus-Exception-Antwort
+    vom Gerät (oder Timeout/Verbindungsfehler) stillschweigend `false` zurück. Der Treiber
+    schreibt den neuen Wert nur bei Erfolg in die Variable — bei einem stillen Fehlschlag blieb
+    der alte Gerätewert bestehen und die Konsole sprang beim nächsten Poll sichtbar zurück, ohne
+    dass irgendwo ein Grund protokolliert wurde. Jetzt wertet `CheckWriteResponse()` die Antwort
+    aus (Timeout, zu kurze Antwort, oder Modbus-Exception-Code mit Klartext-Bedeutung) und
+    `RequestAction()` schreibt den Grund ins Meldungen-Log unter „ChargerHub-Schreibfehler".
+
 ## [0.9.9-beta.1] - 2026-07-25
 
 ### Fixed
