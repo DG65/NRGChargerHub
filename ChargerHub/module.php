@@ -1520,7 +1520,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.15-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.16-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1774,25 +1774,28 @@ class ChargerHub extends IPSModule
                     $vid = $this->RegisterVariableString($ident, $caption, $profile, $pos);
                     break;
             }
+            // WICHTIG: IPS_SetVariableCustomAction($vid, 0) ist die falsche API
+            // für modul-EIGENE Variablen (von dieser Instanz per
+            // RegisterVariableX angelegt) — sie sieht korrekt aus (kein Fehler),
+            // bleibt aber wirkungslos, insbesondere in WebFront/Konsole
+            // (unabhängig bestätigt sowohl live bei uns als auch bei
+            // InverterHub, das denselben Bug hatte). Richtig ist die
+            // SDK-eigene $this->EnableAction($Ident). Die MUSS hier, VOR dem
+            // IPS_SetParent() weiter unten, aufgerufen werden: EnableAction()
+            // löst den Ident intern über das flache GetIDForIdent() auf, das
+            // nur direkte Instanz-Kinder findet — die Variable steht hier noch
+            // an der Instanz, bevor sie gleich in ihre Kategorie verschoben
+            // wird. Die dabei gesetzte Standardaktion bleibt über den
+            // IPS_SetParent()-Umzug hinweg erhalten.
+            if ($group === 'control') {
+                $this->EnableAction($ident);
+            }
         }
 
         $catID = $this->EnsureCategory($group);
         IPS_SetParent($vid, $catID);
         IPS_SetPosition($vid, $pos);
         IPS_SetName($vid, $caption);
-
-        // Custom Action bei jedem Übernehmen unconditional nachziehen — nicht
-        // nur bei Neuanlage. Live bestätigt (EMS-Sitzung, 25.07.2026): für
-        // VOR diesem Fix bereits bestehende Variablen (Ident/ID unverändert,
-        // ursprünglich per rohem IPS_CreateVariable() erzeugt) trägt ein
-        // erneuter RegisterVariableX-Aufruf die Standardaktion nicht
-        // nachträglich nach, wenn die Variable schon existiert — nur ein
-        // expliziter IPS_SetVariableCustomAction($vid, 0) tut das
-        // zuverlässig, unabhängig davon, ob die Variable neu oder schon vor
-        // diesem Fix vorhanden war.
-        if ($group === 'control') {
-            IPS_SetVariableCustomAction($vid, 0);
-        }
 
         // Profil bei jedem Übernehmen unconditional nachziehen (siehe oben,
         // 0.9.11) — RegisterVariableX setzt es zwar schon bei Neuanlage, aber

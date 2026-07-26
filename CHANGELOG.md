@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.16-beta.1] - 2026-07-25
+
+### Fixed
+- Eigentliche Ursache für "funktioniert per Skript, aber nicht über die normale Oberfläche"
+  gefunden (unabhängig bestätigt durch denselben Bug bei InverterHub, DG65/NRGInverterHub
+  Commits 2e1c56e→2565450): `IPS_SetVariableCustomAction($vid, 0)` ist die falsche API für
+  Variablen, die eine Instanz per `RegisterVariableX()` selbst angelegt hat — sieht korrekt aus
+  (keine Exception), bleibt aber wirkungslos für WebFront/Konsole (live bestätigt:
+  `VariableAction` blieb `0`). Direkte `IPS_RequestAction()`-Aufrufe funktionierten trotzdem,
+  weil sie nicht über diese Bindung laufen — daher der Widerspruch zwischen EMS' erfolgreichem
+  Skript-Test und Dietmars erfolglosen Versuchen in der eigenen Oberfläche.
+  Ersetzt durch die SDK-eigene `$this->EnableAction($Ident)`, aufgerufen direkt nach der
+  Neuanlage über RegisterVariableX — noch BEVOR die Variable per `IPS_SetParent()` in ihre
+  Kategorie verschoben wird, weil `EnableAction()` den Ident intern über das flache
+  `GetIDForIdent()` auflöst (nur direkte Instanz-Kinder).
+
 ## [0.9.15-beta.1] - 2026-07-25
 
 ### Fixed
