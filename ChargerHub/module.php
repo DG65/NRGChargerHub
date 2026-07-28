@@ -1520,7 +1520,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.16-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.17-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1548,6 +1548,7 @@ class ChargerHub extends IPSModule
                     'caption'  => '🔌  Verbindung',
                     'expanded' => true,
                     'items'    => [
+                        ['type' => 'Label', 'caption' => 'ℹ️ Über die Suche (Modul „ChargerHub Suche") werden diese Felder beim Anlegen automatisch befüllt — von Hand eintragen ist nur nötig, wenn die Instanz manuell angelegt oder die IP-Adresse der Wallbox geändert wurde.'],
                         ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
                         ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535],
                         ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247],

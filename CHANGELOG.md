@@ -3,6 +3,14 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.17-beta.1] - 2026-07-27
+
+### Changed
+- Usability-Nachschärfung nach Dietmars EMS-Feedback (irreführendes "Pflicht"-Panel dort):
+  Panel „Verbindung" macht jetzt explizit, dass Host/Port/UnitId normalerweise von der
+  ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
+  wirkte wie der einzige/erwartete Weg.
+
 ## [0.9.16-beta.1] - 2026-07-25
 
 ### Fixed
