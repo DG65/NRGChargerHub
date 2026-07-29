@@ -1520,7 +1520,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.18-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.19-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1707,7 +1707,7 @@ class ChargerHub extends IPSModule
                 // Fremder/nicht mehr gültiger Ident (abgewählte Gruppe,
                 // Herstellerwechsel) — alle Fundstellen löschen.
                 foreach ($entries as $e) {
-                    @IPS_DeleteVariable($e['id']);
+                    $this->DeleteVariableSafely($e['id']);
                 }
                 continue;
             }
@@ -1723,11 +1723,26 @@ class ChargerHub extends IPSModule
                 // die Karteileiche.
                 foreach ($entries as $e) {
                     if ($e['directChild']) {
-                        @IPS_DeleteVariable($e['id']);
+                        $this->DeleteVariableSafely($e['id']);
                     }
                 }
             }
         }
+    }
+
+    // IPS_DeleteVariable() scheitert still (kein Fehler, keine Löschung),
+    // wenn unter der Variable noch ein Kind-Objekt hängt — live beobachtet
+    // bei einer Karteileiche mit einem Link-Objekt darunter (vermutlich aus
+    // einer Visualisierung). Kind-Objekte vorher entfernen.
+    private function DeleteVariableSafely(int $vid): void
+    {
+        foreach (@IPS_GetChildrenIDs($vid) ?: [] as $cid) {
+            $obj = IPS_GetObject($cid);
+            if ($obj['ObjectType'] === 6) {
+                @IPS_DeleteLink($cid);
+            }
+        }
+        @IPS_DeleteVariable($vid);
     }
 
     // Erzeugung über RegisterVariableX (nötig für die Kernel-Standardaktion,

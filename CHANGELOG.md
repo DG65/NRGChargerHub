@@ -11,6 +11,14 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
   wirkte wie der einzige/erwartete Weg.
 
+## [0.9.19-beta.1] - 2026-07-27
+
+### Fixed
+- Eine der 0.9.18-Karteileichen (#30324 „Entsperrt durch RFID-Karte") überlebte die Aufräumung:
+  `IPS_DeleteVariable()` scheitert still, wenn unter der Variable noch ein Kind-Objekt hängt —
+  hier ein `Link` (vermutlich aus einer Visualisierung). Neue `DeleteVariableSafely()` entfernt
+  vorher etwaige Link-Kinder.
+
 ## [0.9.18-beta.1] - 2026-07-27
 
 ### Fixed
