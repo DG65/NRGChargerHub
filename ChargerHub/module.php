@@ -1520,7 +1520,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.17-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.18-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1686,38 +1686,57 @@ class ChargerHub extends IPSModule
     // deaktivierten Gruppe nie erkannt und blieben stehen.
     private function PruneForeignObjects(array $validIdents)
     {
-        $all = [];
-        $collect = function ($pid) use (&$collect, &$all) {
+        // (id, parentIsInstance) je Ident sammeln, um anschließend zwei
+        // Aufräumschritte in einem Durchlauf zu erledigen.
+        $byIdent = [];
+        $collect = function ($pid, $depth) use (&$collect, &$byIdent) {
             foreach (@IPS_GetChildrenIDs($pid) ?: [] as $cid) {
-                $all[] = $cid;
-                if (IPS_GetObject($cid)['ObjectType'] === 0) {
-                    $collect($cid);
+                $obj = IPS_GetObject($cid);
+                if ($obj['ObjectType'] === 2 && $obj['ObjectIdent'] !== '') {
+                    $byIdent[$obj['ObjectIdent']][] = ['id' => $cid, 'directChild' => ($depth === 0)];
+                }
+                if ($obj['ObjectType'] === 0) {
+                    $collect($cid, $depth + 1);
                 }
             }
         };
-        $collect($this->InstanceID);
+        $collect($this->InstanceID, 0);
 
-        foreach ($all as $cid) {
-            if (!IPS_ObjectExists($cid)) {
+        foreach ($byIdent as $ident => $entries) {
+            if (!isset($validIdents[$ident])) {
+                // Fremder/nicht mehr gültiger Ident (abgewählte Gruppe,
+                // Herstellerwechsel) — alle Fundstellen löschen.
+                foreach ($entries as $e) {
+                    @IPS_DeleteVariable($e['id']);
+                }
                 continue;
             }
-            $obj = IPS_GetObject($cid);
-            if ($obj['ObjectType'] !== 2 || $obj['ObjectIdent'] === '') {
-                continue;
-            }
-            if (!isset($validIdents[$obj['ObjectIdent']])) {
-                @IPS_DeleteVariable($cid);
+            if (count($entries) > 1) {
+                // Karteileiche aus dem 0.9.13-Zwischenfall (ApplyChanges brach
+                // mitten im Lauf ab, siehe CHANGELOG): RegisterVariableX legte
+                // eine zweite Variable direkt unter der Instanz an, das
+                // anschließende IPS_SetParent in die Kategorie schlug wegen
+                // der Ident-Kollision fehl und blieb dort stehen — die
+                // korrekte, in einer Kategorie verschachtelte Variable blieb
+                // daneben unangetastet bestehen. Direkte Instanz-Kinder mit
+                // einem Ident, der auch verschachtelt vorkommt, sind immer
+                // die Karteileiche.
+                foreach ($entries as $e) {
+                    if ($e['directChild']) {
+                        @IPS_DeleteVariable($e['id']);
+                    }
+                }
             }
         }
     }
 
-    // WICHTIG: bewusst KEIN RegisterVariable*() — das bindet den Ident an die
-    // Instanzebene. Beim zweiten ApplyChanges (Configurator-Erstellung ruft es
-    // mehrfach) fände RegisterVariable* die längst in die Kategorie verschobene
-    // Variable nicht mehr, legte sie neu an und kollidierte beim Verschieben
-    // („Ident muss für jede Ebene eindeutig sein" — real gemeldet beim Anlegen
-    // aus der Discovery). Stattdessen das InverterHub-Muster: rekursiv suchen,
-    // sonst IPS_CreateVariable + IPS_SetIdent direkt unter der Kategorie.
+    // Erzeugung über RegisterVariableX (nötig für die Kernel-Standardaktion,
+    // siehe EnableAction()-Aufruf unten), aber NUR bei echter Neuanlage
+    // (!$vid) — ein erneuter Aufruf, nachdem die Variable längst in ihre
+    // Kategorie verschoben wurde, kollidiert dort beim IPS_SetParent
+    // ("Ident muss für jede Ebene eindeutig sein", siehe CHANGELOG 0.9.13/14).
+    // Bereits bestehende Variablen werden über die rekursive FindVarByIdent()
+    // gefunden (InverterHub-Muster), nicht erneut registriert.
     private function RegisterVar(array $def, int $pos)
     {
         [$ident, $caption, $type, $profile, $archive, $group, $reg] = $def;

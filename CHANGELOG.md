@@ -11,6 +11,27 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
   wirkte wie der einzige/erwartete Weg.
 
+## [0.9.18-beta.1] - 2026-07-27
+
+### Fixed
+- Karteileichen von Instanzen aufgeräumt, die während des kurzen 0.9.13-Zwischenfalls
+  (ApplyChanges brach mitten im Lauf ab) eine zweite, direkt unter der Instanz hängende Kopie
+  jeder Variable erhalten hatten, während die korrekte, in ihrer Kategorie verschachtelte
+  Variable unangetastet weiterlief (live gefunden bei Dietmars beiden Instanzen, z. B.
+  „Ladestatus" existierte doppelt). `PruneForeignObjects()` erkennt jetzt zusätzlich zum
+  bisherigen „Ident nicht mehr gültig"-Fall auch doppelt vorkommende Idents und löscht gezielt
+  die direkt unter der Instanz hängende Kopie, behält die verschachtelte.
+- Veralteten, seit 0.9.12 widersprüchlichen Kommentar über `RegisterVar()` korrigiert (verwies
+  noch auf das längst abgelöste rohe `IPS_CreateVariable()`-Muster).
+
+## [0.9.17-beta.1] - 2026-07-25
+
+### Changed
+- Formular: Hinweis im „Verbindung"-Panel ergänzt, dass Host/Port/UnitId normalerweise
+  automatisch von der ChargerHub-Suche befüllt werden — manuelle Eingabe ist nur der Fallback
+  für händisch angelegte Instanzen. Gefunden bei einer Selbstprüfung nach dem SUITE.md-Kapitel
+  „keine eigene Anlage als Norm annehmen" (analog zu einem echten Usability-Fund bei EMS).
+
 ## [0.9.16-beta.1] - 2026-07-25
 
 ### Fixed
