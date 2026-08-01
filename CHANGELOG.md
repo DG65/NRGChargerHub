@@ -11,6 +11,21 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
   wirkte wie der einzige/erwartete Weg.
 
+## [0.9.20-beta.1] - 2026-07-29
+
+### Added
+- `ChargerHubDiscovery`: MigrationsHub-Anbindung nach Verbund-Konvention (mit MigrationsHub,
+  InverterHub, MeterHub abgestimmt, Referenz `MeterHubDiscovery` 0.21.0-beta.1). Beim Suchlauf
+  wird je Fund über `MIGHUB_FindLegacyCandidates($id, $host, $port, $unitId)` geprüft, ob eine
+  Alt-Instanz eines anderen Moduls an derselben IP/Unit-ID existiert (Matching NIE über den
+  Namen). Erkennt die Suche eine Alt-Instanz: neue ChargerHub-Instanz kommt mit „Kommunikation
+  aktiv" = aus, ein neuer Button „Migration vorbereiten" verknüpft Alt-/Neu-Instanz über
+  `MIGHUB_PrefillMigration()` (legt bei Bedarf eine MigrationsHub-Instanz an), ein
+  `OpenObjectButton` führt direkt dorthin. Alles hinter `function_exists('MIGHUB_...')`
+  abgesichert — ohne MigrationsHub verhält sich die Suche wie bisher. MQTT-/OCPP-Altbestände
+  (z. B. go-e per MQTT, OCPP-Splitter) sind bewusst außen vor: ChargerHub spricht aktuell nur
+  Modbus TCP, für andere Transportwege gibt es bei uns keine Zielstruktur.
+
 ## [0.9.19-beta.1] - 2026-07-27
 
 ### Fixed

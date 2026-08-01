@@ -18,6 +18,7 @@
 class ChargerHubDiscovery extends IPSModule
 {
     private const CHARGERHUB_GUID = '{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}';
+    private const MIGRATIONSHUB_GUID = '{330717BB-E309-41A2-90A8-FDA3179ED948}';
 
     // Kandidaten je Hersteller: Unit-IDs, die typischerweise/dokumentiert
     // Standard sind (kleine Liste statt vollem 1-247-Bereich).
@@ -117,21 +118,31 @@ class ChargerHubDiscovery extends IPSModule
                 $instanceName = $r['label'] . ' ' . $nr;
             }
 
+            $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId']);
+            $config = [
+                'Host'         => $r['ip'],
+                'Port'         => $this->ReadPropertyInteger('Port'),
+                'UnitId'       => $r['unitId'],
+                'Manufacturer' => $r['vendor'],
+            ];
+            if ($legacy['id'] > 0) {
+                // Kommunikation bleibt aus, bis die Migration abgeschlossen
+                // ist — sonst überlappt sich neu geloggte mit übertragener
+                // Alt-Historie (siehe Doku-Panel-Hinweis oben).
+                $config['Active'] = false;
+            }
+
             $values[] = [
                 'name'         => $r['label'] . ' @ ' . $r['ip'] . ' (Unit ' . $r['unitId'] . ')',
                 'manufacturer' => $r['label'],
                 'ip'           => $r['ip'],
                 'unitId'       => $r['unitId'],
+                'legacy'       => $legacy['id'] > 0 ? ('⚠️ ' . $legacy['name'] . ' (#' . $legacy['id'] . ')') : '',
                 'instanceID'   => $existing[$key] ?? 0,
                 'create'       => [
                     'moduleID'      => self::CHARGERHUB_GUID,
                     'name'          => $instanceName,
-                    'configuration' => [
-                        'Host'         => $r['ip'],
-                        'Port'         => $this->ReadPropertyInteger('Port'),
-                        'UnitId'       => $r['unitId'],
-                        'Manufacturer' => $r['vendor'],
-                    ],
+                    'configuration' => $config,
                 ],
             ];
         }
@@ -148,6 +159,7 @@ class ChargerHubDiscovery extends IPSModule
                         ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+. Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
                         ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP durchsuchen — das nutzt eine langsamere, aber zuverlässigere Port-Prüfung.'],
                         ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für die Suche unsichtbar. In der Praxis beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — zum Prüfen im Browser aufrufen: http://<wallbox-ip>/api/status?filter=men'],
+                        ['type' => 'Label', 'caption' => '🔀 Neue Instanz kommt mit „Kommunikation aktiv" bereits eingeschaltet. Falls ein Umstieg von einem anderen Wallbox-/Hub-Modul mit Übernahme der Historie geplant ist: direkt nach dem Anlegen an der neuen ChargerHub-Instanz wieder ausschalten, bis MigrationsHub die alte Historie übernommen hat — sonst überlappen sich die neu geloggten Werte mit der übertragenen Alt-Historie.'],
                     ],
                 ],
                 [
@@ -196,9 +208,22 @@ class ChargerHubDiscovery extends IPSModule
                                 ['caption' => 'Hersteller', 'name' => 'manufacturer', 'width' => '250px'],
                                 ['caption' => 'IP-Adresse', 'name' => 'ip',           'width' => '150px'],
                                 ['caption' => 'Unit ID',    'name' => 'unitId',       'width' => '100px'],
+                                ['caption' => 'Alt-Instanz gefunden (MigrationsHub)', 'name' => 'legacy', 'width' => '280px',
+                                 'visible' => function_exists('MIGHUB_FindLegacyCandidates')],
                             ],
                             'values' => $values,
                         ],
+                        [
+                            'type' => 'Label', 'caption' => '🔀 Migration von einer Alt-Instanz (anderes Modul, gleiche IP/Unit-ID): erst oben „Erstellen" klicken — Kommunikation bleibt bei erkannter Alt-Instanz automatisch aus —, dann hier „Migration vorbereiten". Verknüpft die neue mit der alten Instanz in MigrationsHub; Simulation, Bestätigung und Ausführung bleiben dort bewusst manuelle Schritte. Bei mehreren Treffern: nach jeder abgeschlossenen Migration erneut klicken.',
+                            'visible' => function_exists('MIGHUB_FindLegacyCandidates'),
+                        ],
+                        [
+                            'type' => 'Button', 'name' => 'BtnPrepareMigration', 'caption' => '🔀  Migration vorbereiten',
+                            'onClick' => 'CHUBD_PrepareMigration($id);',
+                            'visible' => function_exists('MIGHUB_FindLegacyCandidates'),
+                        ],
+                        ['type' => 'Label', 'name' => 'MigrationResult', 'caption' => '', 'visible' => false],
+                        ['type' => 'OpenObjectButton', 'name' => 'BtnOpenMigration', 'caption' => '→ Zur MigrationsHub-Instanz', 'objectID' => 0, 'visible' => false],
                     ],
                 ],
             ],
@@ -292,6 +317,88 @@ class ChargerHubDiscovery extends IPSModule
             }
         }
         return $map;
+    }
+
+    /**
+     * Alt-Instanz eines Fremdmoduls an derselben IP/Unit-ID, falls
+     * MigrationsHub installiert ist und eine kennt. Optionale Kopplung
+     * (Verbund-Konvention 29.07.2026, mit MigrationsHub abgestimmt) — ohne
+     * MigrationsHub liefert dies immer "nichts gefunden", bricht nichts.
+     */
+    private function LegacyCandidateFor(string $host, int $unitId): array
+    {
+        if (!function_exists('MIGHUB_FindLegacyCandidates')) {
+            return ['id' => 0, 'name' => ''];
+        }
+        $found = @MIGHUB_FindLegacyCandidates($this->InstanceID, $host, $this->ReadPropertyInteger('Port'), $unitId);
+        if (!is_array($found) || count($found) === 0) {
+            return ['id' => 0, 'name' => ''];
+        }
+        $first = $found[0];
+        $id = (int)($first['instanceID'] ?? $first['id'] ?? 0);
+        if ($id <= 0) {
+            return ['id' => 0, 'name' => ''];
+        }
+        return ['id' => $id, 'name' => (string)($first['name'] ?? IPS_GetName($id))];
+    }
+
+    /**
+     * Verknüpft die erste bereits erstellte ChargerHub-Instanz, für die eine
+     * Alt-Instanz gefunden wurde, mit MigrationsHub — legt bei Bedarf eine
+     * MigrationsHub-Instanz an (wiederverwendet eine vorhandene) und ruft
+     * MIGHUB_PrefillMigration() auf. Absichtlich nur EIN Treffer je Klick:
+     * PrefillMigration setzt Source/Target auf EINER MigrationsHub-Instanz,
+     * ein zweiter Aufruf vor Abschluss der ersten Migration würde die noch
+     * nicht bestätigte Zuordnung überschreiben.
+     */
+    public function PrepareMigration()
+    {
+        $say = function (string $m) {
+            $this->UpdateFormField('MigrationResult', 'caption', $m);
+            $this->UpdateFormField('MigrationResult', 'visible', true);
+        };
+        if (!function_exists('MIGHUB_FindLegacyCandidates') || !function_exists('MIGHUB_PrefillMigration')) {
+            $say('❌ MigrationsHub ist nicht installiert.');
+            return;
+        }
+
+        $results = json_decode($this->ReadAttributeString('ResultsJSON'), true);
+        $results = is_array($results) ? $results : [];
+        $existing = $this->findExistingInstances();
+
+        foreach ($results as $r) {
+            $targetID = $existing[$r['ip'] . '|' . $r['unitId']] ?? 0;
+            if ($targetID <= 0) {
+                continue; // Für diese Zeile wurde noch keine ChargerHub-Instanz erstellt.
+            }
+            $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId']);
+            if ($legacy['id'] <= 0) {
+                continue;
+            }
+
+            // Kommunikation sicherheitshalber aus, falls sie inzwischen
+            // (manuell oder weil die Zeile vor dieser Funktion schon einmal
+            // erstellt wurde) doch aktiv ist.
+            if (@IPS_GetProperty($targetID, 'Active') === true) {
+                IPS_SetProperty($targetID, 'Active', false);
+                IPS_ApplyChanges($targetID);
+            }
+
+            $migIDs = IPS_GetInstanceListByModuleID(self::MIGRATIONSHUB_GUID);
+            $migID = $migIDs[0] ?? 0;
+            if ($migID <= 0) {
+                $migID = IPS_CreateInstance(self::MIGRATIONSHUB_GUID);
+            }
+            MIGHUB_PrefillMigration($migID, $legacy['id'], $targetID);
+
+            $say('✅ Migration vorbereitet: „' . $legacy['name'] . '" (#' . $legacy['id'] . ') → „' .
+                IPS_GetName($targetID) . '" (#' . $targetID . '). Weiter in der MigrationsHub-Instanz — dort simulieren, prüfen, ausführen.');
+            $this->UpdateFormField('BtnOpenMigration', 'objectID', $migID);
+            $this->UpdateFormField('BtnOpenMigration', 'visible', true);
+            return;
+        }
+
+        $say('🔎 Keine passende Kombination aus bereits erstellter ChargerHub-Instanz und gefundener Alt-Instanz — erst oben „Erstellen" klicken.');
     }
 
     private function ParseIgnoreIPs()
