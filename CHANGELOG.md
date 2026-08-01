@@ -11,6 +11,18 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
   wirkte wie der einzige/erwartete Weg.
 
+## [0.9.21-beta.1] - 2026-07-29
+
+### Fixed
+- `ChargerHubDiscovery`: `LegacyCandidateFor()` übergab an `MIGHUB_FindLegacyCandidates()`
+  fälschlich `$this->InstanceID` (die eigene Discovery-Instanz) statt einer
+  MigrationsHub-Instanz-ID — live abgestürzt beim Formular-Aufbau ("Instance does not
+  implement this function", Testfall `#19716` von MigrationsHub). Sucht jetzt wie
+  `PerformMigration()` über `IPS_GetInstanceListByModuleID()` nach einer vorhandenen
+  MigrationsHub-Instanz; ohne eine solche gibt es „nichts gefunden" statt eines Fatal Errors —
+  legt dabei selbst keine Instanz an (das bleibt dem expliziten „Migration vorbereiten"-Klick
+  vorbehalten).
+
 ## [0.9.20-beta.1] - 2026-07-29
 
 ### Added

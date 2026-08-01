@@ -330,7 +330,19 @@ class ChargerHubDiscovery extends IPSModule
         if (!function_exists('MIGHUB_FindLegacyCandidates')) {
             return ['id' => 0, 'name' => ''];
         }
-        $found = @MIGHUB_FindLegacyCandidates($this->InstanceID, $host, $this->ReadPropertyInteger('Port'), $unitId);
+        // WICHTIG: erster Parameter ist eine MIGRATIONSHUB-Instanz-ID, NICHT
+        // unsere eigene ($this->InstanceID) — Verwechslung führte live zu
+        // "Instance does not implement this function" (MigrationsHub prüft
+        // per Reflection, ob die übergebene Instanz sein eigenes Modul ist).
+        // Im schreibgeschützten Formular-Aufbau keine Instanz anlegen (das
+        // bleibt PerformMigration() bei explizitem Klick vorbehalten) — ohne
+        // vorhandene MigrationsHub-Instanz gibt es ohnehin nichts zu finden.
+        $migIDs = @IPS_GetInstanceListByModuleID(self::MIGRATIONSHUB_GUID);
+        $migID = $migIDs[0] ?? 0;
+        if ($migID <= 0) {
+            return ['id' => 0, 'name' => ''];
+        }
+        $found = @MIGHUB_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId);
         if (!is_array($found) || count($found) === 0) {
             return ['id' => 0, 'name' => ''];
         }
