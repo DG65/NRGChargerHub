@@ -11,6 +11,18 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
   wirkte wie der einzige/erwartete Weg.
 
+## [0.9.22-beta.1] - 2026-08-02
+
+### Fixed
+- `ChargerHubDiscovery`: Bei mehreren Alt-Instanz-Treffern an derselben IP (live gefunden: zwei
+  goeCharger-Fremdinstanzen unter derselben IP, eine davon eine Sicherungs-Kopie — das
+  goeCharger-Modul speichert keine Unit-ID, das Matching lief nur über die IP) wählte
+  `LegacyCandidateFor()` bisher stillschweigend den ersten Treffer — Risiko, die Historie der
+  physisch falschen Wallbox zu verknüpfen. Bei Mehrdeutigkeit wird jetzt NICHTS automatisch
+  gewählt (`ambiguous`-Flag), die Ergebnisliste zeigt „Mehrere Alt-Instanzen — bitte manuell
+  verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
+  Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
+
 ## [0.9.21-beta.1] - 2026-07-29
 
 ### Fixed

@@ -125,11 +125,21 @@ class ChargerHubDiscovery extends IPSModule
                 'UnitId'       => $r['unitId'],
                 'Manufacturer' => $r['vendor'],
             ];
-            if ($legacy['id'] > 0) {
+            if ($legacy['id'] > 0 || $legacy['ambiguous']) {
                 // Kommunikation bleibt aus, bis die Migration abgeschlossen
                 // ist — sonst überlappt sich neu geloggte mit übertragener
-                // Alt-Historie (siehe Doku-Panel-Hinweis oben).
+                // Alt-Historie (siehe Doku-Panel-Hinweis oben). Auch bei
+                // Mehrdeutigkeit sicherheitshalber aus, bis der Nutzer manuell
+                // geklärt hat, welche Alt-Instanz die richtige ist.
                 $config['Active'] = false;
+            }
+
+            if ($legacy['ambiguous']) {
+                $legacyText = '⚠️ Mehrere Alt-Instanzen (' . $legacy['name'] . ') — bitte manuell in MigrationsHub verknüpfen';
+            } elseif ($legacy['id'] > 0) {
+                $legacyText = '⚠️ ' . $legacy['name'] . ' (#' . $legacy['id'] . ')';
+            } else {
+                $legacyText = '';
             }
 
             $values[] = [
@@ -137,7 +147,7 @@ class ChargerHubDiscovery extends IPSModule
                 'manufacturer' => $r['label'],
                 'ip'           => $r['ip'],
                 'unitId'       => $r['unitId'],
-                'legacy'       => $legacy['id'] > 0 ? ('⚠️ ' . $legacy['name'] . ' (#' . $legacy['id'] . ')') : '',
+                'legacy'       => $legacyText,
                 'instanceID'   => $existing[$key] ?? 0,
                 'create'       => [
                     'moduleID'      => self::CHARGERHUB_GUID,
@@ -325,10 +335,19 @@ class ChargerHubDiscovery extends IPSModule
      * (Verbund-Konvention 29.07.2026, mit MigrationsHub abgestimmt) — ohne
      * MigrationsHub liefert dies immer "nichts gefunden", bricht nichts.
      */
+    // Rückgabe: ['id' => int, 'name' => string, 'ambiguous' => bool]. Bei
+    // mehreren Treffern (live beobachtet: zwei goeCharger-Fremdinstanzen mit
+    // identischer IP, eine davon offenbar eine bewusste Sicherungs-Kopie)
+    // NIE automatisch den ersten wählen — das goeCharger-Modul speichert
+    // keine Unit-ID, das Matching läuft dann nur über die IP und kann die
+    // physisch falsche Wallbox treffen. Bei Mehrdeutigkeit lieber gar nichts
+    // vorschlagen (id=0, ambiguous=true) und den Nutzer auf die manuelle
+    // Verknüpfung in MigrationsHub verweisen, als eine falsche Historie zu
+    // verknüpfen.
     private function LegacyCandidateFor(string $host, int $unitId): array
     {
         if (!function_exists('MIGHUB_FindLegacyCandidates')) {
-            return ['id' => 0, 'name' => ''];
+            return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
         // WICHTIG: erster Parameter ist eine MIGRATIONSHUB-Instanz-ID, NICHT
         // unsere eigene ($this->InstanceID) — Verwechslung führte live zu
@@ -340,18 +359,25 @@ class ChargerHubDiscovery extends IPSModule
         $migIDs = @IPS_GetInstanceListByModuleID(self::MIGRATIONSHUB_GUID);
         $migID = $migIDs[0] ?? 0;
         if ($migID <= 0) {
-            return ['id' => 0, 'name' => ''];
+            return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
         $found = @MIGHUB_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId);
         if (!is_array($found) || count($found) === 0) {
-            return ['id' => 0, 'name' => ''];
+            return ['id' => 0, 'name' => '', 'ambiguous' => false];
+        }
+        if (count($found) > 1) {
+            $names = array_map(function ($f) {
+                $id = (int)($f['instanceID'] ?? $f['id'] ?? 0);
+                return (string)($f['name'] ?? IPS_GetName($id)) . ' (#' . $id . ')';
+            }, $found);
+            return ['id' => 0, 'name' => implode(', ', $names), 'ambiguous' => true];
         }
         $first = $found[0];
         $id = (int)($first['instanceID'] ?? $first['id'] ?? 0);
         if ($id <= 0) {
-            return ['id' => 0, 'name' => ''];
+            return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
-        return ['id' => $id, 'name' => (string)($first['name'] ?? IPS_GetName($id))];
+        return ['id' => $id, 'name' => (string)($first['name'] ?? IPS_GetName($id)), 'ambiguous' => false];
     }
 
     /**
@@ -384,6 +410,14 @@ class ChargerHubDiscovery extends IPSModule
                 continue; // Für diese Zeile wurde noch keine ChargerHub-Instanz erstellt.
             }
             $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId']);
+            if ($legacy['ambiguous']) {
+                // Nicht automatisch verknüpfen (siehe LegacyCandidateFor) —
+                // vorher lief das hier still durch, ohne dass der Nutzer
+                // erfuhr, warum nichts passiert ist.
+                $say('⚠️ Mehrere Alt-Instanzen an „' . $r['ip'] . '" gefunden (' . $legacy['name'] .
+                    ') — bitte manuell in MigrationsHub verknüpfen, keine automatische Zuordnung möglich.');
+                continue;
+            }
             if ($legacy['id'] <= 0) {
                 continue;
             }
