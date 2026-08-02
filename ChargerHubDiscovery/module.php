@@ -366,9 +366,17 @@ class ChargerHubDiscovery extends IPSModule
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
         if (count($found) > 1) {
+            // 'Path' (Kategorie-Pfad von der Wurzel) unterscheidet Treffer
+            // mit identischem Namen an derselben IP — z. B. eine bewusste
+            // Sicherungs-Kopie in einer anderen Kategorie (mit MigrationsHub
+            // abgestimmt, live an genau diesem Fall verifiziert).
             $names = array_map(function ($f) {
                 $id = (int)($f['instanceID'] ?? $f['id'] ?? 0);
-                return (string)($f['name'] ?? IPS_GetName($id)) . ' (#' . $id . ')';
+                $label = (string)($f['name'] ?? IPS_GetName($id)) . ' (#' . $id . ')';
+                if (!empty($f['Path'])) {
+                    $label .= ' [' . $f['Path'] . ']';
+                }
+                return $label;
             }, $found);
             return ['id' => 0, 'name' => implode(', ', $names), 'ambiguous' => true];
         }

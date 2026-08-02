@@ -11,6 +11,14 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
   wirkte wie der einzige/erwartete Weg.
 
+## [0.9.23-beta.1] - 2026-08-02
+
+### Changed
+- `ChargerHubDiscovery`: Bei mehreren Alt-Instanz-Treffern zeigt die Ergebnisliste jetzt den von
+  MigrationsHub gelieferten Kategorie-Pfad je Kandidat an (z. B. „WB 1 (#19716) [Geräte /
+  Module / Wallboxen / API]" vs. „WB 1 (#48730) [Sicherung]") — damit lässt sich die richtige
+  Alt-Instanz vor der manuellen Verknüpfung erkennen, statt nur „mehrere gefunden" zu sehen.
+
 ## [0.9.22-beta.1] - 2026-08-02
 
 ### Fixed
