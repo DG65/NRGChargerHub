@@ -31,6 +31,20 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.24-beta.1] - 2026-08-02
+
+### Added
+- Neu: RFID-Kartenzähler (Name + Energie je Karte, 0–9) für go-eCharger über MQTT. Die
+  offizielle go-e-Modbus-Registertabelle enthält diese Werte nicht — nur die HTTP/MQTT-API bietet
+  sie an (`c0n`…`c9n` Kartenname, `c0e`…`c9e` Energie in Wh). Modul deklariert jetzt
+  `parentRequirements`/`implemented` für die native IP-Symcon-MQTT-Client-Schnittstelle
+  (`{043EA491-0325-4ADD-8FC2-A30C8EEB4D3F}`/`{7F7632D9-FA40-4F38-8DEA-C83CD4325A32}`, gegen ein
+  reales, gepflegtes Referenzmodul verifiziert, nicht geraten). Neue Property
+  „RFID-Kartenzähler per MQTT abbilden" (nur go-eCharger). `ReceiveData()` filtert per
+  `SetReceiveDataFilter()` gezielt auf Topics der EIGENEN Seriennummer — bei mehreren
+  go-e-Geräten am selben Broker (wie bei Dietmars zwei Wallboxen) würde ein Topic-Filter ohne
+  Seriennummer sonst die Kartendaten der jeweils anderen Wallbox übernehmen.
+
 ## [0.9.21-beta.1] - 2026-07-29
 
 ### Fixed

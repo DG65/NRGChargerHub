@@ -1191,13 +1191,10 @@ class ChargerHub extends IPSModule
 
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.9.2';
+    private const NEWS_VERSION = '0.9.24';
     private const NEWS_ITEMS = [
-        'Neues Auswahlfeld „Wer regelt diesen Ladepunkt?" ersetzt die alte Checkbox „extern geregelt" — bitte einmal prüfen und den passenden Regler eintragen (z. B. go-e Controller, Tibber).',
-        'go-eCharger: viele neue Steuerungsmöglichkeiten (Phasenumschaltung, Zugangskontrolle, Kabelverriegelung, Energielimit je Ladevorgang, LED-Helligkeit) sowie mehr Statuswerte (Leistung je Phase, genutzte Phasen, Adapter, RFID-Karte).',
-        'KEBA-Registerkarte korrigiert (war fehlerhaft) — bitte Werte an echter Hardware neu prüfen.',
-        'Neue Property „Maximaler Anschlussstrom" — harte Grenze für jeden Schreibvorgang, unabhängig vom anfragenden Regler.',
-        'Gemeinsame Variablenprofile (NRG.Watt, NRG.kWh, NRG.Ampere, NRG.Volt, NRG.Celsius) statt eigener CHB.*-Profile — eine selbst gewählte „Wertanzeige" bitte einmal prüfen.',
+        'Ladefreigabe/Stromlimit sind jetzt wirklich bedienbar (Console/WebFront) — Ursache war eine falsche SDK-API bei der Steuer-Variablen-Verknüpfung, live durchleuchtet und behoben.',
+        'Neu: RFID-Kartenzähler (Name + Energie je Karte, 0–9) für go-eCharger über MQTT — Modbus bietet diese Werte nicht an. Siehe Panel „RFID-Kartenzähler" (erfordert eine verbundene MQTT-Client-Instanz).',
     ];
 
     private const DRIVERS = [
@@ -1272,6 +1269,12 @@ class ChargerHub extends IPSModule
         // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
         // Verteidigungslinie unabhängig vom EMS (EMS-Vertragsabsprache).
         $this->RegisterPropertyInteger('MaxCurrent', 16);
+        // go-e-exklusiv: RFID-Kartenzähler (Name + Energie je Karte 0–9)
+        // stehen NICHT über Modbus zur Verfügung (offizielle Registertabelle
+        // enthält sie nicht), nur über MQTT (Topics go-eCharger/<Seriennummer>/
+        // c0n…c9n bzw. c0e…c9e). Setzt eine Anbindung an eine IP-Symcon-
+        // MQTT-Client-Instanz voraus (Splitter-Anschluss über parentRequirements).
+        $this->RegisterPropertyBoolean('MqttCardsEnabled', false);
 
         // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
         // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
@@ -1349,6 +1352,54 @@ class ChargerHub extends IPSModule
             return;
         }
         $this->GetDriver()->readValues($this->GetModbusClient(), $this);
+        if ($this->ReadPropertyString('Manufacturer') === 'goe' && $this->ReadPropertyBoolean('MqttCardsEnabled')) {
+            // Die Seriennummer (fürs MQTT-Topic-Filter nötig, siehe
+            // UpdateMqttReceiveFilter) ist erst NACH dem ersten erfolgreichen
+            // Modbus-Lesevorgang bekannt — daher hier statt in ApplyChanges.
+            $this->UpdateMqttReceiveFilter();
+        }
+    }
+
+    // Grenzt ein, welche eingehenden MQTT-Pakete ReceiveData() überhaupt
+    // erreichen (Kernel-seitiger Regex-Filter auf das komplette JSON-Paket,
+    // Muster wie im etablierten Tasmota-Symcon-Modul) — ohne das würde diese
+    // Instanz bei mehreren go-e-Geräten am selben Broker (wie bei Dietmars
+    // zwei Wallboxen) auch die RFID-Kartendaten der JEWEILS ANDEREN Wallbox
+    // empfangen und fälschlich übernehmen.
+    private function UpdateMqttReceiveFilter(): void
+    {
+        $serial = trim((string)$this->GetVarValue('dev_serial'));
+        if ($serial === '') {
+            return;
+        }
+        $this->SetReceiveDataFilter('.*"Topic":"go-eCharger\\/' . preg_quote($serial, '/') . '\\/c[0-9][ne]".*');
+    }
+
+    // MQTT-Pakete vom verbundenen MQTT-Client (Splitter). Nur relevant, wenn
+    // MqttCardsEnabled aktiv ist — SetReceiveDataFilter() lässt sonst gar
+    // nichts durch, hier trotzdem defensiv nochmal geprüft.
+    public function ReceiveData($JSONString)
+    {
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe' || !$this->ReadPropertyBoolean('MqttCardsEnabled')) {
+            return;
+        }
+        $data = json_decode($JSONString);
+        if (!is_object($data) || !isset($data->Topic, $data->Payload)) {
+            return;
+        }
+        // Topic: go-eCharger/<Seriennummer>/c<N><n|e>
+        if (!preg_match('#/c([0-9])([ne])$#', (string)$data->Topic, $m)) {
+            return;
+        }
+        $idx = (int)$m[1];
+        $payload = json_decode((string)$data->Payload);
+        if ($m[2] === 'n') {
+            $this->SetVarStr("card{$idx}_name", is_string($payload) ? $payload : (string)$data->Payload);
+        } else {
+            // c0e…c9e: Energie in Wh (uint64) laut offizieller go-e-API-Doku.
+            $wh = is_numeric($payload) ? (float)$payload : 0.0;
+            $this->SetVarFloat("card{$idx}_energy", $wh / 1000.0);
+        }
     }
 
     public function RequestAction($Ident, $Value)
@@ -1520,7 +1571,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.23-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.24-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1578,6 +1629,15 @@ class ChargerHub extends IPSModule
                     'caption'  => '📊  Datenpunkte',
                     'expanded' => true,
                     'items'    => $groupItems,
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🆕 📇  RFID-Kartenzähler (nur go-eCharger, per MQTT)',
+                    'expanded' => false,
+                    'items'    => [
+                        ['type' => 'Label', 'caption' => 'Kartenname + Energie je RFID-Karte (0–9) stehen nicht über Modbus zur Verfügung — nur über MQTT. Dafür oben rechts (Instanz-Kopfzeile) eine bestehende MQTT-Client-Instanz verbinden, dort muss der go-eCharger als MQTT-Broker-Ziel eingetragen sein (App → Internet → Erweiterte Einstellungen → MQTT). Ohne verbundene MQTT-Instanz bleibt diese Option wirkungslos.'],
+                        ['type' => 'CheckBox', 'name' => 'MqttCardsEnabled', 'caption' => 'RFID-Kartenzähler per MQTT abbilden'],
+                    ],
                 ],
             ],
             'actions' => [
@@ -1646,6 +1706,18 @@ class ChargerHub extends IPSModule
     // InverterHub/MeterHub.
     // -----------------------------------------------------------------------
 
+    // RFID-Kartenzähler je Karte (0–9): Name + Energie. Nur go-eCharger, nur
+    // wenn per Property freigeschaltet — kommt ausschließlich über MQTT
+    // (siehe ReceiveData()), nicht über Modbus, daher unabhängig von den
+    // Treiber-Datenpunktgruppen behandelt statt über ChargerDriverInterface.
+    private function RegisterMqttCardVars(): void
+    {
+        for ($i = 0; $i <= 9; $i++) {
+            $this->RegisterVar(["card{$i}_name", "Karte {$i}: Name", 'S', '', false, 'cards', ''], 100 + $i * 2);
+            $this->RegisterVar(["card{$i}_energy", "Karte {$i}: Energie", 'F', '~Electricity', false, 'cards', ''], 100 + $i * 2 + 1);
+        }
+    }
+
     private function RegisterVariables()
     {
         $driver = $this->GetDriver();
@@ -1661,6 +1733,14 @@ class ChargerHub extends IPSModule
                 }
             }
         }
+        $mqttCardsActive = $this->ReadPropertyString('Manufacturer') === 'goe'
+            && $this->ReadPropertyBoolean('MqttCardsEnabled');
+        if ($mqttCardsActive) {
+            for ($i = 0; $i <= 9; $i++) {
+                $valid["card{$i}_name"]   = true;
+                $valid["card{$i}_energy"] = true;
+            }
+        }
         $this->PruneForeignObjects($valid);
 
         $pos = 0;
@@ -1673,6 +1753,9 @@ class ChargerHub extends IPSModule
                     $this->RegisterVar($v, $pos++);
                 }
             }
+        }
+        if ($mqttCardsActive) {
+            $this->RegisterMqttCardVars();
         }
 
         // Migration abgeschlossen — ab hier nie wieder Steuervariablen
@@ -1860,6 +1943,7 @@ class ChargerHub extends IPSModule
             'device'  => 'Gerät',
             'phases'  => 'Phasen',
             'control' => 'Steuerung',
+            'cards'   => 'RFID-Karten',
         ];
         $cid = IPS_CreateCategory();
         IPS_SetParent($cid, $this->InstanceID);
