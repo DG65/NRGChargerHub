@@ -1706,44 +1706,56 @@ class ChargerHub extends IPSModule
     // AC_ChangeVariableID-Crashs: Typ-Mismatch nicht erkannt).
     // Rückgabeformat je Eintrag: ['oldIdent' => ..., 'newIdent' => ...,
     // 'type' => 'Integer'|'Float'|'Boolean'|'String'].
-    public function GetIdentMapping(string $foreignModuleID): array
+    // Verbund-Vertrag (03.08.2026, mit MigrationsHub/MeterHub/InverterHub
+    // abgestimmt, finale 3-Parameter-Fassung): $foreignIdents sind die an der
+    // Alt-Instanz TATSÄCHLICH vorhandenen Idents — reines GUID-Matching würde
+    // bei Firmware-abhängig unterschiedlich benannten Feldern ins Leere
+    // laufen. Rückgabe nur für tatsächlich erkannte Treffer, keyed nach dem
+    // Alt-Ident. $id wird von Symcon bei CHUB_GetIdentMapping($id, ...)
+    // automatisch injiziert, taucht daher hier nicht als PHP-Parameter auf
+    // (wie bei GetFunctions()/RequestAction() auch).
+    public function GetIdentMapping(string $foreignModuleGUID, array $foreignIdents): array
     {
         // Aktuell nur das go-eCharger-Fremdmodul (github.com/IPSCoyote/
         // GO-eCharger) — Mapping am Quellcode verifiziert (siehe README,
         // Abschnitt "Migration vom go-eCharger-Modul"). Karten-Index-Offset
         // (Alt 1-basiert, ChargerHub 0-basiert) hier bereits eingerechnet.
-        if ($foreignModuleID !== '{B4624A42-F80A-4975-B692-7FB4D06CC805}') {
+        if ($foreignModuleGUID !== '{B4624A42-F80A-4975-B692-7FB4D06CC805}') {
             return [];
         }
         $map = [
-            ['status',            'state',          'Integer'],
-            ['powerToCarLineL1',  'power_l1',       'Float'],
-            ['powerToCarLineL2',  'power_l2',       'Float'],
-            ['powerToCarLineL3',  'power_l3',       'Float'],
-            ['powerToCarTotal',   'power',          'Float'],
-            ['ampToCarLineL1',    'current_l1',     'Float'],
-            ['ampToCarLineL2',    'current_l2',     'Float'],
-            ['ampToCarLineL3',    'current_l3',     'Float'],
-            ['energyTotal',       'energy_total',   'Float'],
-            ['energyLoadCycle',   'energy_session', 'Float'],
-            ['serialID',          'dev_serial',     'String'],
-            ['error',             'dev_error',      'Integer'],
-            ['supplyLineN',       'voltage_n',       'Float'],
-            ['supplyLineL1',      'voltage_l1',      'Float'],
-            ['supplyLineL2',      'voltage_l2',      'Float'],
-            ['supplyLineL3',      'voltage_l3',      'Float'],
-            ['adapterAttached',   'adapter',         'Boolean'],
-            ['unlockedByRFID',    'unlocked_by',     'Integer'],
-            ['cableUnlockMode',   'ctl_cable_lock',  'Integer'],
-            ['accessControl',     'ctl_access',      'Integer'],
-            ['cableCapability',   'cable_current',   'Integer'],
+            'status'           => ['state',          VARIABLETYPE_INTEGER],
+            'powerToCarLineL1' => ['power_l1',        VARIABLETYPE_FLOAT],
+            'powerToCarLineL2' => ['power_l2',        VARIABLETYPE_FLOAT],
+            'powerToCarLineL3' => ['power_l3',        VARIABLETYPE_FLOAT],
+            'powerToCarTotal'  => ['power',            VARIABLETYPE_FLOAT],
+            'ampToCarLineL1'   => ['current_l1',       VARIABLETYPE_FLOAT],
+            'ampToCarLineL2'   => ['current_l2',       VARIABLETYPE_FLOAT],
+            'ampToCarLineL3'   => ['current_l3',       VARIABLETYPE_FLOAT],
+            'energyTotal'      => ['energy_total',     VARIABLETYPE_FLOAT],
+            'energyLoadCycle'  => ['energy_session',   VARIABLETYPE_FLOAT],
+            'serialID'         => ['dev_serial',       VARIABLETYPE_STRING],
+            'error'            => ['dev_error',        VARIABLETYPE_INTEGER],
+            'supplyLineN'      => ['voltage_n',        VARIABLETYPE_FLOAT],
+            'supplyLineL1'     => ['voltage_l1',       VARIABLETYPE_FLOAT],
+            'supplyLineL2'     => ['voltage_l2',       VARIABLETYPE_FLOAT],
+            'supplyLineL3'     => ['voltage_l3',       VARIABLETYPE_FLOAT],
+            'adapterAttached'  => ['adapter',          VARIABLETYPE_BOOLEAN],
+            'unlockedByRFID'   => ['unlocked_by',      VARIABLETYPE_INTEGER],
+            'cableUnlockMode'  => ['ctl_cable_lock',   VARIABLETYPE_INTEGER],
+            'accessControl'    => ['ctl_access',       VARIABLETYPE_INTEGER],
+            'cableCapability'  => ['cable_current',    VARIABLETYPE_INTEGER],
         ];
         for ($n = 1; $n <= 10; $n++) {
-            $map[] = ['energyChargedCard' . $n, 'card' . ($n - 1) . '_energy', 'Float'];
+            $map['energyChargedCard' . $n] = ['card' . ($n - 1) . '_energy', VARIABLETYPE_FLOAT];
         }
+
         $result = [];
-        foreach ($map as [$old, $new, $type]) {
-            $result[] = ['oldIdent' => $old, 'newIdent' => $new, 'type' => $type];
+        foreach ($foreignIdents as $oldIdent) {
+            if (isset($map[$oldIdent])) {
+                [$newIdent, $type] = $map[$oldIdent];
+                $result[$oldIdent] = ['ident' => $newIdent, 'type' => $type];
+            }
         }
         return $result;
     }
@@ -1854,7 +1866,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.32-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.33-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

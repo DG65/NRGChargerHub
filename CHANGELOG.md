@@ -31,6 +31,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.33-beta.1] - 2026-08-03
+
+### Changed
+- `CHUB_GetIdentMapping()` auf den finalen, verbundweit abgestimmten 3-Parameter-Vertrag
+  umgestellt: `($foreignModuleGUID, array $foreignIdents): array`, Rückgabe jetzt keyed nach
+  Alt-Ident mit `['ident' => neuIdent, 'type' => VARIABLETYPE_*]` (int-Konstante statt
+  String-Label), gefiltert auf die tatsächlich übergebenen `$foreignIdents` — reines
+  GUID-Matching würde bei firmwareabhängig unterschiedlich benannten Feldern ins Leere laufen.
+
 ## [0.9.32-beta.1] - 2026-08-03
 
 ### Added
