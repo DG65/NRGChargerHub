@@ -31,6 +31,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.32-beta.1] - 2026-08-03
+
+### Added
+- `CHUB_GetIdentMapping($foreignModuleID): array` — schmale Auskunftsfunktion für
+  MigrationsHub (Verbund-Konvention, Alternative zu einer vollen "AdoptFromLegacyInstance" in
+  jedem Hub-Modul, um Reparent-/Prune-Logik nicht zu duplizieren). Liefert für das
+  go-eCharger-Fremdmodul (IPSCoyote/GO-eCharger) die bereits am Quellcode verifizierte
+  Ident+Typ-Zuordnung (30 Paare, siehe README) — MigrationsHub kann damit vor einem
+  `AC_ChangeVariableID()`-Aufruf auf Typgleichheit prüfen, statt sie per Preflight-Sonde zu
+  erraten (Ursache des heutigen `AC_ChangeVariableID`-Crashs: unerkannter Typ-Mismatch).
+
 ## [0.9.31-beta.1] - 2026-08-03
 
 ### Fixed

@@ -1695,6 +1695,59 @@ class ChargerHub extends IPSModule
         return $v;
     }
 
+    // Schmale Auskunftsfunktion für MigrationsHub (Verbund-Konvention
+    // 03.08.2026, mit MigrationsHub abgestimmt als Alternative zu einer
+    // vollen "AdoptFromLegacyInstance"-Funktion in jedem Hub-Modul — wir
+    // liefern nur unser Ident/Typ-Wissen, Reparenting/Pruning/Simulation
+    // bleibt zentral bei MigrationsHub). Gibt für ein bekanntes Fremdmodul
+    // (per GUID) die Ident- und Typ-Zuordnung zurück, damit ein
+    // AC_ChangeVariableID-Aufruf vorher auf Typgleichheit geprüft werden
+    // kann, statt per Preflight-Sonde zu raten (Ursache des heutigen
+    // AC_ChangeVariableID-Crashs: Typ-Mismatch nicht erkannt).
+    // Rückgabeformat je Eintrag: ['oldIdent' => ..., 'newIdent' => ...,
+    // 'type' => 'Integer'|'Float'|'Boolean'|'String'].
+    public function GetIdentMapping(string $foreignModuleID): array
+    {
+        // Aktuell nur das go-eCharger-Fremdmodul (github.com/IPSCoyote/
+        // GO-eCharger) — Mapping am Quellcode verifiziert (siehe README,
+        // Abschnitt "Migration vom go-eCharger-Modul"). Karten-Index-Offset
+        // (Alt 1-basiert, ChargerHub 0-basiert) hier bereits eingerechnet.
+        if ($foreignModuleID !== '{B4624A42-F80A-4975-B692-7FB4D06CC805}') {
+            return [];
+        }
+        $map = [
+            ['status',            'state',          'Integer'],
+            ['powerToCarLineL1',  'power_l1',       'Float'],
+            ['powerToCarLineL2',  'power_l2',       'Float'],
+            ['powerToCarLineL3',  'power_l3',       'Float'],
+            ['powerToCarTotal',   'power',          'Float'],
+            ['ampToCarLineL1',    'current_l1',     'Float'],
+            ['ampToCarLineL2',    'current_l2',     'Float'],
+            ['ampToCarLineL3',    'current_l3',     'Float'],
+            ['energyTotal',       'energy_total',   'Float'],
+            ['energyLoadCycle',   'energy_session', 'Float'],
+            ['serialID',          'dev_serial',     'String'],
+            ['error',             'dev_error',      'Integer'],
+            ['supplyLineN',       'voltage_n',       'Float'],
+            ['supplyLineL1',      'voltage_l1',      'Float'],
+            ['supplyLineL2',      'voltage_l2',      'Float'],
+            ['supplyLineL3',      'voltage_l3',      'Float'],
+            ['adapterAttached',   'adapter',         'Boolean'],
+            ['unlockedByRFID',    'unlocked_by',     'Integer'],
+            ['cableUnlockMode',   'ctl_cable_lock',  'Integer'],
+            ['accessControl',     'ctl_access',      'Integer'],
+            ['cableCapability',   'cable_current',   'Integer'],
+        ];
+        for ($n = 1; $n <= 10; $n++) {
+            $map[] = ['energyChargedCard' . $n, 'card' . ($n - 1) . '_energy', 'Float'];
+        }
+        $result = [];
+        foreach ($map as [$old, $new, $type]) {
+            $result[] = ['oldIdent' => $old, 'newIdent' => $new, 'type' => $type];
+        }
+        return $result;
+    }
+
     public function GetFunctions(): array
     {
         $powerID = $this->FindVarByIdent('power');
@@ -1801,7 +1854,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.31-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.32-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
