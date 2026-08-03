@@ -49,6 +49,30 @@ Wallbox-Typen (Modbus-TCP-Port 502) und legt gefundene Geräte per Klick als Cha
 mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an — analog zu InverterHubDiscovery/
 MeterHubDiscovery.
 
+## Migration vom go-eCharger-Modul (IPSCoyote/GO-eCharger)
+
+Wer von diesem verbreiteten Fremdmodul (github.com/IPSCoyote/GO-eCharger, GUID
+`{B4624A42-...}`) auf ChargerHub umsteigt, kann über **MigrationsHub** die Historie
+übernehmen (siehe „Einbindung in den Modul-Verbund" unten). Folgende Ident-Zuordnung wurde am
+Quellcode des Fremdmoduls verifiziert (Stand 03.08.2026, MigrationsHub-Sitzung):
+
+| Alt-Ident (GO-eCharger) | Neu-Ident (ChargerHub)    | Hinweis                              |
+| ------------------------ | -------------------------- | ------------------------------------- |
+| `status`                 | `state`                    |                                        |
+| `powerToCarLineL1/L2/L3` | `power_l1`/`power_l2`/`power_l3` |                                  |
+| `ampToCarLineL1/L2/L3`   | `current_l1`/`current_l2`/`current_l3` |                            |
+| `energyTotal`            | `energy_total`              |                                        |
+| `serialID`               | `dev_serial`                |                                        |
+| `energyChargedCard1`…`10`| `card0_energy`…`card9_energy` | **Achtung Index-Offset**: Alt-Modul zählt Karten 1-basiert (1–10), ChargerHub 0-basiert (0–9) — `energyChargedCard1` entspricht `card0_energy`, nicht `card1_energy`. |
+
+**Kein Alt-Gegenpart vorhanden** (im Fremdmodul-Quellcode nicht enthalten, keine Migration
+nötig/möglich): `carConnected`, `chargePower`, `energyChargedSession`, `firmwareVersion`. Diese
+Werte liest ChargerHub trotzdem — nur eben ohne übertragbare Alt-Historie.
+
+**RFID-Kartennamen** (z. B. „Karte 0: Name") hat das Fremdmodul nicht als eigene Variable —
+diese kommen bei ChargerHub ausschließlich über den neuen MQTT-Kartenzähler (siehe oben,
+„RFID-Kartenzähler"), nicht aus einer Migration.
+
 ## Einbindung in den Modul-Verbund
 
 ChargerHub bietet analog zu `MHUB_GetFunctions` eine Funktion `CHUB_GetFunctions($id)` an, über
