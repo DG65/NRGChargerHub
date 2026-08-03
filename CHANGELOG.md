@@ -31,6 +31,16 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.30-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: `LegacyCandidateFor()` las die Felder aus `MIGHUB_FindLegacyCandidates()`
+  als `instanceID`/`name` (lowercase), MigrationsHub liefert aber `InstanceID`/`Name`
+  (PascalCase) — case-sensitiver PHP-Array-Zugriff, dadurch wurde `$id` immer `0` und der
+  0.9.28-Defensivfilter (`$id > 0`) hat dadurch JEDEN Treffer verworfen, nicht nur die eigene
+  Instanz. Live reproduziert: MigrationsHub meldete #27208 korrekt als Treffer, bei uns kam
+  „keine passende Kombination" an. Liest jetzt beide Schreibweisen (PascalCase zuerst).
+
 ## [0.9.29-beta.1] - 2026-08-03
 
 ### Fixed

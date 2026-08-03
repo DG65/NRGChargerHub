@@ -374,7 +374,7 @@ class ChargerHubDiscovery extends IPSModule
         // (Quelle=Ziel) schädlich. Zusätzlich zu einer entsprechenden Filterung
         // bei MigrationsHub selbst, nicht als Ersatz dafür.
         $found = array_values(array_filter($found, function ($f) {
-            $id = (int)($f['instanceID'] ?? $f['id'] ?? 0);
+            $id = (int)($f['InstanceID'] ?? $f['instanceID'] ?? $f['id'] ?? 0);
             return $id > 0 && @IPS_GetInstance($id)['ModuleInfo']['ModuleID'] !== self::CHARGERHUB_GUID;
         }));
         if (count($found) === 0) {
@@ -386,8 +386,8 @@ class ChargerHubDiscovery extends IPSModule
             // Sicherungs-Kopie in einer anderen Kategorie (mit MigrationsHub
             // abgestimmt, live an genau diesem Fall verifiziert).
             $names = array_map(function ($f) {
-                $id = (int)($f['instanceID'] ?? $f['id'] ?? 0);
-                $label = (string)($f['name'] ?? IPS_GetName($id)) . ' (#' . $id . ')';
+                $id = (int)($f['InstanceID'] ?? $f['instanceID'] ?? $f['id'] ?? 0);
+                $label = (string)($f['Name'] ?? $f['name'] ?? IPS_GetName($id)) . ' (#' . $id . ')';
                 if (!empty($f['Path'])) {
                     $label .= ' [' . $f['Path'] . ']';
                 }
@@ -396,11 +396,11 @@ class ChargerHubDiscovery extends IPSModule
             return ['id' => 0, 'name' => implode(', ', $names), 'ambiguous' => true];
         }
         $first = $found[0];
-        $id = (int)($first['instanceID'] ?? $first['id'] ?? 0);
+        $id = (int)($first['InstanceID'] ?? $first['instanceID'] ?? $first['id'] ?? 0);
         if ($id <= 0) {
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
-        return ['id' => $id, 'name' => (string)($first['name'] ?? IPS_GetName($id)), 'ambiguous' => false];
+        return ['id' => $id, 'name' => (string)($first['Name'] ?? $first['name'] ?? IPS_GetName($id)), 'ambiguous' => false];
     }
 
     /**
