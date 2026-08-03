@@ -31,6 +31,16 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.29-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: Live-Absturz beim Formular-Aufbau ("Too few arguments to function
+  MIGHUB_FindLegacyCandidates(), 4 passed ... exactly 5 expected") — MigrationsHub hat den
+  neuen 5. Parameter `$excludeInstanceID` entgegen der Ankündigung ohne Default-Wert
+  eingeführt, kein Bug bei uns, aber wir rufen die Funktion jetzt ohnehin mit allen 5 Parametern
+  auf (nutzt gleich den neuen Ausschluss-Parameter, siehe 0.9.28-Motivation — serverseitig statt
+  nur clientseitig gefiltert).
+
 ## [0.9.28-beta.1] - 2026-08-03
 
 ### Fixed

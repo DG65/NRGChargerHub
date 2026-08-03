@@ -118,7 +118,7 @@ class ChargerHubDiscovery extends IPSModule
                 $instanceName = $r['label'] . ' ' . $nr;
             }
 
-            $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId']);
+            $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId'], $existing[$key] ?? 0);
             $config = [
                 'Host'         => $r['ip'],
                 'Port'         => $this->ReadPropertyInteger('Port'),
@@ -344,7 +344,7 @@ class ChargerHubDiscovery extends IPSModule
     // vorschlagen (id=0, ambiguous=true) und den Nutzer auf die manuelle
     // Verknüpfung in MigrationsHub verweisen, als eine falsche Historie zu
     // verknüpfen.
-    private function LegacyCandidateFor(string $host, int $unitId): array
+    private function LegacyCandidateFor(string $host, int $unitId, int $excludeInstanceID = 0): array
     {
         if (!function_exists('MIGHUB_FindLegacyCandidates')) {
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
@@ -361,7 +361,10 @@ class ChargerHubDiscovery extends IPSModule
         if ($migID <= 0) {
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
-        $found = @MIGHUB_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId);
+        // 5. Parameter (excludeInstanceID) seit MigrationsHub-Commit f5505c0 —
+        // filtert die eigene, gerade angelegte Zielinstanz serverseitig aus,
+        // bevor das Host/Port/UnitId-Matching überhaupt läuft.
+        $found = @MIGHUB_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId, $excludeInstanceID);
         if (!is_array($found)) {
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
@@ -429,7 +432,7 @@ class ChargerHubDiscovery extends IPSModule
             if ($targetID <= 0) {
                 continue; // Für diese Zeile wurde noch keine ChargerHub-Instanz erstellt.
             }
-            $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId']);
+            $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId'], $targetID);
             if ($legacy['ambiguous']) {
                 // Nicht automatisch verknüpfen (siehe LegacyCandidateFor) —
                 // vorher lief das hier still durch, ohne dass der Nutzer
