@@ -356,7 +356,7 @@ class CHUB_MqttMiniClient
     // Verbindet, abonniert $topicFilters, sammelt für $budgetSec Sekunden
     // eingehende PUBLISH-Nachrichten und trennt wieder. Rückgabe:
     // [['topic' => string, 'payload' => string], ...]
-    public function fetch(array $topicFilters, string $clientId, float $budgetSec = 2.5): array
+    public function fetch(array $topicFilters, string $clientId, string $username = '', string $password = '', float $budgetSec = 2.5): array
     {
         $this->lastError = '';
         $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
@@ -366,10 +366,23 @@ class CHUB_MqttMiniClient
         }
         stream_set_timeout($sock, 3);
 
-        @fwrite($sock, $this->buildConnect($clientId));
+        @fwrite($sock, $this->buildConnect($clientId, $username, $password));
         $connAck = $this->readPacket($sock, 3.0);
-        if ($connAck === null || $connAck['type'] !== 2 || ord($connAck['body'][1] ?? "\xFF") !== 0) {
-            $this->lastError = 'CONNACK fehlgeschlagen oder Broker abgelehnt';
+        if ($connAck === null || $connAck['type'] !== 2) {
+            $this->lastError = 'CONNACK fehlgeschlagen (keine/unvollständige Antwort)';
+            @fclose($sock);
+            return [];
+        }
+        $returnCode = ord($connAck['body'][1] ?? "\xFF");
+        if ($returnCode !== 0) {
+            $labels = [
+                1 => 'nicht akzeptierte Protokollversion',
+                2 => 'Client-ID abgelehnt',
+                3 => 'Server nicht verfügbar',
+                4 => 'Benutzername/Passwort falsch',
+                5 => 'nicht autorisiert',
+            ];
+            $this->lastError = 'CONNACK-Fehlercode ' . $returnCode . ' (' . ($labels[$returnCode] ?? 'unbekannt') . ')';
             @fclose($sock);
             return [];
         }
@@ -402,14 +415,22 @@ class CHUB_MqttMiniClient
         return $results;
     }
 
-    private function buildConnect(string $clientId): string
+    private function buildConnect(string $clientId, string $username = '', string $password = ''): string
     {
-        $protoName  = $this->encodeStr('MQTT');
-        $flags      = "\x02"; // Clean Session, kein Will/User/Pass
-        $keepAlive  = pack('n', 60);
-        $varHeader  = $protoName . "\x04" . $flags . $keepAlive;
-        $payload    = $this->encodeStr($clientId);
-        $remaining  = $this->encodeLength(strlen($varHeader) + strlen($payload));
+        $protoName = $this->encodeStr('MQTT');
+        $flags     = 0x02; // Clean Session
+        $payload   = $this->encodeStr($clientId);
+        if ($username !== '') {
+            $flags   |= 0x80; // Username Flag
+            $payload .= $this->encodeStr($username);
+            if ($password !== '') {
+                $flags   |= 0x40; // Password Flag
+                $payload .= $this->encodeStr($password);
+            }
+        }
+        $keepAlive = pack('n', 60);
+        $varHeader = $protoName . "\x04" . chr($flags) . $keepAlive;
+        $remaining = $this->encodeLength(strlen($varHeader) + strlen($payload));
         return "\x10" . $remaining . $varHeader . $payload;
     }
 
@@ -1471,6 +1492,11 @@ class ChargerHub extends IPSModule
         $this->RegisterPropertyBoolean('MqttCardsEnabled', false);
         $this->RegisterPropertyString('MqttHost', '');
         $this->RegisterPropertyInteger('MqttPort', 1883);
+        // Live bestätigt (03.08.2026): Symcons MQTT-Server lehnt CONNECT ohne
+        // Zugangsdaten ab (CONNACK-Fehlercode statt 0). Optional, da nicht
+        // jeder Broker Auth verlangt.
+        $this->RegisterPropertyString('MqttUsername', '');
+        $this->RegisterPropertyString('MqttPassword', '');
 
         // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
         // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
@@ -1570,7 +1596,12 @@ class ChargerHub extends IPSModule
         // MQTT-Wildcards gelten nur je ganzer Ebene ("+" allein, nicht "c+") —
         // daher hier breiter abonniert und im Loop unten per Regex auf
         // c0..c9 + n/e gefiltert.
-        $messages = $client->fetch(['go-eCharger/' . $serial . '/+'], $clientId);
+        $messages = $client->fetch(
+            ['go-eCharger/' . $serial . '/+'],
+            $clientId,
+            $this->ReadPropertyString('MqttUsername'),
+            $this->ReadPropertyString('MqttPassword')
+        );
         if ($messages === [] && $client->getLastError() !== '') {
             IPS_LogMessage('ChargerHub-MQTT', 'Instanz ' . $this->InstanceID . ': ' . $client->getLastError());
             return;
@@ -1762,7 +1793,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.25-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.26-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1830,6 +1861,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'CheckBox', 'name' => 'MqttCardsEnabled', 'caption' => 'RFID-Kartenzähler per MQTT abbilden'],
                         ['type' => 'ValidationTextBox', 'name' => 'MqttHost', 'caption' => 'MQTT-Broker (IP/Hostname)', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
                         ['type' => 'NumberSpinner', 'name' => 'MqttPort', 'caption' => 'MQTT-Port', 'minimum' => 1, 'maximum' => 65535],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttUsername', 'caption' => 'MQTT-Benutzername (falls vom Broker verlangt)'],
+                        ['type' => 'PasswordTextBox', 'name' => 'MqttPassword', 'caption' => 'MQTT-Passwort'],
                     ],
                 ],
             ],

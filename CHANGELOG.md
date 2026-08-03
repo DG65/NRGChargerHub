@@ -31,6 +31,16 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.26-beta.1] - 2026-08-03
+
+### Fixed
+- Live-Test (erster echter MQTT-Verbindungsversuch): `CONNACK fehlgeschlagen oder Broker
+  abgelehnt` — Symcons MQTT-Server verlangt Zugangsdaten, `CHUB_MqttMiniClient` schickte bisher
+  keine mit. Neue Properties „MQTT-Benutzername"/„MQTT-Passwort" im Panel, `CONNECT`-Paket
+  setzt jetzt bei Bedarf Username-/Password-Flags. CONNACK-Fehlercode wird zudem im Klartext
+  geloggt (z. B. „Benutzername/Passwort falsch", „nicht autorisiert") statt einer pauschalen
+  Meldung.
+
 ## [0.9.25-beta.1] - 2026-08-02
 
 ### Changed
