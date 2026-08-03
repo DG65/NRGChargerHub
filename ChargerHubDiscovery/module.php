@@ -47,6 +47,7 @@ class ChargerHubDiscovery extends IPSModule
         $this->RegisterPropertyString('NameTemplate', '');
         $this->RegisterPropertyString('IgnoreIPs', '');
         $this->RegisterAttributeString('ResultsJSON', '[]');
+        $this->RegisterAttributeString('PreparedTargets', '[]');
     }
 
     // Ermittelt heuristisch die ersten drei Oktette des lokalen Subnetzes
@@ -273,6 +274,7 @@ class ChargerHubDiscovery extends IPSModule
             $this->SetValue('ScanAbort', false);
         }
         $this->WriteAttributeString('ResultsJSON', '[]');
+        $this->WriteAttributeString('PreparedTargets', '[]');
         @$this->UpdateFormField('DiscoveryList', 'values', []);
         @$this->UpdateFormField('BtnScan', 'visible', false);
         @$this->UpdateFormField('BtnAbort', 'visible', true);
@@ -426,11 +428,21 @@ class ChargerHubDiscovery extends IPSModule
         $results = json_decode($this->ReadAttributeString('ResultsJSON'), true);
         $results = is_array($results) ? $results : [];
         $existing = $this->findExistingInstances();
+        // Ohne Merker verarbeitete jeder Klick immer wieder die ERSTE passende
+        // Zeile erneut (early return nach Erfolg) — bei mehreren Treffern kam
+        // man so nie über die erste Zeile hinaus. Bereits vorbereitete
+        // Ziel-Instanzen daher überspringen, damit der nächste Klick
+        // automatisch zur nächsten offenen Zeile weitergeht.
+        $prepared = json_decode($this->ReadAttributeString('PreparedTargets'), true);
+        $prepared = is_array($prepared) ? $prepared : [];
 
         foreach ($results as $r) {
             $targetID = $existing[$r['ip'] . '|' . $r['unitId']] ?? 0;
             if ($targetID <= 0) {
                 continue; // Für diese Zeile wurde noch keine ChargerHub-Instanz erstellt.
+            }
+            if (in_array($targetID, $prepared, true)) {
+                continue; // Für diese Zeile wurde die Migration bereits vorbereitet.
             }
             $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId'], $targetID);
             if ($legacy['ambiguous']) {
@@ -459,6 +471,8 @@ class ChargerHubDiscovery extends IPSModule
                 $migID = IPS_CreateInstance(self::MIGRATIONSHUB_GUID);
             }
             MIGHUB_PrefillMigration($migID, $legacy['id'], $targetID);
+            $prepared[] = $targetID;
+            $this->WriteAttributeString('PreparedTargets', json_encode($prepared));
 
             $say('✅ Migration vorbereitet: „' . $legacy['name'] . '" (#' . $legacy['id'] . ') → „' .
                 IPS_GetName($targetID) . '" (#' . $targetID . '). Weiter in der MigrationsHub-Instanz — dort simulieren, prüfen, ausführen.');

@@ -31,6 +31,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.31-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: „Migration vorbereiten" verarbeitet pro Klick bewusst nur eine Zeile
+  (kehrt nach dem ersten Treffer sofort zurück), merkte sich aber nicht, welche bereits erledigt
+  war — bei mehreren Treffern landete jeder weitere Klick wieder bei der ersten passenden Zeile,
+  spätere Zeilen (live beobachtet: WB1) waren so nie erreichbar. Neues Attribut
+  `PreparedTargets` merkt sich bereits vorbereitete Ziel-Instanzen und überspringt sie beim
+  nächsten Klick, damit der Nutzer sich wirklich Zeile für Zeile durcharbeiten kann. Wird bei
+  einem neuen Suchlauf zurückgesetzt.
+
 ## [0.9.30-beta.1] - 2026-08-03
 
 ### Fixed
