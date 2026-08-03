@@ -324,6 +324,200 @@ interface ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// CHUB_MqttMiniClient — minimaler MQTT-3.1.1-Client (nur QoS 0, keine
+// Persistenz zwischen Aufrufen) für die go-e-RFID-Kartenzähler, die nur über
+// MQTT verfügbar sind (siehe GoeChargerDriver-Kommentar). Bewusst KEINE
+// Abhängigkeit von einer fremden Symcon-"MQTT Client"-Instanz (Splitter) —
+// exakt dasselbe Prinzip wie CHUB_ModbusTcpClient: eigener roher Socket,
+// Verbindung wird bei jedem Poll neu aufgebaut (kein Zustand über
+// Timer-Aufrufe hinweg, siehe dortiger Kommentar). Da go-e seine Werte als
+// RETAINED Topics veröffentlicht, liefert der Broker den aktuellen Stand
+// sofort nach dem SUBSCRIBE — ein Neuaufbau pro Poll ist dafür ausreichend.
+// PUBACK für QoS 1 wird bewusst NICHT gesendet (kurzlebige Verbindung, der
+// Broker liefert beim nächsten Poll ohnehin erneut — unschädlich, da wir nur
+// den letzten Stand je Topic übernehmen, keine Zustellgarantie brauchen).
+class CHUB_MqttMiniClient
+{
+    private $host;
+    private $port;
+    private $lastError = '';
+
+    public function __construct(string $host, int $port)
+    {
+        $this->host = $host;
+        $this->port = $port;
+    }
+
+    public function getLastError(): string
+    {
+        return $this->lastError;
+    }
+
+    // Verbindet, abonniert $topicFilters, sammelt für $budgetSec Sekunden
+    // eingehende PUBLISH-Nachrichten und trennt wieder. Rückgabe:
+    // [['topic' => string, 'payload' => string], ...]
+    public function fetch(array $topicFilters, string $clientId, float $budgetSec = 2.5): array
+    {
+        $this->lastError = '';
+        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($sock === false) {
+            $this->lastError = "Verbindung fehlgeschlagen: $errstr ($errno)";
+            return [];
+        }
+        stream_set_timeout($sock, 3);
+
+        @fwrite($sock, $this->buildConnect($clientId));
+        $connAck = $this->readPacket($sock, 3.0);
+        if ($connAck === null || $connAck['type'] !== 2 || ord($connAck['body'][1] ?? "\xFF") !== 0) {
+            $this->lastError = 'CONNACK fehlgeschlagen oder Broker abgelehnt';
+            @fclose($sock);
+            return [];
+        }
+
+        @fwrite($sock, $this->buildSubscribe($topicFilters, 1));
+        // SUBACK abwarten, aber Inhalt nicht auswerten — reicht als Bestätigung,
+        // dass der Broker die Anfrage verarbeitet hat.
+        $this->readPacket($sock, 2.0);
+
+        $results = [];
+        $deadline = microtime(true) + $budgetSec;
+        while (microtime(true) < $deadline) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0) {
+                break;
+            }
+            $pkt = $this->readPacket($sock, $remaining);
+            if ($pkt === null) {
+                break; // Timeout ohne weitere Daten — fertig.
+            }
+            if ($pkt['type'] === 3) { // PUBLISH
+                $parsed = $this->parsePublish($pkt['flags'], $pkt['body']);
+                if ($parsed !== null) {
+                    $results[] = $parsed;
+                }
+            }
+        }
+
+        @fclose($sock);
+        return $results;
+    }
+
+    private function buildConnect(string $clientId): string
+    {
+        $protoName  = $this->encodeStr('MQTT');
+        $flags      = "\x02"; // Clean Session, kein Will/User/Pass
+        $keepAlive  = pack('n', 60);
+        $varHeader  = $protoName . "\x04" . $flags . $keepAlive;
+        $payload    = $this->encodeStr($clientId);
+        $remaining  = $this->encodeLength(strlen($varHeader) + strlen($payload));
+        return "\x10" . $remaining . $varHeader . $payload;
+    }
+
+    private function buildSubscribe(array $topicFilters, int $packetId): string
+    {
+        $varHeader = pack('n', $packetId);
+        $payload   = '';
+        foreach ($topicFilters as $t) {
+            $payload .= $this->encodeStr($t) . "\x00"; // QoS 0 angefragt
+        }
+        $remaining = $this->encodeLength(strlen($varHeader) + strlen($payload));
+        return "\x82" . $remaining . $varHeader . $payload;
+    }
+
+    private function parsePublish(int $flags, string $body)
+    {
+        if (strlen($body) < 2) {
+            return null;
+        }
+        $topicLen = (ord($body[0]) << 8) | ord($body[1]);
+        if (strlen($body) < 2 + $topicLen) {
+            return null;
+        }
+        $topic  = substr($body, 2, $topicLen);
+        $offset = 2 + $topicLen;
+        $qos    = ($flags >> 1) & 0x03;
+        if ($qos > 0) {
+            $offset += 2; // Packet Identifier überspringen (nicht benötigt)
+        }
+        $payload = substr($body, $offset);
+        return ['topic' => $topic, 'payload' => $payload];
+    }
+
+    // Liest genau EIN vollständiges MQTT-Kontrollpaket (Fixed Header +
+    // Remaining Length + Body) oder gibt null zurück, wenn innerhalb von
+    // $timeoutSec nichts Vollständiges ankommt.
+    private function readPacket($sock, float $timeoutSec)
+    {
+        $deadline = microtime(true) + max($timeoutSec, 0.1);
+        $first = $this->readExact($sock, 1, $deadline);
+        if ($first === null) {
+            return null;
+        }
+        $type  = (ord($first) >> 4) & 0x0F;
+        $flags = ord($first) & 0x0F;
+
+        $multiplier = 1;
+        $remaining  = 0;
+        do {
+            $b = $this->readExact($sock, 1, $deadline);
+            if ($b === null) {
+                return null;
+            }
+            $byte = ord($b);
+            $remaining += ($byte & 0x7F) * $multiplier;
+            $multiplier *= 128;
+        } while (($byte & 0x80) !== 0);
+
+        $body = $remaining > 0 ? $this->readExact($sock, $remaining, $deadline) : '';
+        if ($body === null) {
+            return null;
+        }
+        return ['type' => $type, 'flags' => $flags, 'body' => $body];
+    }
+
+    private function readExact($sock, int $len, float $deadline)
+    {
+        $buf = '';
+        while (strlen($buf) < $len) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0 || feof($sock)) {
+                return null;
+            }
+            stream_set_timeout($sock, (int)max(1, ceil($remaining)));
+            $chunk = @fread($sock, $len - strlen($buf));
+            if ($chunk === false || $chunk === '') {
+                $meta = @stream_get_meta_data($sock);
+                if (!empty($meta['timed_out'])) {
+                    return null;
+                }
+                continue;
+            }
+            $buf .= $chunk;
+        }
+        return $buf;
+    }
+
+    private function encodeStr(string $s): string
+    {
+        return pack('n', strlen($s)) . $s;
+    }
+
+    private function encodeLength(int $len): string
+    {
+        $out = '';
+        do {
+            $byte = $len % 128;
+            $len  = intdiv($len, 128);
+            if ($len > 0) {
+                $byte |= 0x80;
+            }
+            $out .= chr($byte);
+        } while ($len > 0);
+        return $out;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // KebaDriver — KEBA KeContact P30/P40, Modbus TCP, Unit-ID standardmäßig 255.
 // Registeradressen und Eigenheiten gegen die evcc-Referenzimplementierung
 // (charger/keba-modbus.go, an realer Hardware erprobt) abgeglichen:
@@ -1194,7 +1388,7 @@ class ChargerHub extends IPSModule
     private const NEWS_VERSION = '0.9.24';
     private const NEWS_ITEMS = [
         'Ladefreigabe/Stromlimit sind jetzt wirklich bedienbar (Console/WebFront) — Ursache war eine falsche SDK-API bei der Steuer-Variablen-Verknüpfung, live durchleuchtet und behoben.',
-        'Neu: RFID-Kartenzähler (Name + Energie je Karte, 0–9) für go-eCharger über MQTT — Modbus bietet diese Werte nicht an. Siehe Panel „RFID-Kartenzähler" (erfordert eine verbundene MQTT-Client-Instanz).',
+        'Neu: RFID-Kartenzähler (Name + Energie je Karte, 0–9) für go-eCharger über MQTT — Modbus bietet diese Werte nicht an. Siehe Panel „RFID-Kartenzähler" (Broker-IP direkt im Panel eintragen, keine zusätzliche Instanz nötig).',
     ];
 
     private const DRIVERS = [
@@ -1272,9 +1466,11 @@ class ChargerHub extends IPSModule
         // go-e-exklusiv: RFID-Kartenzähler (Name + Energie je Karte 0–9)
         // stehen NICHT über Modbus zur Verfügung (offizielle Registertabelle
         // enthält sie nicht), nur über MQTT (Topics go-eCharger/<Seriennummer>/
-        // c0n…c9n bzw. c0e…c9e). Setzt eine Anbindung an eine IP-Symcon-
-        // MQTT-Client-Instanz voraus (Splitter-Anschluss über parentRequirements).
+        // c0n…c9n bzw. c0e…c9e). Eigener roher MQTT-Client (CHUB_MqttMiniClient),
+        // daher direkt Host/Port statt einer Symcon-Splitter-Verknüpfung.
         $this->RegisterPropertyBoolean('MqttCardsEnabled', false);
+        $this->RegisterPropertyString('MqttHost', '');
+        $this->RegisterPropertyInteger('MqttPort', 1883);
 
         // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
         // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
@@ -1353,52 +1549,47 @@ class ChargerHub extends IPSModule
         }
         $this->GetDriver()->readValues($this->GetModbusClient(), $this);
         if ($this->ReadPropertyString('Manufacturer') === 'goe' && $this->ReadPropertyBoolean('MqttCardsEnabled')) {
-            // Die Seriennummer (fürs MQTT-Topic-Filter nötig, siehe
-            // UpdateMqttReceiveFilter) ist erst NACH dem ersten erfolgreichen
-            // Modbus-Lesevorgang bekannt — daher hier statt in ApplyChanges.
-            $this->UpdateMqttReceiveFilter();
+            // Die Seriennummer (fürs Topic nötig) ist erst NACH dem ersten
+            // erfolgreichen Modbus-Lesevorgang bekannt — daher hier statt in
+            // ApplyChanges/direkt am Timer.
+            $this->PollMqttCards();
         }
     }
 
-    // Grenzt ein, welche eingehenden MQTT-Pakete ReceiveData() überhaupt
-    // erreichen (Kernel-seitiger Regex-Filter auf das komplette JSON-Paket,
-    // Muster wie im etablierten Tasmota-Symcon-Modul) — ohne das würde diese
-    // Instanz bei mehreren go-e-Geräten am selben Broker (wie bei Dietmars
-    // zwei Wallboxen) auch die RFID-Kartendaten der JEWEILS ANDEREN Wallbox
-    // empfangen und fälschlich übernehmen.
-    private function UpdateMqttReceiveFilter(): void
+    // Eigener, roher MQTT-Poll — kein Symcon-Splitter/Parent-Instanz nötig,
+    // exakt dasselbe Prinzip wie GetModbusClient()/CHUB_ModbusTcpClient.
+    private function PollMqttCards(): void
     {
+        $host = trim($this->ReadPropertyString('MqttHost'));
         $serial = trim((string)$this->GetVarValue('dev_serial'));
-        if ($serial === '') {
+        if ($host === '' || $serial === '') {
             return;
         }
-        $this->SetReceiveDataFilter('.*"Topic":"go-eCharger\\/' . preg_quote($serial, '/') . '\\/c[0-9][ne]".*');
-    }
-
-    // MQTT-Pakete vom verbundenen MQTT-Client (Splitter). Nur relevant, wenn
-    // MqttCardsEnabled aktiv ist — SetReceiveDataFilter() lässt sonst gar
-    // nichts durch, hier trotzdem defensiv nochmal geprüft.
-    public function ReceiveData($JSONString)
-    {
-        if ($this->ReadPropertyString('Manufacturer') !== 'goe' || !$this->ReadPropertyBoolean('MqttCardsEnabled')) {
+        $client = new CHUB_MqttMiniClient($host, $this->ReadPropertyInteger('MqttPort'));
+        $clientId = 'chub_' . $this->InstanceID;
+        // MQTT-Wildcards gelten nur je ganzer Ebene ("+" allein, nicht "c+") —
+        // daher hier breiter abonniert und im Loop unten per Regex auf
+        // c0..c9 + n/e gefiltert.
+        $messages = $client->fetch(['go-eCharger/' . $serial . '/+'], $clientId);
+        if ($messages === [] && $client->getLastError() !== '') {
+            IPS_LogMessage('ChargerHub-MQTT', 'Instanz ' . $this->InstanceID . ': ' . $client->getLastError());
             return;
         }
-        $data = json_decode($JSONString);
-        if (!is_object($data) || !isset($data->Topic, $data->Payload)) {
-            return;
-        }
-        // Topic: go-eCharger/<Seriennummer>/c<N><n|e>
-        if (!preg_match('#/c([0-9])([ne])$#', (string)$data->Topic, $m)) {
-            return;
-        }
-        $idx = (int)$m[1];
-        $payload = json_decode((string)$data->Payload);
-        if ($m[2] === 'n') {
-            $this->SetVarStr("card{$idx}_name", is_string($payload) ? $payload : (string)$data->Payload);
-        } else {
-            // c0e…c9e: Energie in Wh (uint64) laut offizieller go-e-API-Doku.
-            $wh = is_numeric($payload) ? (float)$payload : 0.0;
-            $this->SetVarFloat("card{$idx}_energy", $wh / 1000.0);
+        foreach ($messages as $msg) {
+            // Topic: go-eCharger/<Seriennummer>/c<N><n|e> — die Seriennummer
+            // steht bereits im Subscribe-Filter fest, hier nur noch Index+Feld.
+            if (!preg_match('#/c([0-9])([ne])$#', $msg['topic'], $m)) {
+                continue;
+            }
+            $idx = (int)$m[1];
+            $payload = json_decode($msg['payload']);
+            if ($m[2] === 'n') {
+                $this->SetVarStr("card{$idx}_name", is_string($payload) ? $payload : $msg['payload']);
+            } else {
+                // c0e…c9e: Energie in Wh (uint64) laut offizieller go-e-API-Doku.
+                $wh = is_numeric($payload) ? (float)$payload : 0.0;
+                $this->SetVarFloat("card{$idx}_energy", $wh / 1000.0);
+            }
         }
     }
 
@@ -1571,7 +1762,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.24-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.25-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1635,8 +1826,10 @@ class ChargerHub extends IPSModule
                     'caption'  => '🆕 📇  RFID-Kartenzähler (nur go-eCharger, per MQTT)',
                     'expanded' => false,
                     'items'    => [
-                        ['type' => 'Label', 'caption' => 'Kartenname + Energie je RFID-Karte (0–9) stehen nicht über Modbus zur Verfügung — nur über MQTT. Dafür oben rechts (Instanz-Kopfzeile) eine bestehende MQTT-Client-Instanz verbinden, dort muss der go-eCharger als MQTT-Broker-Ziel eingetragen sein (App → Internet → Erweiterte Einstellungen → MQTT). Ohne verbundene MQTT-Instanz bleibt diese Option wirkungslos.'],
+                        ['type' => 'Label', 'caption' => 'Kartenname + Energie je RFID-Karte (0–9) stehen nicht über Modbus zur Verfügung — nur über MQTT. Der go-eCharger muss dafür MQTT aktiviert haben und auf denselben Broker zeigen, der hier eingetragen wird (App → Internet → Erweiterte Einstellungen → MQTT). Modul verbindet sich selbst — keine zusätzliche Symcon-Instanz nötig.'],
                         ['type' => 'CheckBox', 'name' => 'MqttCardsEnabled', 'caption' => 'RFID-Kartenzähler per MQTT abbilden'],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttHost', 'caption' => 'MQTT-Broker (IP/Hostname)', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
+                        ['type' => 'NumberSpinner', 'name' => 'MqttPort', 'caption' => 'MQTT-Port', 'minimum' => 1, 'maximum' => 65535],
                     ],
                 ],
             ],

@@ -31,6 +31,20 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.25-beta.1] - 2026-08-02
+
+### Changed
+- RFID-Kartenzähler (0.9.24) auf einen eigenen, rohen MQTT-Client (`CHUB_MqttMiniClient`)
+  umgestellt statt einer Symcon-Splitter-Anbindung (Kind-Instanz einer fremden MQTT-Client-
+  Instanz). Dietmars Feedback: das gehört direkt ins Modul, kein Verlass auf eine korrekt
+  konfigurierte fremde Instanz — passt außerdem zum bestehenden Prinzip von
+  `CHUB_ModbusTcpClient` (eigener roher Socket statt Symcon-Configurator-Abhängigkeit).
+  `module.json` `parentRequirements`/`implemented` wieder entfernt. Neue Properties
+  „MQTT-Broker"/„MQTT-Port" im Panel „RFID-Kartenzähler". Verbindung wird bei jedem Poll neu
+  aufgebaut (kein Zustand über Timer-Aufrufe hinweg, wie beim Modbus-Client) — unproblematisch,
+  da go-e seine Werte als retained Topics veröffentlicht und der Broker sie beim SUBSCRIBE
+  sofort erneut liefert.
+
 ## [0.9.24-beta.1] - 2026-08-02
 
 ### Added
