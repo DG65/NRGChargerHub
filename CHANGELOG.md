@@ -31,6 +31,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.28-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: `MIGHUB_FindLegacyCandidates()` konnte eine frisch angelegte, EIGENE
+  ChargerHub-Instanz als vermeintliche "Alt-Instanz" zurückgeben (live beobachtet bei einer IP,
+  an der gar keine echte Fremd-Instanz mehr existierte). "Migriere von dir selbst" wäre
+  sinnlos und im Extremfall (Quelle=Ziel) schädlich. `LegacyCandidateFor()` filtert Kandidaten
+  jetzt zusätzlich defensiv nach `ModuleID`, akzeptiert keine Treffer mit der eigenen
+  `CHARGERHUB_GUID` — zusätzlich zu einem entsprechenden Fix bei MigrationsHub selbst, nicht als
+  Ersatz dafür.
+
 ## [0.9.27-beta.1] - 2026-08-03
 
 ### Fixed

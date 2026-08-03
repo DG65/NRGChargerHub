@@ -362,7 +362,19 @@ class ChargerHubDiscovery extends IPSModule
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
         $found = @MIGHUB_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId);
-        if (!is_array($found) || count($found) === 0) {
+        if (!is_array($found)) {
+            return ['id' => 0, 'name' => '', 'ambiguous' => false];
+        }
+        // Defensiv: eigene, frisch angelegte ChargerHub-Instanzen (z. B. bei
+        // einer erneuten Suche derselben IP) NIE als "Alt-Instanz" akzeptieren
+        // — "migriere von dir selbst" ist sinnlos und im Extremfall
+        // (Quelle=Ziel) schädlich. Zusätzlich zu einer entsprechenden Filterung
+        // bei MigrationsHub selbst, nicht als Ersatz dafür.
+        $found = array_values(array_filter($found, function ($f) {
+            $id = (int)($f['instanceID'] ?? $f['id'] ?? 0);
+            return $id > 0 && @IPS_GetInstance($id)['ModuleInfo']['ModuleID'] !== self::CHARGERHUB_GUID;
+        }));
+        if (count($found) === 0) {
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
         if (count($found) > 1) {
