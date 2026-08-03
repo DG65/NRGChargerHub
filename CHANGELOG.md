@@ -31,6 +31,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.27-beta.1] - 2026-08-03
+
+### Fixed
+- Live-Test: Nach korrekten Zugangsdaten kamen weiterhin keine Kartendaten an — Ursache war das
+  fest einprogrammierte Topic-Präfix `go-eCharger/<Seriennummer>`. go-e erlaubt ein eigenes
+  Präfix (API-Key `mtp`), Dietmar nutzt `WB1`/`WB2` statt der Seriennummer — bestätigt über den
+  MQTT-Server-Konfigurator, dort liefen die Topics unter `WB1/c0e`, `WB1/c0n` usw. Neue Property
+  „MQTT-Topic-Präfix" (leer = weiterhin Standard `go-eCharger/Seriennummer`).
+
 ## [0.9.26-beta.1] - 2026-08-03
 
 ### Fixed

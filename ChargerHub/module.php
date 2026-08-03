@@ -1497,6 +1497,10 @@ class ChargerHub extends IPSModule
         // jeder Broker Auth verlangt.
         $this->RegisterPropertyString('MqttUsername', '');
         $this->RegisterPropertyString('MqttPassword', '');
+        // go-e erlaubt ein eigenes MQTT-Topic-Präfix statt "go-eCharger/
+        // <Seriennummer>" (API-Key "mtp") — live bestätigt (03.08.2026):
+        // Dietmar nutzt "WB1"/"WB2" statt der Seriennummer. Leer = Standard.
+        $this->RegisterPropertyString('MqttTopicPrefix', '');
 
         // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
         // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
@@ -1593,11 +1597,15 @@ class ChargerHub extends IPSModule
         }
         $client = new CHUB_MqttMiniClient($host, $this->ReadPropertyInteger('MqttPort'));
         $clientId = 'chub_' . $this->InstanceID;
+        // go-e erlaubt ein eigenes Topic-Präfix statt "go-eCharger/
+        // <Seriennummer>" (API-Key "mtp") — leer = Standard-Präfix.
+        $prefix = trim($this->ReadPropertyString('MqttTopicPrefix'));
+        $topicBase = ($prefix !== '') ? $prefix : ('go-eCharger/' . $serial);
         // MQTT-Wildcards gelten nur je ganzer Ebene ("+" allein, nicht "c+") —
         // daher hier breiter abonniert und im Loop unten per Regex auf
         // c0..c9 + n/e gefiltert.
         $messages = $client->fetch(
-            ['go-eCharger/' . $serial . '/+'],
+            [$topicBase . '/+'],
             $clientId,
             $this->ReadPropertyString('MqttUsername'),
             $this->ReadPropertyString('MqttPassword')
@@ -1793,7 +1801,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.26-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.27-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1863,6 +1871,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'NumberSpinner', 'name' => 'MqttPort', 'caption' => 'MQTT-Port', 'minimum' => 1, 'maximum' => 65535],
                         ['type' => 'ValidationTextBox', 'name' => 'MqttUsername', 'caption' => 'MQTT-Benutzername (falls vom Broker verlangt)'],
                         ['type' => 'PasswordTextBox', 'name' => 'MqttPassword', 'caption' => 'MQTT-Passwort'],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttTopicPrefix', 'caption' => 'MQTT-Topic-Präfix (leer = Standard „go-eCharger/Seriennummer")'],
                     ],
                 ],
             ],
