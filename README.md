@@ -60,14 +60,27 @@ Quellcode des Fremdmoduls verifiziert (Stand 03.08.2026, MigrationsHub-Sitzung):
 | ------------------------ | -------------------------- | ------------------------------------- |
 | `status`                 | `state`                    |                                        |
 | `powerToCarLineL1/L2/L3` | `power_l1`/`power_l2`/`power_l3` |                                  |
+| `powerToCarTotal`        | `power`                     |                                        |
 | `ampToCarLineL1/L2/L3`   | `current_l1`/`current_l2`/`current_l3` |                            |
 | `energyTotal`            | `energy_total`              |                                        |
+| `energyLoadCycle`        | `energy_session`            |                                        |
 | `serialID`               | `dev_serial`                |                                        |
+| `error`                  | `dev_error`                 |                                        |
+| `supplyLineN`            | `voltage_n`                 |                                        |
+| `supplyLineL1/L2/L3`     | `voltage_l1`/`voltage_l2`/`voltage_l3` |                             |
+| `adapterAttached`        | `adapter`                   |                                        |
+| `unlockedByRFID`         | `unlocked_by`                |                                       |
+| `cableUnlockMode`        | `ctl_cable_lock`             |                                       |
+| `accessControl`          | `ctl_access`                 |                                       |
+| `cableCapability`        | `cable_current`              |                                       |
 | `energyChargedCard1`…`10`| `card0_energy`…`card9_energy` | **Achtung Index-Offset**: Alt-Modul zählt Karten 1-basiert (1–10), ChargerHub 0-basiert (0–9) — `energyChargedCard1` entspricht `card0_energy`, nicht `card1_energy`. |
 
 **Kein Alt-Gegenpart vorhanden** (im Fremdmodul-Quellcode nicht enthalten, keine Migration
-nötig/möglich): `carConnected`, `chargePower`, `energyChargedSession`, `firmwareVersion`. Diese
-Werte liest ChargerHub trotzdem — nur eben ohne übertragbare Alt-Historie.
+nötig/möglich): `carConnected`, `firmwareVersion`. Diese Werte liest ChargerHub trotzdem — nur
+eben ohne übertragbare Alt-Historie. `carConnected`/`vehicle_plugged` ließe sich im Prinzip aus
+dem Alt-Ident `status` ableiten (z. B. status≠1 → verbunden) — das ist aber eine
+Werte-Transformation, kein reiner Ident-Bezug, und müsste bei Bedarf in ChargerHub selbst gelöst
+werden, nicht über MigrationsHubs generisches Ident-Matching.
 
 **RFID-Kartennamen** (z. B. „Karte 0: Name") hat das Fremdmodul nicht als eigene Variable —
 diese kommen bei ChargerHub ausschließlich über den neuen MQTT-Kartenzähler (siehe oben,
