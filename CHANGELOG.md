@@ -31,6 +31,19 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
   Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
 
+## [0.9.34-beta.1] - 2026-08-04
+
+### Changed
+- Alle statistisch sinnvollen Datenpunkte werden jetzt standardmäßig archiviert (Dietmars
+  Wunsch, orientiert an der go-e-API-Kategorisierung "Status" vs. "Config"): Verbindung,
+  Ladestatus, Fahrzeug verbunden, Ladeleistung inkl. je Phase, Energie (Sitzung/gesamt),
+  Spannung/Strom je Phase, genutzte Phasen, Fehlercode, Adapter, RFID-Kartenzähler, Kabel-Status/
+  -Strombegrenzung, PCB-Temperatur. Bewusst weiterhin NICHT archiviert: Seriennummer/
+  Firmware-Version (statische Kennungen, kein Zeitreihenwert) sowie alle `ctl_*`-Steuer-Sollwerte
+  (entsprechen go-es "Config"-Kategorie — Einstellungen, keine Messwerte). Betrifft alle vier
+  Treiber (KEBA/Alfen/Heidelberg/go-eCharger) einheitlich. Greift automatisch beim nächsten
+  „Übernehmen" auch für bereits bestehende Instanzen.
+
 ## [0.9.33-beta.1] - 2026-08-03
 
 ### Changed
