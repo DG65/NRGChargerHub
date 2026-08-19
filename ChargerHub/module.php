@@ -1590,7 +1590,7 @@ class ChargerHub extends IPSModule
                 'type' => 'RowLayout',
                 'name' => 'ReviewHint',
                 'items' => [
-                    ['type' => 'Label', 'caption' => '🧪 ChargerHub ist Beta — Rückmeldungen sind willkommen, bitte über die GitHub-Seite (github.com/DG65/ChargerHub) oder demnächst im Symcon-Forum:'],
+                    ['type' => 'Label', 'caption' => '🧪 ChargerHub ist Beta — Rückmeldungen sind willkommen, bitte über die GitHub-Seite (github.com/DG65/NRGChargerHub) oder demnächst im Symcon-Forum:'],
                     ['type' => 'Button', 'caption' => 'Nicht mehr anzeigen', 'onClick' => 'CHUB_DismissReviewHint($id);'],
                 ],
             ];
