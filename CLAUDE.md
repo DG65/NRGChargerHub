@@ -11,7 +11,7 @@ Sitzungen** gearbeitet:
 - **MigrationsHub**: Migration von Bestandsgeräten/Verknüpfungen/Archivwerten —
   https://github.com/DG65/MigrationsHub
 - **EMS**: koordinierende Instanz, künftig einziger zulässiger Konsument aller Hub-Verträge —
-  https://github.com/DG65/EMS
+  https://github.com/DG65/NRGEMS
 
 ## Grundregeln des Verbunds (identisch in den anderen Hub-Repos)
 

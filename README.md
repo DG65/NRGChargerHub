@@ -11,7 +11,7 @@ per Modbus TCP — analog zu [InverterHub](https://github.com/DG65/InverterHub) 
 und [MeterHub](https://github.com/DG65/MeterHub) (Energiezähler).
 
 Teil des **NRG-Stack** — welche Modulstände zusammenpassen, listet
-[SUITE.md](https://github.com/DG65/EMS/blob/main/SUITE.md).
+[SUITE.md](https://github.com/DG65/NRGEMS/blob/main/SUITE.md).
 
 **Status: Beta.** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
 Modbus-Dokumentationen der Hersteller, sind aber — mit Ausnahme von go-eCharger (siehe unten) —

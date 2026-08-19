@@ -162,7 +162,7 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 ## [0.8.1-beta.1] - 2026-07-23
 
 ### Added
-- **Vertragsversionierung** (Verbund-Konvention, [SUITE.md](https://github.com/DG65/EMS/blob/main/SUITE.md)):
+- **Vertragsversionierung** (Verbund-Konvention, [SUITE.md](https://github.com/DG65/NRGEMS/blob/main/SUITE.md)):
   `CHUB_GetFunctions` liefert additiv `contractVersion => '1.0'`. Konsumenten prüfen die
   Major-Version; additive Felder erhöhen künftig nur die Minor, ein Bruch die Major.
 - README: Hinweis auf die DG65 Energie-Suite und SUITE.md (welche Modulstände zusammenpassen).
