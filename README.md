@@ -1,5 +1,11 @@
 # ChargerHub
 
+![Symcon](https://img.shields.io/badge/Symcon-PHPModul-blue)
+![Modul Version](https://img.shields.io/badge/Modul_Version-0.9.11--beta.1-blue)
+![Symcon Version](https://img.shields.io/badge/Symcon_Version-9.0%2B-blue)
+![License](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-lightgrey)
+[![PayPal](https://img.shields.io/badge/PayPal-Me-blue?logo=paypal)](https://paypal.me/DietmarGureth)
+
 IP-Symcon-Modul für Wallboxen (Ladestationen für Elektrofahrzeuge) verschiedener Hersteller
 per Modbus TCP — analog zu [InverterHub](https://github.com/DG65/InverterHub) (Wechselrichter)
 und [MeterHub](https://github.com/DG65/MeterHub) (Energiezähler).
