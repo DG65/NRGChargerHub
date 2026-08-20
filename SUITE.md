@@ -361,7 +361,9 @@ ihm sichtbar am wenigsten im Vergleich zu einer anderen, knapperen Anzeige,
 die er bereits in einem Modul gesehen hat). Referenz-Screenshot: ein Panel mit
 Button "GERÄTE JETZT SUCHEN" darüber, direkt darunter eine EINZIGE Zeile
 `✅ 12 Geräte gefunden (zuletzt 16:25:41 Uhr).` — großes Icon, eine Kernzahl,
-Zeitstempel der letzten Suche, KEIN Aufzählungssatz.
+Zeitstempel der letzten Suche, KEIN Aufzählungssatz. **Ursprung geklärt
+(20.08.2026): Dashboards Tile-Modul, DiscoveryResult-Panel** — dessen Muster
+existierte schon vor dieser Konvention genau in dieser Form.
 
 Jedes Modul mit einer Discovery-/Geräte-such-Funktion baut sein Status-Panel
 nach demselben Schema:
@@ -660,6 +662,27 @@ Ebene A) in der ersten Fassung (1.18.0). **Loesung:** PHP-Streams
 (`file_get_contents()` + `stream_context_create()`) oder `curl` fuer jeden
 Aufruf, der POST/PUT/eigene Header braucht; den HTTP-Aufruf in eine eigene
 (z. B. `protected`) Methode kapseln, damit sie einzeln testbar bleibt.
+
+**12. Ein Formular-Button, der per `RequestAction`/`onClick` eine PHP-Methode aufruft, aktualisiert
+das BEREITS OFFENE Formular im Browser NICHT automatisch — `GetConfigurationForm()` wird nicht
+neu ausgefuehrt.** Live gefunden (EMS, 20.08.2026, an Dietmars Live-Anlage): der "🔎 Jetzt neu
+suchen"-Button rief `EMS_Discover($id)` korrekt auf, Partnermodule/Verbund-Gesundheit wurden
+serverseitig auch korrekt aktualisiert — aber die neu eingefuehrte Status-Kopfzeile (siehe
+"Einheitliche Verbund-Status-Kopfzeile" oben) blieb im Formular dauerhaft auf "Noch nicht
+gesucht" stehen, weil ihr `Label` beim ersten Formular-Aufbau berechnet wurde und seitdem
+eingefroren war. Symptom fuer den Nutzer: es sieht aus, als waere gar nichts passiert, obwohl
+die Aktion serverseitig laengst gelaufen ist — besonders tueckisch bei genau den Statuszeilen,
+die ueberhaupt erst zeigen sollen, ob etwas passiert ist. **Loesung:** jedem `Label`/Feld, dessen
+Inhalt sich durch eine Button-Aktion aendern kann, ein `'name' => '...'` geben, und in der
+aufgerufenen Methode `$this->UpdateFormField('<name>', 'caption', $neuerText);` aufrufen
+(no-op, wenn gerade kein Formular offen ist — gefahrlos immer aufrufbar). Bereits im Repo als
+Muster etabliert (`AckNews()`/`DismissForumHint()` fuer `visible`, jetzt auch fuer `caption` bei
+`Discover()`/`StartBatteryBoost()`/`StopBatteryBoost()`) — bei jedem neuen Button mit
+Formular-Sichtbarkeit pruefen, ob ein `UpdateFormField()` fehlt. **Gleichwertige Alternative**
+(InverterHub, bestaetigt 20.08.2026): `$this->ReloadForm()` am Ende des Handlers erzwingt einen
+kompletten `GetConfigurationForm()`-Neuaufbau, dann brauchen ALLE Felder darin kein einzelnes
+`UpdateFormField()` mehr — einfacher bei vielen betroffenen Feldern, aber teurer (baut das ganze
+Formular neu), `UpdateFormField()` bleibt die gezieltere Wahl bei wenigen Feldern.
 
 ## GoodWe-Steuerregister (InverterHub, Stand 27.07.2026)
 
