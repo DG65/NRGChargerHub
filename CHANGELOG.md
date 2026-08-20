@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.36-beta.1] - 2026-08-20
+
+### Fixed
+- `ChargerHubDiscovery`: SUITE.md-Stolperfalle 12 defensiv abgedeckt — `GetConfigurationForm()`
+  läuft nach einem `RequestAction`-Button nicht immer automatisch neu (bei EMS live beobachtet:
+  Kopfzeile blieb im bereits offenen Formular stehen, obwohl die Suche serverseitig lief). Wir
+  hatten bereits `ReloadForm()`, das deckt es normalerweise ab — zusätzlich jetzt ein expliziter
+  `UpdateFormField()`-Aufruf auf die neue Kopfzeile direkt nach der Suche.
+
 ## [0.9.35-beta.1] - 2026-08-20
 
 ### Changed
