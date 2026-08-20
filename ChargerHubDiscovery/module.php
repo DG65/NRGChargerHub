@@ -318,6 +318,10 @@ class ChargerHubDiscovery extends IPSModule
         $this->WriteAttributeString('ResultsJSON', json_encode($results));
         $this->WriteAttributeInteger('LastDiscoveryTs', time());
         $this->SetStatus(102);
+        // SUITE.md-Stolperfalle 12: GetConfigurationForm() läuft nach einem
+        // RequestAction-Button nicht automatisch neu — ReloadForm() deckt das
+        // zwar meist ab, zusätzlich defensiv explizit die Kopfzeile setzen.
+        @$this->UpdateFormField('DiscoverySummary', 'caption', $this->getDiscoverySummaryLine());
         $this->ReloadForm();
     }
 
