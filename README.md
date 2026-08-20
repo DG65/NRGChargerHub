@@ -8,11 +8,11 @@
 [![PayPal](https://img.shields.io/badge/PayPal-Me-blue?logo=paypal)](https://paypal.me/DietmarGureth)
 
 IP-Symcon-Modul für Wallboxen (Ladestationen für Elektrofahrzeuge) verschiedener Hersteller
-per Modbus TCP — analog zu [InverterHub](https://github.com/DG65/InverterHub) (Wechselrichter)
-und [MeterHub](https://github.com/DG65/MeterHub) (Energiezähler).
+per Modbus TCP — analog zu [InverterHub](https://github.com/DG65/NRGInverterHub) (Wechselrichter)
+und [MeterHub](https://github.com/DG65/NRGMeterHub) (Energiezähler).
 
 Teil des **NRG-Stack** — welche Modulstände zusammenpassen, listet
-[SUITE.md](https://github.com/DG65/EMS/blob/main/SUITE.md).
+[SUITE.md](https://github.com/DG65/NRGEMS/blob/main/SUITE.md).
 
 **Status: Beta.** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
 Modbus-Dokumentationen der Hersteller, sind aber — mit Ausnahme von go-eCharger (siehe unten) —
@@ -32,7 +32,7 @@ Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Manager,
 „Beschreibung") — praktisch zum Abgleich mit dem Herstellerhandbuch.
 
 ℹ️ Der **go-e Controller** (Energiemess-Zentrale) wird nicht hier, sondern von
-[MeterHub](https://github.com/DG65/MeterHub) unterstützt (ab 0.14.0, inkl. automatischer
+[MeterHub](https://github.com/DG65/NRGMeterHub) unterstützt (ab 0.14.0, inkl. automatischer
 Erkennung in der dortigen Zählersuche) — er ist ein Energiezähler, keine Wallbox.
 
 ## Ziel

@@ -6,12 +6,12 @@ Teil desselben Modul-Verbunds, an mehreren wird teilweise **gleichzeitig in getr
 Sitzungen** gearbeitet:
 
 - **ChargerHub** (dieses Repo): Wallboxen per Modbus TCP — https://github.com/DG65/NRGChargerHub
-- **InverterHub**: Wechselrichter per Modbus TCP — https://github.com/DG65/InverterHub
-- **MeterHub**: Energiezähler per Modbus TCP — https://github.com/DG65/MeterHub
+- **InverterHub**: Wechselrichter per Modbus TCP — https://github.com/DG65/NRGInverterHub
+- **MeterHub**: Energiezähler per Modbus TCP — https://github.com/DG65/NRGMeterHub
 - **MigrationsHub**: Migration von Bestandsgeräten/Verknüpfungen/Archivwerten —
   https://github.com/DG65/MigrationsHub
 - **EMS**: koordinierende Instanz, künftig einziger zulässiger Konsument aller Hub-Verträge —
-  https://github.com/DG65/EMS
+  https://github.com/DG65/NRGEMS
 
 ## Grundregeln des Verbunds (identisch in den anderen Hub-Repos)
 

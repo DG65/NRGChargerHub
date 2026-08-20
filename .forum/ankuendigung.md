@@ -143,7 +143,7 @@ ChargerHub steht nicht allein. Über die Zeit ist ein ganzer Baukasten entstande
 **NRG-Stack** —, dessen Teile zusammenarbeiten, aber **jedes Modul läuft auch für sich**. Es gibt
 keine Pflichtabhängigkeiten: Fehlt der Partner, fällt nur dessen Zusatzfunktion weg. Welche
 Modulstände zusammen getestet sind, listet
-[SUITE.md](https://github.com/DG65/EMS/blob/main/SUITE.md).
+[SUITE.md](https://github.com/DG65/NRGEMS/blob/main/SUITE.md).
 
 > **[hier `suite.png` einfügen]**
 
