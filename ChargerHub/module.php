@@ -1572,6 +1572,26 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // Sichtbarer Wrapper um Update() für den Formular-Button (SUITE.md
+    // "Sichtbare Rückmeldung bei jeder Aktion", verbindlich seit 20.08.2026)
+    // — Update() selbst bleibt der reine Timer-Callback ohne UI-Nebenwirkung,
+    // damit nicht bei jedem FastTimer-Tick unnötig ein UpdateFormField läuft.
+    public function TestConnection()
+    {
+        if (!$this->ReadPropertyBoolean('Active')) {
+            @$this->UpdateFormField('ConnTestResult', 'caption', '⚠️ Kommunikation ist deaktiviert — bitte oben aktivieren.');
+            return;
+        }
+        $this->Update();
+        $ok = (bool)$this->GetVarValue('connected');
+        $ts = date('H:i:s');
+        if ($ok) {
+            @$this->UpdateFormField('ConnTestResult', 'caption', "✅ Verbindung erfolgreich, Daten gelesen ({$ts} Uhr).");
+        } else {
+            @$this->UpdateFormField('ConnTestResult', 'caption', "❌ Verbindung fehlgeschlagen ({$ts} Uhr) — IP-Adresse/Port/Unit-ID prüfen.");
+        }
+    }
+
     public function Update()
     {
         if (!$this->ReadPropertyBoolean('Active')) {
@@ -1866,7 +1886,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.36-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.37-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1941,7 +1961,8 @@ class ChargerHub extends IPSModule
                 ],
             ],
             'actions' => [
-                ['type' => 'Button', 'caption' => 'Verbindung testen / Daten sofort lesen', 'onClick' => 'CHUB_Update($id);'],
+                ['type' => 'Button', 'caption' => 'Verbindung testen / Daten sofort lesen', 'onClick' => 'CHUB_TestConnection($id);'],
+                ['type' => 'Label', 'name' => 'ConnTestResult', 'caption' => ''],
             ],
             'status' => [
                 ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte IP-Adresse oder Hostname eintragen.'],
