@@ -240,6 +240,12 @@ class ChargerHubDiscovery extends IPSModule
                     ],
                 ],
             ],
+            'actions' => [
+                // Praktisch nach einem Modul-Update, wenn der reguläre Weg
+                // (Modulverwaltung → Aktualisieren → Übernehmen) einmal nicht
+                // gegriffen hat (EMS-Vorschlag, Muster wie dort).
+                ['type' => 'Button', 'caption' => '🔄 Übernehmen erzwingen (ohne Formularänderung)', 'onClick' => "IPS_ApplyChanges(\$id); echo '✅ ApplyChanges() ausgeführt.';"],
+            ],
             'status' => [
                 ['code' => 102, 'icon' => 'active',   'caption' => 'Bereit.'],
                 ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Such-IP-Bereich eintragen.'],

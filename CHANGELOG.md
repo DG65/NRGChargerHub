@@ -3,6 +3,14 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.38-beta.1] - 2026-08-20
+
+### Added
+- Neuer Button „🔄 Übernehmen erzwingen (ohne Formularänderung)" in ChargerHub UND
+  ChargerHub Suche — ruft direkt `IPS_ApplyChanges($id)` mit Bestätigungs-Popup auf. Praktisch,
+  wenn nach einem Modul-Update der reguläre Weg (Modulverwaltung → Aktualisieren → Übernehmen)
+  einmal nicht greift (EMS-Vorschlag).
+
 ## [0.9.37-beta.1] - 2026-08-20
 
 ### Fixed
