@@ -3,6 +3,14 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.35-beta.1] - 2026-08-20
+
+### Changed
+- `ChargerHubDiscovery`: Verbund-Konvention „Einheitliche Verbund-Status-Kopfzeile" (SUITE.md,
+  Referenz EMS `getDiscoverySummaryLine()`) übernommen. Direkt unter dem „Netzwerk
+  durchsuchen"-Button erscheint jetzt eine Zeile „✅/⚠️/ℹ️ N Wallbox(en) gefunden (zuletzt
+  HH:MM:SS Uhr)." statt nur des flüchtigen Fortschrittsbalkentexts während der Suche.
+
 ## [0.9.17-beta.1] - 2026-07-27
 
 ### Changed
