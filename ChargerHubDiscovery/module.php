@@ -47,6 +47,7 @@ class ChargerHubDiscovery extends IPSModule
         $this->RegisterPropertyString('NameTemplate', '');
         $this->RegisterPropertyString('IgnoreIPs', '');
         $this->RegisterAttributeString('ResultsJSON', '[]');
+        $this->RegisterAttributeInteger('LastDiscoveryTs', 0);
         $this->RegisterAttributeString('PreparedTargets', '[]');
     }
 
@@ -191,6 +192,7 @@ class ChargerHubDiscovery extends IPSModule
                                 ['type' => 'Button', 'name' => 'BtnAbort', 'caption' => '✖  Suche abbrechen', 'onClick' => 'CHUBD_AbortScan($id);', 'visible' => false],
                             ],
                         ],
+                        ['type' => 'Label', 'name' => 'DiscoverySummary', 'caption' => $this->getDiscoverySummaryLine()],
                         [
                             'type'          => 'ProgressBar',
                             'name'          => 'ScanProgress',
@@ -314,8 +316,24 @@ class ChargerHubDiscovery extends IPSModule
         }
 
         $this->WriteAttributeString('ResultsJSON', json_encode($results));
+        $this->WriteAttributeInteger('LastDiscoveryTs', time());
         $this->SetStatus(102);
         $this->ReloadForm();
+    }
+
+    // Verbund-Konvention "Einheitliche Verbund-Status-Kopfzeile" (20.08.2026,
+    // Referenz EMS::getDiscoverySummaryLine()): eine Zeile direkt unter dem
+    // Suchen-Button statt verstreuter Fließtext-Sätze.
+    private function getDiscoverySummaryLine(): string
+    {
+        $ts = $this->ReadAttributeInteger('LastDiscoveryTs');
+        if ($ts === 0) {
+            return 'ℹ️ Noch nicht gesucht — Button oben drücken.';
+        }
+        $results = json_decode($this->ReadAttributeString('ResultsJSON'), true);
+        $count = is_array($results) ? count($results) : 0;
+        $icon = $count > 0 ? '✅' : '⚠️';
+        return sprintf('%s %d Wallbox(en) gefunden (zuletzt %s Uhr).', $icon, $count, date('H:i:s', $ts));
     }
 
     private function findExistingInstances()
