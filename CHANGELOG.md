@@ -3,6 +3,17 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.37-beta.1] - 2026-08-20
+
+### Fixed
+- Alle Formular-Buttons gegen SUITE.md "Sichtbare Rückmeldung bei jeder Aktion" (verbindlich seit
+  20.08.2026) durchgeprüft. Ein Fund: „Verbindung testen / Daten sofort lesen" rief bisher
+  direkt `CHUB_Update()` auf — ohne jede sichtbare Reaktion im Formular. Neuer Wrapper
+  `CHUB_TestConnection()` liest wie bisher, zeigt danach aber ✅/❌ mit Uhrzeit in einem neuen
+  Label an. `Update()` selbst bleibt unverändert der reine Timer-Callback (kein UpdateFormField
+  bei jedem FastTimer-Tick). Alle anderen Buttons (Netzwerksuche, Abbrechen, Migration
+  vorbereiten, News/Review-Hinweis ausblenden) hatten bereits sichtbares Feedback.
+
 ## [0.9.36-beta.1] - 2026-08-20
 
 ### Fixed
