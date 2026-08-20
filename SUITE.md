@@ -389,7 +389,7 @@ Details und Quellenzuordnung je Punkt: Memory `nrg-stack-store-review-erkenntnis
 
 | Modul | Version (Stand 24.07.2026) | Kanal | Verträge (angeboten) |
 |---|---|---|---|
-| EMS | in Entwicklung | — | konsumiert alle; künftig `EMS_GetSpecialEvents` |
+| EMS | in Entwicklung (19.08.2026: Tagesplan-Umbau, Commits `860c8ba`/`c1a7c39` auf ems-integration, **noch nicht gepusht/nicht mehrtägig live verifiziert**, siehe EMS/CLAUDE.md) | ems-integration | konsumiert alle; künftig `EMS_GetSpecialEvents`. Steuerlogik jetzt vorausschauend: `BuildDayPlan()` plant alle 96 Tages-Viertelstunden aus PT15M-Preisen+PVF+Lastschätzung, sichtbar als Symcon-Wochenplan unter der Instanz (Vorbild: Dietmars Winterskript #55729), `optimize()` fragt nur noch den Plan ab statt live gegen Schwellwerte zu prüfen. Alte `SetECOWindow()`-Planer (GoodWe-ECO-Register, liefen unabhängig vom laufenden `optimize()`) entfernt — vermutliche Ursache für zuvor nicht nachvollziehbares EMS-Verhalten. |
 | InverterHub | 0.74.x-beta.2 (27.07.2026, Commit 2d8228f) | ems-integration | ⚠️ **Bindungsfix vorhanden, Langzeitstabilität noch nicht bestätigt.** `IHUB_GetFunctions` **1.0** live verifiziert, Skript-Schreibzugriff via `IPS_RequestAction($InstanceID, $Ident, $Value)` funktioniert zuverlässig (27.07.2026 live bestätigt: `ctl_work_mode`/`ctl_ems_mode`/`ctl_ems_enable`). Root Cause der wiederholten Bindungsabrisse (4x am 26.07.2026, auch ohne Reload) gefunden und behoben: `EnableAction()` bindet Variablen nur, wenn sie DIREKTES Kind der Instanz sind — die control-Variablen lagen aber in der Unterkategorie "EMS-Steuerung"/`cat_control`. Fix: Variable kurz zur Instanz zurückhängen, binden, zurück in die Kategorie. Vor jedem weiteren Release erneut über mehrere Stunden/Reload-Zyklen verifizieren, bevor die Warnung entfällt. Ident-Tabelle siehe unten. Siehe `nrg-stack-modulverwaltung-instabilitaet`-Memory. |
 | MeterHub | 0.18.0-beta.1 (Build 28) | beta | `MHUB_GetFunctions` **1.1**, `MHUBV_GetFunctions` **1.1** (1.1 = latency/authority/pollInterval/energyKind/sourceCount) |
 | ChargerHub | 0.9.14-beta.1 | ems-integration | `CHUB_GetFunctions` **1.1** (inkl. `managedBy`), Schreibzugriff via `IPS_RequestAction($InstanceID, $Ident, $Value)` (live verifiziert 25.07.2026, echtes Fahrzeug an WB1: 6A/20W → 10A/4310W) |
@@ -910,6 +910,27 @@ Doku, sobald das Modul veröffentlicht wird):
 
 Wenige Klicks, aber ein bewusster Nutzereingriff — sollte in der Release-Kommunikation
 (Forum-Post, Doku-Panel) klar benannt werden, nicht stillschweigend vorausgesetzt.
+
+## Repo-Namen und GitHub-Redirects (19.08.2026)
+
+Alle Verbund-Repos wurden auf kanonische `NRG*`-Namen umbenannt (NRGEMS,
+NRGChargerHub, NRGInverterHub, NRGMeterHub, NRGGleitenderMittelwert,
+NRGSteuerboxHub, NRGTessie, NRGMigrationsHub, NRGPrognose, ...). Die alten
+Namen (EMS, ChargerHub, InverterHub, ...) existieren nur noch als
+GitHub-Redirects — sie funktionieren, haengen aber an einem zerbrechlichen
+Mechanismus.
+
+**Harte Regel: Ein alter Repo-Name wird NIEMALS fuer ein neues Repo
+wiederverwendet.** Sobald unter DG65 ein neues Repo mit einem Alt-Namen
+angelegt wird, loescht GitHub die Weiterleitung kommentarlos — und jeder
+Nutzer, der den alten Pfad noch in seiner Modulverwaltung eingetragen hat,
+laedt ab dann ein falsches Repo oder gar Fremd-Code. Vor dem Anlegen JEDES
+neuen Repos gegen die Alt-Namen-Liste oben pruefen.
+
+Ergaenzend gilt seit 19.08.2026: Alle Links und `library.json`/`module.json`-
+URLs im Verbund zeigen direkt auf die kanonischen `NRG*`-Namen (verbundweiter
+Sweep, inkl. der ModulControl-relevanten URLs) — kein neuer Link darf einen
+Alt-Namen verwenden, auch nicht "weil der Redirect ja funktioniert".
 
 ## Lizenz
 
