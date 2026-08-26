@@ -1505,6 +1505,9 @@ class ChargerHub extends IPSModule
         // erzwingen — Rückfall, falls die Automatik keinen/den falschen
         // Zähler findet (z. B. mehrere realtime-Grid-Zähler gleichzeitig).
         $this->RegisterPropertyInteger('SurplusMeterID', 0);
+        // Anteil des Netz-Überschusses, der dem Speicher vorbehalten bleibt (0-100 %) —
+        // wird VOR der Ampere-Berechnung vom Überschuss abgezogen.
+        $this->RegisterPropertyInteger('StorageSharePercent', 0);
         // go-e-exklusiv: RFID-Kartenzähler (Name + Energie je Karte 0–9)
         // stehen NICHT über Modbus zur Verfügung (offizielle Registertabelle
         // enthält sie nicht), nur über MQTT (Topics go-eCharger/<Seriennummer>/
@@ -1705,6 +1708,12 @@ class ChargerHub extends IPSModule
             return;
         }
 
+        // Erst der Speicher, dann die Wallbox: der eingestellte Anteil bleibt dem
+        // Speicher vorbehalten und fließt nicht in die Ampere-Berechnung ein.
+        $storageShare = max(0, min(100, $this->ReadPropertyInteger('StorageSharePercent')));
+        $storageW = $surplusW * ($storageShare / 100.0);
+        $surplusW -= $storageW;
+
         // Je nach aktuell konfiguriertem Phasenmodus rechnen — Umschalten der
         // Phasenzahl automatisch vorzunehmen ist bewusst NICHT Teil dieser
         // ersten Fassung (das kann der Nutzer selbst über „Phasenumschaltung"
@@ -1719,7 +1728,7 @@ class ChargerHub extends IPSModule
             if ($enabled) {
                 $this->RequestAction('ctl_enable', false);
             }
-            $this->SetSurplusStatus('🔌 Aktiv — Überschuss ' . round($surplusW) . " W reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
+            $this->SetSurplusStatus('🔌 Aktiv — Überschuss ' . round($surplusW) . " W (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
             return;
         }
         if (!$enabled) {
@@ -1732,7 +1741,8 @@ class ChargerHub extends IPSModule
         if (abs($current - $amp) >= 1) {
             $this->RequestAction('ctl_curr_limit', $amp);
         }
-        $this->SetSurplusStatus('☀️ Aktiv — Überschuss ' . round($surplusW) . " W → $amp A ($phases-phasig).");
+        $storageNote = $storageShare > 0 ? " (nach $storageShare % Speicheranteil, davon " . round($storageW) . ' W für Speicher)' : '';
+        $this->SetSurplusStatus('☀️ Aktiv — Überschuss ' . round($surplusW) . " W$storageNote → $amp A ($phases-phasig).");
     }
 
     // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
@@ -2111,7 +2121,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.44-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.45-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2165,6 +2175,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Überschussladen selbst regeln (nur Fallback ohne EMS)'],
                         ['type' => 'Label', 'caption' => 'Nur wirksam, wenn oben „Wer regelt?" auf „Niemand" steht UND kein aktives EMS installiert ist UND genau eine ChargerHub-Instanz aktiv ist (bei mehreren Wallboxen bitte EMS für die Koordination nutzen) UND ein MeterHub-Zähler am Netzanschlusspunkt einen Echtzeit-Wert liefert. Ist EMS aktiv, hat es immer Vorrang — diese Option greift dann automatisch nicht. Sichtbarer Status (aktiv/warum nicht) erscheint als eigene Variable „Überschussladen", sobald diese Option angehakt ist.'],
                         ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag)', 'moduleID' => self::METERHUB_GUID],
+                        ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
+                        ['type' => 'Label', 'caption' => 'Dieser Anteil des Überschusses bleibt dem Speicher vorbehalten und wird von der Ampere-Berechnung fürs Laden abgezogen. 0 % = kompletter Überschuss geht in die Wallbox, 100 % = nichts geht in die Wallbox.'],
                     ],
                 ],
                 [
