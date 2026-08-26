@@ -754,6 +754,31 @@ sein sollen, dürfen NICHT nur als Buttons/Schalter im Kachel-HTML existieren
 `EnableAction()` (Boolean-Switch oder Integer+Enumeration für mehrere
 Aktionen). Liegen die zugrundeliegenden Daten in einer anderen Instanz,
 `IPS_CreateLink()` (Verknüpfung) verwenden, nicht kopieren.
+**Klarstellung, in zwei Schritten korrigiert (Prognose-Sitzung, 25.08.2026,
+zweiter Durchgang nach Dashboard-Korrektur):** Der native Vergrößern-
+Doppelpfeil zeigt zwar nie das eigene `module.html`, aber automatisch die
+Standardansicht der Instanz-**Variablen** (mit ihren Profilen als Schalter/
+Dropdown/Zahlenfeld) — genau das ist der bereits bewährte, richtige Weg für
+"Einstellungen hinter dem Doppelpfeil": Statt `RegisterPropertyX()` +
+Konsolenformular fürs WebFront-relevante Einstellungen `RegisterVariable
+Boolean()`/`RegisterVariableInteger()` + `EnableAction($ident)` verwenden
+(ggf. eigenes Integer-Profil für Auswahlwerte, damit es als Dropdown statt
+Rohzahl erscheint) — die Variable erscheint dann automatisch in der
+aufgezogenen Ansicht, kein eigenes Overlay nötig. `RequestAction()` prüft
+per `in_array($Ident, [...])`, ruft `SetValue()`, löst ggf. Folgeaktionen
+aus, dann `Render()`. Referenz: `NRGDashboardHeatSchema/module.php`,
+`Create()` ab Zeile ~145/~190, `RequestAction()` ab Zeile 514.
+**Falle dabei (CometWiFi-Fund, 16.08.2026):** Default-Werte nur setzen, wenn
+die Variable NEU angelegt wird (`IPS_GetObjectIDByIdent`-Check vorher) —
+`Create()` läuft bei jedem Symcon-Neustart erneut, ein unbedingtes
+`SetValue()` würde manuelle Nutzereinstellungen bei jedem Neustart
+zurücksetzen.
+Der `requestAction(ident,value)`(JS)→`RequestAction()`(PHP)-Kanal aus dem
+eigenen `module.html` (`IPS_SetProperty()`+`IPS_ApplyChanges()` darin, kein
+stilles Hintergrund-Speichern wie das in Punkt 1 der Store-Review-Checkliste
+verbotene Muster, da ein bewusster Nutzer-Klick es auslöst) bleibt richtig —
+aber nur für ein SELBST GEBAUTES Overlay/Panel INNERHALB der normal-großen
+eigenen Kachel, nicht für "hinter dem Doppelpfeil".
 
 **11. `Sys_GetURLContentEx()` kann kein POST — `Method`/`Content`/`Header`-Schlüssel
 werden STILLSCHWEIGEND ignoriert, es geht immer ein GET raus.** Live gefunden
