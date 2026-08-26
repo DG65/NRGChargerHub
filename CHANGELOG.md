@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.42-beta.1] - 2026-08-26
+
+### Fixed
+- `FindGridSurplusW()`: `MHUB_GetFunctions()` liefert (anders als unser eigenes
+  `CHUB_GetFunctions()`) einen JSON-**String**, keinen nativen PHP-Array — mit MeterHub live
+  abgeglichen. `json_decode()` ergänzt, den bisherigen defensiven Fallback-Zweig (Rückgabewert
+  selbst als Liste behandeln) entfernt, da die Struktur jetzt bestätigt und stabil ist
+  (`assignments` immer ein eigener Schlüssel im obersten Objekt).
+
 ## [0.9.41-beta.1] - 2026-08-26
 
 ### Added
