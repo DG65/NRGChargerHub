@@ -1410,6 +1410,10 @@ class ChargerHub extends IPSModule
 {
     private const ATTR_REVIEW_HINT_GONE = 'ReviewHintDismissed';
 
+    // Name des zuletzt in FindGridSurplusW() gefundenen MeterHub-Zählers, für den
+    // sichtbaren Status — nur innerhalb eines Poll-Durchlaufs gültig, kein State.
+    private ?string $lastSurplusMeterName = null;
+
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
     private const NEWS_VERSION = '0.9.41';
@@ -1728,7 +1732,7 @@ class ChargerHub extends IPSModule
             if ($enabled) {
                 $this->RequestAction('ctl_enable', false);
             }
-            $this->SetSurplusStatus('🔌 Aktiv — Überschuss ' . round($surplusW) . " W (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
+            $this->SetSurplusStatus('🔌 Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
             return;
         }
         if (!$enabled) {
@@ -1742,7 +1746,7 @@ class ChargerHub extends IPSModule
             $this->RequestAction('ctl_curr_limit', $amp);
         }
         $storageNote = $storageShare > 0 ? " (nach $storageShare % Speicheranteil, davon " . round($storageW) . ' W für Speicher)' : '';
-        $this->SetSurplusStatus('☀️ Aktiv — Überschuss ' . round($surplusW) . " W$storageNote → $amp A ($phases-phasig).");
+        $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$storageNote → $amp A ($phases-phasig).");
     }
 
     // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
@@ -1849,7 +1853,7 @@ class ChargerHub extends IPSModule
         $forcedID = $this->ReadPropertyInteger('SurplusMeterID');
         $candidates = $forcedID > 0 ? [$forcedID] : (@IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: []);
 
-        $best = null; // ['powerID' => int, 'billing' => bool]
+        $best = null; // ['powerID' => int, 'billing' => bool, 'iid' => int]
         foreach ($candidates as $iid) {
             // MHUB_GetFunctions() liefert (anders als unser eigenes
             // CHUB_GetFunctions()) einen JSON-String, keinen nativen Array —
@@ -1875,18 +1879,26 @@ class ChargerHub extends IPSModule
                 }
                 $billing = ($assignment['authority'] ?? '') === 'billing';
                 if ($best === null || ($billing && !$best['billing'])) {
-                    $best = ['powerID' => $powerID, 'billing' => $billing];
+                    $best = ['powerID' => $powerID, 'billing' => $billing, 'iid' => $iid];
                 }
             }
         }
         if ($best === null) {
+            $this->lastSurplusMeterName = null;
             return null;
         }
         $raw = @GetValue($best['powerID']);
         if (!is_numeric($raw)) {
+            $this->lastSurplusMeterName = null;
             return null;
         }
+        $this->lastSurplusMeterName = @IPS_GetName($best['iid']) ?: null;
         return max(0.0, -(float)$raw);
+    }
+
+    private function SurplusMeterLabel(): string
+    {
+        return $this->lastSurplusMeterName ?? 'Zähler unbekannt';
     }
 
     // Ist EMS installiert UND aktuell aktiv? (Mit EMS-Sitzung abgestimmt,
@@ -2121,7 +2133,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.45-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.46-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

@@ -3,6 +3,14 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.46-beta.1] - 2026-08-26
+
+### Added
+- Der Status „Überschussladen" nennt jetzt den Namen des gefundenen MeterHub-Zählers (z. B.
+  „Aktiv (Messgerät am NAP) — Überschuss …"), statt nur die Wattzahl zu zeigen. Dietmars
+  Frage „Welcher Zähler wurde gefunden?" ließ sich bisher nur live per Introspektion
+  beantworten — jetzt steht es direkt in der Statusvariable.
+
 ## [0.9.45-beta.1] - 2026-08-26
 
 ### Added
