@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.43-beta.1] - 2026-08-26
+
+### Added
+- Sichtbare Rückmeldung für das Überschussladen (Dietmars Frage: „Sehe ich, ob ein Zähler
+  gefunden wurde?" — Antwort war bisher nein). Neue Variable „Überschussladen" (nur wenn
+  „Überschussladen selbst regeln" aktiv ist) zeigt live, ob/warum die Eigenregelung gerade
+  (nicht) eingreift — z. B. „EMS ist aktiv und hat Vorrang", „Kein passender MeterHub-Zähler
+  gefunden", oder „Überschuss 2822 W → 12 A (1-phasig)".
+- Neue Property „NAP-Zähler" (`SurplusMeterID`, `SelectInstance` auf MeterHub-Instanzen) als
+  manueller Rückfall, falls die automatische Zähler-Auswahl über den MeterHub-Vertrag keinen
+  oder den falschen Zähler findet (z. B. bei mehreren realtime-Grid-Zählern). Leer = weiterhin
+  automatisch.
+
 ## [0.9.42-beta.1] - 2026-08-26
 
 ### Fixed
