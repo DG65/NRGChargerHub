@@ -1406,10 +1406,9 @@ class ChargerHub extends IPSModule
 
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.9.24';
+    private const NEWS_VERSION = '0.9.39';
     private const NEWS_ITEMS = [
-        'Ladefreigabe/Stromlimit sind jetzt wirklich bedienbar (Console/WebFront) — Ursache war eine falsche SDK-API bei der Steuer-Variablen-Verknüpfung, live durchleuchtet und behoben.',
-        'Neu: RFID-Kartenzähler (Name + Energie je Karte, 0–9) für go-eCharger über MQTT — Modbus bietet diese Werte nicht an. Siehe Panel „RFID-Kartenzähler" (Broker-IP direkt im Panel eintragen, keine zusätzliche Instanz nötig).',
+        'Neu: Variable „Zugeordnetes Fahrzeug" — bleibt leer, bis ein Fahrzeug-Modul (z. B. Tessie) CHUB_SetVehicleName() aufruft. ChargerHub errät das Fahrzeug nicht selbst (kennt weder Marke noch Name), stellt aber jetzt den Ankerpunkt bereit, an dem ein Fahrzeug-Modul das Ergebnis eintragen kann.',
     ];
 
     private const DRIVERS = [
@@ -1604,6 +1603,30 @@ class ChargerHub extends IPSModule
             // ApplyChanges/direkt am Timer.
             $this->PollMqttCards();
         }
+        // Endet die Ladesitzung (Fahrzeug abgesteckt), verliert der zuletzt
+        // per SetVehicleName() gesetzte Name seine Gültigkeit — sonst zeigt
+        // die Instanz nach einem Fahrzeugwechsel weiter den alten Namen an.
+        // Nur aktiv löschen, wenn 'vehicle_plugged' beim jeweiligen Treiber
+        // überhaupt existiert und WIRKLICH false ist (nicht bei unbekanntem
+        // Zustand, z. B. Alfen/Heidelberg ohne dieses Ident).
+        $plugged = $this->GetVarValue('vehicle_plugged');
+        if ($plugged === false && $this->GetVarValue('vehicle_name') !== '') {
+            $this->SetVarStr('vehicle_name', '');
+        }
+    }
+
+    // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
+    // (Tessie oder ein beliebiges anderes, bei jedem Nutzer mit beliebigen
+    // Fahrzeugen/Wallboxen) — ChargerHub kennt weder Fahrzeugnamen noch
+    // -Marken und rät auch nicht per GPS/Zeitfenster, WELCHES Fahrzeug hier
+    // hängt (das wäre eine Zuständigkeit, die woanders hingehört, siehe
+    // CLAUDE.md „Kein Modul darf ein anderes voraussetzen"). Ein aufrufendes
+    // Modul, das Fahrzeug UND Wallbox gleichzeitig sieht (z. B. per
+    // Ladestrom-Abgleich zwischen CHUB_GetFunctions()/powerID und der
+    // eigenen Fahrzeug-Telemetrie), trägt hier nur das Ergebnis ein.
+    public function SetVehicleName(string $name)
+    {
+        $this->SetVarStr('vehicle_name', $name);
     }
 
     // Eigener, roher MQTT-Poll — kein Symcon-Splitter/Parent-Instanz nötig,
@@ -1798,7 +1821,7 @@ class ChargerHub extends IPSModule
             // im EMS-Repo). Konsumenten prüfen die Major; additive Felder
             // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
             // 1.1: managedBy ergänzt.
-            'contractVersion'    => '1.1',
+            'contractVersion'    => '1.2',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -1821,6 +1844,11 @@ class ChargerHub extends IPSModule
             // Kompatibilität (Vertrag 1.0): abgeleitet aus managedBy — true,
             // sobald ein anderer Regler als none/ems die Hoheit hat.
             'externallyManaged'  => !in_array($this->GetManagedBy(), ['none', 'ems'], true),
+            // 1.2: Zugeordnetes Fahrzeug (leerer String, wenn kein
+            // Fahrzeug-Modul CHUB_SetVehicleName() aufgerufen hat oder
+            // kein Fahrzeug angesteckt ist) — Wert-ID, kein eigenes Feld,
+            // damit Konsumenten wie gewohnt per GetValue() lesen.
+            'vehicleNameID'      => $this->FindVarByIdent('vehicle_name') ?: 0,
         ]];
     }
 
@@ -1886,7 +1914,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.38-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.39-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2066,6 +2094,10 @@ class ChargerHub extends IPSModule
                 $valid["card{$i}_energy"] = true;
             }
         }
+        // Herstellerunabhängig, kommt nie über Modbus/den Treiber, sondern
+        // ausschließlich per CHUB_SetVehicleName() von außen (Tessie oder ein
+        // beliebiges anderes Fahrzeug-Modul) — siehe SetVehicleName().
+        $valid['vehicle_name'] = true;
         $this->PruneForeignObjects($valid);
 
         $pos = 0;
@@ -2082,6 +2114,7 @@ class ChargerHub extends IPSModule
         if ($mqttCardsActive) {
             $this->RegisterMqttCardVars();
         }
+        $this->RegisterVar(['vehicle_name', 'Zugeordnetes Fahrzeug', 'S', '', true, 'device', ''], $pos++);
 
         // Migration abgeschlossen — ab hier nie wieder Steuervariablen
         // löschen/neu anlegen (siehe RegisterVar()).
