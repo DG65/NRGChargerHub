@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.44-beta.1] - 2026-08-26
+
+### Changed
+- Überschussladen-Eigenregelung: die Prüfung „darf nur bei genau einer aktiven
+  ChargerHub-Instanz laufen" zählt jetzt nur noch andere Instanzen mit, bei denen auch
+  wirklich ein Fahrzeug angesteckt ist (`vehicle_plugged`). Dietmars Einwand: „Du kannst doch
+  selbst feststellen, dass an der anderen Wallbox kein Auto hängt und kannst von dieser
+  Regelung solange Abstand nehmen, bis jemand versucht die andere Wallbox mit angeschlossenem
+  Auto einzuschalten." Eine zweite, aktive aber leere Wallbox blockiert die Eigenregelung
+  damit nicht mehr — erst wenn dort tatsächlich ein Auto steckt, tritt Konkurrenz um den
+  Überschuss ein und die Eigenregelung pausiert.
+
 ## [0.9.43-beta.1] - 2026-08-26
 
 ### Added

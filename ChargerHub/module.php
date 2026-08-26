@@ -1676,14 +1676,23 @@ class ChargerHub extends IPSModule
             $this->SetSurplusStatus('⏸️ Inaktiv — EMS ist aktiv und hat Vorrang.');
             return;
         }
-        $activeInstances = 0;
+        $contendingInstances = 1; // sich selbst mitzählen
         foreach (@IPS_GetInstanceListByModuleID('{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}') ?: [] as $iid) {
-            if (@IPS_GetProperty($iid, 'Active') === true) {
-                $activeInstances++;
+            if ($iid === $this->InstanceID) {
+                continue;
+            }
+            if (@IPS_GetProperty($iid, 'Active') !== true) {
+                continue;
+            }
+            // Eine andere aktive Wallbox blockiert nur, wenn dort auch wirklich ein Fahrzeug hängt —
+            // sonst gibt es keine Konkurrenz um den Überschuss.
+            $vid = $this->FindIdentRecursive($iid, 'vehicle_plugged');
+            if ($vid === false || @GetValueBoolean($vid) === true) {
+                $contendingInstances++;
             }
         }
-        if ($activeInstances !== 1) {
-            $this->SetSurplusStatus("⏸️ Inaktiv — $activeInstances aktive ChargerHub-Instanzen gefunden, es darf genau eine sein (sonst bitte EMS für die Koordination nutzen).");
+        if ($contendingInstances !== 1) {
+            $this->SetSurplusStatus("⏸️ Inaktiv — $contendingInstances ChargerHub-Instanzen mit angestecktem Fahrzeug gefunden, es darf genau eine sein (sonst bitte EMS für die Koordination nutzen).");
             return;
         }
         if ($this->GetVarValue('vehicle_plugged') === false) {
@@ -2102,7 +2111,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.43-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.44-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
