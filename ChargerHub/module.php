@@ -1806,19 +1806,15 @@ class ChargerHub extends IPSModule
         }
         $best = null; // ['powerID' => int, 'billing' => bool]
         foreach (@IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: [] as $iid) {
-            $fns = @MHUB_GetFunctions($iid);
-            if (!is_array($fns)) {
+            // MHUB_GetFunctions() liefert (anders als unser eigenes
+            // CHUB_GetFunctions()) einen JSON-String, keinen nativen Array —
+            // mit MeterHub live abgeglichen, 26.08.2026. Struktur:
+            // {..., "assignments": [{"function":"grid", "powerID":..., ...}]}.
+            $fns = json_decode((string)@MHUB_GetFunctions($iid), true);
+            if (!is_array($fns) || !isset($fns['assignments']) || !is_array($fns['assignments'])) {
                 continue;
             }
-            // MeterHub beschreibt die Liste als "assignments[] von
-            // MHUB_GetFunctions()" — je nachdem, ob das ein eigener
-            // Schlüssel oder der Rückgabewert selbst ist, robust auf
-            // beide Formen prüfen, statt eine davon zu erraten.
-            $assignments = $fns['assignments'] ?? $fns;
-            if (!is_array($assignments)) {
-                continue;
-            }
-            foreach ($assignments as $assignment) {
+            foreach ($fns['assignments'] as $assignment) {
                 if (!is_array($assignment)) {
                     continue;
                 }
@@ -2080,7 +2076,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.41-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.42-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
