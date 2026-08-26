@@ -1146,7 +1146,7 @@ class GoeChargerDriver implements ChargerDriverInterface
                 ['ctl_phase_mode',   'Phasenumschaltung',   'I', 'CHB.GoePhaseMode',  false, 'control', 'RW Holding 332 (psm, ab FW 55.5)'],
                 ['ctl_access',       'Zugangskontrolle',    'I', 'CHB.GoeAccess',     false, 'control', 'RW Holding 201 (ACCESS_STATE)'],
                 ['ctl_cable_lock',   'Kabelverriegelung',   'I', 'CHB.GoeCableLock',  false, 'control', 'RW Holding 204'],
-                ['ctl_energy_limit', 'Energie-Limit Ladevorgang (0 = kein Limit)', 'F', 'CHB.kWhLimit', false, 'control', 'RW Holding 333-336 (dwo, Float64 Wh)'],
+                ['ctl_energy_limit', 'Energie-Limit Ladevorgang', 'F', 'CHB.kWhLimit', false, 'control', 'RW Holding 333-336 (dwo, Float64 Wh) — 0 oder negativ eingeben, um das Limit zu deaktivieren'],
                 ['ctl_led',          'LED-Helligkeit',      'I', 'CHB.Led255',        false, 'control', 'RW Holding 206 (0-255)'],
             ]],
             // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
@@ -1325,8 +1325,14 @@ class GoeChargerDriver implements ChargerDriverInterface
             $lim = $mb->readHolding(self::REG_ENERGY_LIMIT, 4);
             if ($lim !== null) {
                 $wh = $mb->readDouble64($lim, 0);
-                // Inf/NaN = "kein Limit" (dwo=null) -> 0 anzeigen.
-                $hub->SetVarFloat('ctl_energy_limit', is_finite($wh) ? $wh / 1000.0 : 0.0);
+                // Live bestätigt (26.08.2026): 0 als Anzeige für "kein Limit"
+                // war nicht von einem ECHTEN 0-Wh-Limit ("Dein Limit von 0 kWh
+                // wurde erreicht" in der go-e-App, Ladung komplett blockiert)
+                // zu unterscheiden — beides zeigte "0,0 kWh". -1 als Sentinel
+                // für "kein Limit" (Inf/NaN laut Doku), da 0 ein gültiger,
+                // ECHTER Limit-Wert ist. Zusammen mit der neuen Profil-
+                // Assoziation unten zeigt das jetzt eindeutig "Kein Limit" an.
+                $hub->SetVarFloat('ctl_energy_limit', is_finite($wh) ? $wh / 1000.0 : -1.0);
             }
         }
 
@@ -1914,7 +1920,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.39-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.40-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2402,6 +2408,12 @@ class ChargerHub extends IPSModule
                 IPS_SetVariableProfileDigits($name, $digits);
             } elseif ($type === VARIABLETYPE_INTEGER) {
                 IPS_SetVariableProfileValues($name, $min, $max, $step);
+            }
+            // CHB.kWhLimit: -1 als eigene Textassoziation für "Kein Limit"
+            // (siehe readValues()-Kommentar zum Sentinel) — Assoziationen
+            // funktionieren auch bei Float-Profilen, nicht nur bei Enums.
+            if ($name === 'CHB.kWhLimit') {
+                IPS_SetVariableProfileAssociation($name, -1, 'Kein Limit', '', -1);
             }
         }
 
