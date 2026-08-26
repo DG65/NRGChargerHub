@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.40-beta.1] - 2026-08-26
+
+### Fixed
+- Live entdeckt (Ladung an WB2 komplett blockiert, go-e-App zeigte „Dein Limit von 0 kWh wurde
+  erreicht"): Die Anzeige von „Energie-Limit Ladevorgang" konnte „kein Limit" (Modbus-Wert `Inf`,
+  laut go-e-Doku der korrekte Weg, das Limit zu deaktivieren) nicht von einem ECHTEN, ladungs-
+  blockierenden 0-Wh-Limit unterscheiden — beide Zustände zeigten „0,0 kWh". Anzeige-Sentinel auf
+  `-1` umgestellt (mit eigener Profil-Textassoziation „Kein Limit"), Beschriftung entsprechend
+  angepasst. Schreibseite war bereits korrekt (0/negativ eingeben → schreibt `Inf`).
+
 ## [0.9.39-beta.1] - 2026-08-20
 
 ### Added
