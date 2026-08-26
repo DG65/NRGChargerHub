@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.39-beta.1] - 2026-08-20
+
+### Added
+- Neue, herstellerunabhängige Variable „Zugeordnetes Fahrzeug" (`vehicle_name`, String,
+  archiviert) je Instanz. Bleibt leer, bis ein externes Fahrzeug-Modul (z. B. Tessie, oder ein
+  beliebiges anderes bei einem anderen Nutzer) `CHUB_SetVehicleName($id, $name)` aufruft.
+  ChargerHub errät selbst nicht, welches Fahrzeug angesteckt ist (kennt weder Marke noch Name,
+  keine GPS-/Zeitfenster-Heuristik) — das würde die Eigenständigkeitsregel verletzen (kein Modul
+  setzt ein anderes voraus). Wird automatisch geleert, sobald `vehicle_plugged` (falls vom
+  Treiber geliefert) auf „kein Fahrzeug" wechselt, damit nach einem Fahrzeugwechsel nicht der
+  alte Name stehen bleibt. `CHUB_GetFunctions()` liefert die Variablen-ID neu als
+  `vehicleNameID` (Vertragsversion 1.1 → 1.2, additiv).
+
 ## [0.9.38-beta.1] - 2026-08-20
 
 ### Added
