@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.45-beta.1] - 2026-08-26
+
+### Added
+- Neue Einstellung „Anteil für Speicher (%)" (`StorageSharePercent`, 0-100) im
+  Überschussladen-Panel. Der eingestellte Anteil des Netz-Überschusses bleibt dem Speicher
+  vorbehalten und wird VOR der Ampere-Berechnung für die Wallbox abgezogen (0 % = kompletter
+  Überschuss geht in die Wallbox, 100 % = nichts). Dietmars Hinweis: der Speicher war zuvor
+  wieder unreflektiert in die Berechnung eingerechnet worden, obwohl er ausdrücklich verlangt
+  hatte, den Speicheranteil separat regelbar zu machen statt ihn einfach mit zu verplanen.
+  Der Status „Überschussladen" zeigt bei aktivem Anteil zusätzlich den reservierten
+  Speicheranteil in Watt an.
+
 ## [0.9.44-beta.1] - 2026-08-26
 
 ### Changed
