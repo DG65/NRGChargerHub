@@ -1412,9 +1412,9 @@ class ChargerHub extends IPSModule
 
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.9.39';
+    private const NEWS_VERSION = '0.9.41';
     private const NEWS_ITEMS = [
-        'Neu: Variable „Zugeordnetes Fahrzeug" — bleibt leer, bis ein Fahrzeug-Modul (z. B. Tessie) CHUB_SetVehicleName() aufruft. ChargerHub errät das Fahrzeug nicht selbst (kennt weder Marke noch Name), stellt aber jetzt den Ankerpunkt bereit, an dem ein Fahrzeug-Modul das Ergebnis eintragen kann.',
+        'Neu: „Überschussladen selbst regeln" (Panel „Steuerungshoheit & Sicherheit") — ChargerHub kann jetzt eigenständig per PV-Überschuss laden, aber NUR als Fallback ohne EMS (EMS hat immer Vorrang, sobald es läuft). Voraussetzung: genau eine aktive ChargerHub-Instanz, ein MeterHub-Zähler am Netzanschlusspunkt mit Echtzeit-Wert. Standardmäßig aus.',
     ];
 
     private const DRIVERS = [
@@ -1433,6 +1433,12 @@ class ChargerHub extends IPSModule
         'goe'        => 32,
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
+
+    // Verbund-Vertrag MeterHub (mit MeterHub-Sitzung abgestimmt, 26.08.2026)
+    // — für die optionale Eigenregelung des Überschussladens, siehe
+    // FindGridSurplusW().
+    private const METERHUB_GUID = '{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}';
+    private const EMS_GUID = '{90286A25-E6C9-4A66-BD4E-0CFB707C2C6C}';
 
     // Regler-Kennzeichnung (Verbund-Vokabular, mit EMS abgestimmt). Wer hat die
     // Hoheit über diesen Ladepunkt? Wird als 'managedBy' im Vertrag gemeldet;
@@ -1489,6 +1495,11 @@ class ChargerHub extends IPSModule
         // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
         // Verteidigungslinie unabhängig vom EMS (EMS-Vertragsabsprache).
         $this->RegisterPropertyInteger('MaxCurrent', 16);
+        // Eigenständiges Überschussladen als Fallback, wenn EMS nicht
+        // vorhanden/aktiv ist (Dietmars Vorgabe, siehe SurplusChargeControl()).
+        // Default false — sicherer Opt-in, kein automatisches Verhalten ohne
+        // Zutun.
+        $this->RegisterPropertyBoolean('EnableSurplusCharging', false);
         // go-e-exklusiv: RFID-Kartenzähler (Name + Energie je Karte 0–9)
         // stehen NICHT über Modbus zur Verfügung (offizielle Registertabelle
         // enthält sie nicht), nur über MQTT (Topics go-eCharger/<Seriennummer>/
@@ -1619,6 +1630,77 @@ class ChargerHub extends IPSModule
         if ($plugged === false && $this->GetVarValue('vehicle_name') !== '') {
             $this->SetVarStr('vehicle_name', '');
         }
+        $this->SurplusChargeControl();
+    }
+
+    // Eigenständiges Überschussladen — NUR Fallback, wenn EMS nicht regelt
+    // (Dietmars Vorgabe, 26.08.2026, mit EMS/MeterHub abgestimmt): EMS hat
+    // immer Vorrang, sobald es läuft. ChargerHub übernimmt selbst nur, wenn
+    // alle folgenden Bedingungen gelten — sonst tut diese Methode nichts:
+    // - explizit per Property freigeschaltet (sicherer Opt-in, kein
+    //   automatisches Verhalten ohne Zutun),
+    // - kein anderer Regler hat laut managedBy die Hoheit,
+    // - EMS ist nicht installiert oder nicht aktiv (IsEmsActive()),
+    // - GENAU EINE aktive ChargerHub-Instanz existiert insgesamt — bei
+    //   mehreren Wallboxen würde jede für sich denselben Überschuss zu
+    //   nutzen versuchen (Koordination mehrerer Ladepunkte bleibt EMS
+    //   vorbehalten, das hier ist bewusst kein Ersatz dafür),
+    // - ein MeterHub-Zähler am Netzanschlusspunkt liefert einen
+    //   Echtzeit-Überschusswert (FindGridSurplusW()).
+    private function SurplusChargeControl(): void
+    {
+        if (!$this->ReadPropertyBoolean('EnableSurplusCharging')) {
+            return;
+        }
+        if ($this->GetManagedBy() !== 'none') {
+            return;
+        }
+        if ($this->IsEmsActive()) {
+            return;
+        }
+        $activeInstances = 0;
+        foreach (@IPS_GetInstanceListByModuleID('{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}') ?: [] as $iid) {
+            if (@IPS_GetProperty($iid, 'Active') === true) {
+                $activeInstances++;
+            }
+        }
+        if ($activeInstances !== 1) {
+            return;
+        }
+        if ($this->GetVarValue('vehicle_plugged') === false) {
+            return; // sicher kein Fahrzeug angesteckt (unbekannter Zustand blockiert NICHT, siehe GetVarValue-Semantik)
+        }
+        $surplusW = $this->FindGridSurplusW();
+        if ($surplusW === null) {
+            return;
+        }
+
+        // Je nach aktuell konfiguriertem Phasenmodus rechnen — Umschalten der
+        // Phasenzahl automatisch vorzunehmen ist bewusst NICHT Teil dieser
+        // ersten Fassung (das kann der Nutzer selbst über „Phasenumschaltung"
+        // regeln, z. B. auf 1-phasig stellen, wenn der Überschuss meist zu
+        // gering für 3-phasig ist).
+        $phases = ($this->GetVarValue('ctl_phase_mode') === 1) ? 1 : 3;
+        $amp = (int)floor($surplusW / ($phases * 230.0));
+        $amp = max(0, min($this->GetMaxCurrentA(), $amp));
+
+        $enabled = (bool)$this->GetVarValue('ctl_enable');
+        if ($amp < self::MIN_CURRENT) {
+            if ($enabled) {
+                $this->RequestAction('ctl_enable', false);
+            }
+            return;
+        }
+        if (!$enabled) {
+            $this->RequestAction('ctl_enable', true);
+        }
+        $current = (int)$this->GetVarValue('ctl_curr_limit');
+        // Mindestabstand 1 A, um nicht bei jedem Poll wegen Messrauschen neu
+        // zu schreiben (unnötiger Modbus-Traffic, Relais-Verschleiß bei
+        // ständigem Nachregeln).
+        if (abs($current - $amp) >= 1) {
+            $this->RequestAction('ctl_curr_limit', $amp);
+        }
     }
 
     // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
@@ -1704,6 +1786,84 @@ class ChargerHub extends IPSModule
     // erster Vorschlag und noch mit der EMS-Sitzung abzustimmen, bevor er als
     // stabiler Vertrag gilt — die Steuer-IDs sind fürs EMS bestimmt, nicht für
     // Anzeigemodule.
+    // Aktueller Netz-Überschuss in Watt (positiv = Einspeisung/Überschuss,
+    // 0 = kein Überschuss), oder null, wenn kein geeigneter Zähler gefunden
+    // wurde. Verbund-Vertrag mit MeterHub abgestimmt (26.08.2026):
+    // - NIE über den Instanznamen gehen (frei wählbar, siehe eigene
+    //   Namens-Fallen-Erfahrung bei MigrationsHub) — nur über
+    //   MHUB_GetFunctions()['assignments'][*]['function'] === 'grid'.
+    // - 'latency' ('realtime'/'delayed') und 'authority' ('billing'/
+    //   'auxiliary') sind ORTHOGONAL — 'billing' heißt nur eichrechtlich
+    //   verbindlich, NICHT aktuell. Für eine Regelschleife zählt
+    //   ausschließlich 'realtime'; unter mehreren realtime-Treffern
+    //   zusätzlich 'billing' als Tiebreaker.
+    // - Vorzeichen bei MeterHub: + = Bezug, − = Einspeisung — daher
+    //   max(0, -powerValue), nicht der Rohwert.
+    private function FindGridSurplusW(): ?float
+    {
+        if (!function_exists('MHUB_GetFunctions')) {
+            return null;
+        }
+        $best = null; // ['powerID' => int, 'billing' => bool]
+        foreach (@IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: [] as $iid) {
+            $fns = @MHUB_GetFunctions($iid);
+            if (!is_array($fns)) {
+                continue;
+            }
+            // MeterHub beschreibt die Liste als "assignments[] von
+            // MHUB_GetFunctions()" — je nachdem, ob das ein eigener
+            // Schlüssel oder der Rückgabewert selbst ist, robust auf
+            // beide Formen prüfen, statt eine davon zu erraten.
+            $assignments = $fns['assignments'] ?? $fns;
+            if (!is_array($assignments)) {
+                continue;
+            }
+            foreach ($assignments as $assignment) {
+                if (!is_array($assignment)) {
+                    continue;
+                }
+                if (($assignment['function'] ?? '') !== 'grid') {
+                    continue;
+                }
+                if (($assignment['latency'] ?? '') !== 'realtime') {
+                    continue; // 'delayed' (z. B. Cloud-API) taugt nicht für eine Regelschleife.
+                }
+                $powerID = (int)($assignment['powerID'] ?? 0);
+                if ($powerID <= 0) {
+                    continue;
+                }
+                $billing = ($assignment['authority'] ?? '') === 'billing';
+                if ($best === null || ($billing && !$best['billing'])) {
+                    $best = ['powerID' => $powerID, 'billing' => $billing];
+                }
+            }
+        }
+        if ($best === null) {
+            return null;
+        }
+        $raw = @GetValue($best['powerID']);
+        if (!is_numeric($raw)) {
+            return null;
+        }
+        return max(0.0, -(float)$raw);
+    }
+
+    // Ist EMS installiert UND aktuell aktiv? (Mit EMS-Sitzung abgestimmt,
+    // 26.08.2026.) Bewusst die ECHTE Aktiv-Prüfung (Statusvariable
+    // EMS_Active_State), nicht nur unser eigenes managedBy-Feld — Dietmars
+    // Vorgabe war ausdrücklich "EMS nicht vorhanden ODER nicht eingeschaltet",
+    // ein rein statisches Feld würde das nicht abbilden, wenn EMS zwar
+    // eingetragen, aber gerade deinstalliert/deaktiviert ist.
+    private function IsEmsActive(): bool
+    {
+        $emsIDs = @IPS_GetInstanceListByModuleID(self::EMS_GUID) ?: [];
+        if ($emsIDs === []) {
+            return false;
+        }
+        $vid = $this->FindIdentRecursive($emsIDs[0], 'EMS_Active_State');
+        return $vid ? (bool)@GetValueBoolean($vid) : false;
+    }
+
     // Wirksame Ladestrom-Obergrenze: Hardware-Limit des Herstellers,
     // zusätzlich begrenzt durch die Property „Maximaler Anschlussstrom".
     public function GetMaxCurrentA(): int
@@ -1920,7 +2080,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.40-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.41-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1971,6 +2131,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards oder eine §14a-Steuerung —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit.'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
+                        ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Überschussladen selbst regeln (nur Fallback ohne EMS)'],
+                        ['type' => 'Label', 'caption' => 'Nur wirksam, wenn oben „Wer regelt?" auf „Niemand" steht UND kein aktives EMS installiert ist UND genau eine ChargerHub-Instanz aktiv ist (bei mehreren Wallboxen bitte EMS für die Koordination nutzen) UND ein MeterHub-Zähler am Netzanschlusspunkt einen Echtzeit-Wert liefert. Ist EMS aktiv, hat es immer Vorrang — diese Option greift dann automatisch nicht.'],
                     ],
                 ],
                 [

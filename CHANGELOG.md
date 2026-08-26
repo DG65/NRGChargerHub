@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.41-beta.1] - 2026-08-26
+
+### Added
+- Neue Option „Überschussladen selbst regeln" (Property `EnableSurplusCharging`, Standard aus).
+  ChargerHub kann jetzt eigenständig per PV-Überschuss laden — aber ausdrücklich NUR als
+  Fallback, wenn EMS nicht vorhanden oder nicht aktiv ist (Dietmars Vorgabe). Greift nur, wenn
+  ALLE Bedingungen erfüllt sind: `managedBy` = „Niemand", EMS installiert+aktiv? nein
+  (`IsEmsActive()`, Statusvariable `EMS_Active_State`, GUID mit EMS-Sitzung abgestimmt), GENAU
+  eine aktive ChargerHub-Instanz insgesamt (Koordination mehrerer Wallboxen bleibt EMS
+  vorbehalten — sonst würden zwei Instanzen um denselben Überschuss konkurrieren), ein
+  MeterHub-Zähler am Netzanschlusspunkt liefert einen Echtzeit-Wert (`FindGridSurplusW()`, neuer
+  Verbund-Vertrag mit MeterHub: `MHUB_GetFunctions()`-Zuordnung mit `function==='grid'` UND
+  `latency==='realtime'`, `authority==='billing'` nur als Tiebreaker — NIE über den frei
+  wählbaren Instanznamen, und Vorzeichen `max(0, -powerValue)`, da MeterHub `+` als Bezug
+  zählt). Automatisches Umschalten der Phasenzahl ist bewusst NICHT Teil dieser ersten Fassung.
+
 ## [0.9.40-beta.1] - 2026-08-26
 
 ### Fixed
