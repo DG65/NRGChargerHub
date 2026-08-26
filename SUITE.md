@@ -186,9 +186,11 @@ umgestellt haben.
 | `compressorStartsID` | 1.10 | Kumulierte Verdichter-Starts (Takt-Analyse) | ✅ | 0 |
 | `operationsHoursID` | 1.10 | Kumulierte Betriebsstunden | ✅ | 0 |
 | `dailyEnergyHeatingID`/`dailyEnergyCoolingID`/`dailyEnergyDHWID`/`dailyEnergyTotalID` | 1.11 | Tages-Energiezaehler je Kategorie; springt taeglich auf 0 (KEIN kumulativer Zaehler, daher eigene Felder statt `EnergyID`, siehe Grundregel bei "Gemeinsame Variablenprofile") | 0 (andere Verbrauchsquellen lokal) | ✅ |
+| `internalHeaterStateID`/`externalHeaterStateID` | 1.12 | Backup-/Zusatzheizstab aktiv (bool) — Hardware-Lage (intern im Innengeraet vs. extern/Booster), NICHT WW/Raum. Firmware-Topics `main/Internal_Heater_State`/`main/External_Heater_State`; Verwechslungsfalle: `main/DHW_Heater_State`/`main/Room_Heater_State` sind Freigabe-Flags, keine Statuswerte | ✅ | 0 |
+| `forceHeaterStateID` | 1.12 | Notheizstab-Taste aktiv (bool), `main/Force_Heater_State` — optional, kein Konsument angefragt | ✅ | 0 |
 
 Stets 0/leer = "meine Datenquelle liefert das nicht" (kein Fehler, siehe
-Grundregeln oben). Aktueller `contractVersion`-Stand: **1.11**.
+Grundregeln oben). Aktueller `contractVersion`-Stand: **1.12**.
 
 ### 3. Update-Meldepflicht beim Konsumenten
 Ein Konsument (in erster Linie das EMS, aber auch Kacheln) kennt je Partnerschnittstelle
@@ -545,6 +547,18 @@ haben, aber das Prinzip bleibt: der Nutzer muss ohne Nachdenken sehen, ob die Ak
   eine Protokollzeile fürs Debugging, aber die reicht allein NICHT (die sieht der Nutzer im
   WebFront nicht direkt).
 
+**Muster 4: Direktaufruf einer IPS-Kernfunktion (kein eigener Modul-Wrapper)** (CometWiFi,
+20.08.2026, am Beispiel des "🔄 Übernehmen erzwingen"-Buttons `IPS_ApplyChanges($id)`). Eine
+Kernfunktion wie `IPS_ApplyChanges()` hat keine eigene Modulmethode, die einen Ergebnistext
+liefern könnte — die Rückmeldung MUSS deshalb direkt im `onClick` selbst mitgebracht werden,
+z. B. `IPS_ApplyChanges($id); echo '✅ ApplyChanges() ausgeführt.';`. Zusätzlich gilt: **bevor
+so ein bequemer "spart mir Formular-Anfassen"-Button eingebaut wird, ehrlich dokumentieren, ob
+die aufgerufene Funktion in diesem Modul wirklich folgenlos ist** — bei Modulen mit
+Aktor-Charakter (z. B. Batteriegeräte, die durch jede Abfrage geweckt werden) lädt ein
+bequemer Knopf zum Mehrfachklicken ein. Ein kurzer Hinweistext direkt am Button ("sendet keine
+Befehle, wendet nur die gespeicherten Einstellungen an") gehört dazu, nicht nur der Klick
+selbst.
+
 **Pflicht-Check vor jeder Veröffentlichung** (siehe auch Store-Review-Checkliste Punkt 13):
 jeden Button im Formular klicken und fragen: *sehe ich JETZT, ohne das Formular neu zu öffnen,
 dass etwas passiert ist?* Wenn nein — Muster 1 oder 2 nachrüsten, je nach Aktionstyp.
@@ -592,7 +606,7 @@ besonders kritisch dort, weil jeder unnoetige Klick ein Geraet unnoetig weckt):*
 
 | Modul | Version (Stand 24.07.2026) | Kanal | Verträge (angeboten) |
 |---|---|---|---|
-| EMS | 0.22.3 (20.08.2026: Tagesplan-Umbau + `EMS_GetDayPlan()` fuer Dashboard-Visualisierung + ct/€-Einheiten-Fix, **noch nicht mehrtägig live verifiziert**, siehe EMS/CLAUDE.md) | ems-integration | konsumiert alle; künftig `EMS_GetSpecialEvents`. Steuerlogik jetzt vorausschauend: `BuildDayPlan()` plant alle 96 Tages-Viertelstunden aus PT15M-Preisen (automatisch via `TIBBERGR_GetPriceCurve`, Fallback manuell, korrekt ct→€ umgerechnet)+PVF+Lastschätzung, sichtbar als Symcon-Wochenplan unter der Instanz (Vorbild: Dietmars Winterskript #55729), `optimize()` fragt nur noch den Plan ab statt live gegen Schwellwerte zu prüfen. Alte `SetECOWindow()`-Planer entfernt. `EMS_GetDayPlan()` **1.0** liefert heute+morgen (Zeit/Op/Preis in ct/kWh/simulierter SOC je Slot, plus `priceUnit`-Feld) fuer externe Visualisierung — der native Kalender bleibt auf "heute" begrenzt (Kalender-Typ-Grenze). |
+| EMS | 0.23.1 (21.08.2026: Tagesplan-Umbau + `EMS_GetDayPlan()` fuer Dashboard-Visualisierung + ct/€-Einheiten-Fix + Export-vs-Entladen-Logikfehler behoben + preisbewusste Sicherheitsmarge (bedarfsbasiert), **noch nicht mehrtägig live verifiziert**, siehe EMS/CLAUDE.md) | ems-integration | konsumiert alle; künftig `EMS_GetSpecialEvents`. Steuerlogik jetzt vorausschauend: `BuildDayPlan()` plant alle 96 Tages-Viertelstunden aus PT15M-Preisen (automatisch via `TIBBERGR_GetPriceCurve`, Fallback manuell, korrekt ct→€ umgerechnet)+PVF+Lastschätzung, sichtbar als Symcon-Wochenplan unter der Instanz (Vorbild: Dietmars Winterskript #55729), `optimize()` fragt nur noch den Plan ab statt live gegen Schwellwerte zu prüfen. Alte `SetECOWindow()`-Planer entfernt. `EMS_GetDayPlan()` **1.0** liefert heute+morgen (Zeit/Op/Preis in ct/kWh/simulierter SOC je Slot, plus `priceUnit`-Feld) fuer externe Visualisierung — der native Kalender bleibt auf "heute" begrenzt (Kalender-Typ-Grenze). |
 | InverterHub | 0.74.x-beta.2 (27.07.2026, Commit 2d8228f) | ems-integration | ⚠️ **Bindungsfix vorhanden, Langzeitstabilität noch nicht bestätigt.** `IHUB_GetFunctions` **1.0** live verifiziert, Skript-Schreibzugriff via `IPS_RequestAction($InstanceID, $Ident, $Value)` funktioniert zuverlässig (27.07.2026 live bestätigt: `ctl_work_mode`/`ctl_ems_mode`/`ctl_ems_enable`). Root Cause der wiederholten Bindungsabrisse (4x am 26.07.2026, auch ohne Reload) gefunden und behoben: `EnableAction()` bindet Variablen nur, wenn sie DIREKTES Kind der Instanz sind — die control-Variablen lagen aber in der Unterkategorie "EMS-Steuerung"/`cat_control`. Fix: Variable kurz zur Instanz zurückhängen, binden, zurück in die Kategorie. Vor jedem weiteren Release erneut über mehrere Stunden/Reload-Zyklen verifizieren, bevor die Warnung entfällt. Ident-Tabelle siehe unten. Siehe `nrg-stack-modulverwaltung-instabilitaet`-Memory. |
 | MeterHub | 0.18.0-beta.1 (Build 28) | beta | `MHUB_GetFunctions` **1.1**, `MHUBV_GetFunctions` **1.1** (1.1 = latency/authority/pollInterval/energyKind/sourceCount) |
 | ChargerHub | 0.9.14-beta.1 | ems-integration | `CHUB_GetFunctions` **1.1** (inkl. `managedBy`), Schreibzugriff via `IPS_RequestAction($InstanceID, $Ident, $Value)` (live verifiziert 25.07.2026, echtes Fahrzeug an WB1: 6A/20W → 10A/4310W) |
@@ -603,7 +617,7 @@ besonders kritisch dort, weil jeder unnoetige Klick ein Geraet unnoetig weckt):*
 | WPHub | 0.1.0 Build 2 (10.08.2026, neu) | ems-integration | `WPHUB_GetFunctions` **1.2** (Type=>'heatpump', konsistent zu HeishaMon 1.2). Panasonic Comfort Cloud, `PowerID`/`EnergyID` bewusst 0 (Cloud liefert keine Momentanleistung/kumulativen Zähler, siehe neue Grundregel bei "Gemeinsame Variablenprofile") — noch nicht am echten Konto verifiziert |
 | TibberGridRewards | 2.0.0 main / 2.8.0 beta | Store | `TIBBERGR_GetPriceCurve` **1.1**, `TIBBERGR_GetTariffConfig` **1.1**, `TIBBERGR_GetActiveControls` **1.0**, `TIBBERGR_SetVehicleSetting` (Abfahrtszeit/Mindest-SoC-Präferenz, kein Vertrag mit contractVersion — reverse-engineerte externe API, siehe SUITE.md-Historie) — main ohne Felder → gilt als 1.0 |
 | StromGedacht | 1.3 Store / 1.5.0 beta | Store | `SGW_Update`, DataActions; `SGW_GetState`+`SGW_GetForecast` **1.0** (final freigegeben, Empfehlungscharakter, nur Netzampel planungsrelevant) |
-| Tessie | 2.3.4 main / 2.22.0 beta | Store | `TESSIE_GetVehicleState` **1.1** (ab beta 2.20.0; main ohne Feld → gilt als 1.0, Zusatzfelder erst nach Promotion) |
+| Tessie | 2.3.4 main / 2.22.0 beta, **ems-integration** (Commit c974960, 25.08.2026) | Store / ems-integration | `TESSIE_GetVehicleState` **1.4** auf ems-integration (+ `distanceToHomeKm`/`headingHome`/`expectedHomeArrivalSocPercent`, für EMS-Fahrzeug-Ladebedarf bei Heimkehr); **1.1** auf beta 2.20.0+ (unit-Feld); main ohne Feld → gilt als 1.0 |
 | GleitenderMittelwert | 1.7.1 | Store | (Hilfsmodul, kein Verbund-Vertrag) |
 | GoodweET | Deprecated (2026-07-25) | — | abgelöst durch InverterHub (Adoption abgeschlossen, siehe GoodweET/README.md) |
 | CometWiFi | 0.17.0 (Build 34) | beta + main gleichauf | (Gerätemodul, kein `*_GetFunctions`-Vertrag — Thermostate messen nur Temperatur, keine Leistung). Fünf Instanzen: Thermostat, Konfigurator, Übersichtskachel, Raumkachel, Raum. Anbindung über lokalen MQTT-Broker mit Bridge je Gerät zur Hersteller-Cloud (Hersteller-App bleibt funktionsfähig). Protokoll vollständig reverse engineered, Registerstand in `.docs/protokoll.md`. Schreibrichtungen belegt: Sollwert, Optionen, Urlaub, Wochenprogramm, Geräteuhr. |
@@ -875,7 +889,10 @@ Ident-Tabelle für `IPS_RequestAction($InstanceID, $Ident, $Value)` auf einer In
 **Vollständige `ctl_ems_mode`-Tabelle (InverterHub, 12.08.2026, wörtlich aus der
 offiziellen GoodWe-Registerdokumentation "Modbus Protocol Hybrid ET/EH/BH/BT",
 ARM205-HV v1.7 (2020-02-26), Tabelle 8-16 "EMS Power Mode" — keine Vermutung mehr,
-ersetzt eine frühere, teils nur namensbasierte Fassung):**
+ersetzt eine frühere, teils nur namensbasierte Fassung. Ergänzung 22.08.2026:
+Ladestrom-Limit-Hinweis bei Modus 2 aus dem Original-Englisch nachgetragen,
+Quelle z.B. https://forum.iobroker.net/assets/uploads/files/1703579717824-arm.745.esg2.et30.modbus.protocol.map.20221231..v1.pdf,
+Tabelle 8-16):**
 
 **Zentraler Mechanismus — Xmax vs. Xset, steht bei jedem Modus einzeln in der
 Tabelle, nicht einheitlich:**
@@ -888,7 +905,7 @@ Tabelle, nicht einheitlich:**
 |---|---|---|---|
 | 0 | Gestoppt | kein Parameter | Systemabschaltung/Standby |
 | 1 | Automatik | kein Parameter | `PBattery = PInv − Pmeter − Ppv`, normale Selbstverbrauchslogik, NUR bei normaler Zählerkommunikation |
-| 2 | Laden-Solar | **Xmax** (Deckel) | `PBattery = Xmax + PV (Charge)`. Xmax = erlaubter Netzbezug, PV bevorzugt. `0` = nur PV, kein Netzbezug |
+| 2 | Laden-Solar | **Xmax** (Deckel) | `PBattery = Xmax + PV (Charge)`. Xmax = erlaubter Netzbezug, PV bevorzugt. `0` = nur PV, kein Netzbezug. **Zusaetzlich durch das Ladestrom-Limit der Batterie begrenzt** ("Charging power will be limited by charging current limit", Originaltext Tabelle 8-16) — Xmax ist NICHT die alleinige Obergrenze |
 | 3 | Entladen+Solar | **Xmax** (Deckel) | `PBattery = Xmax (Discharge)`. Xmax = max. erlaubte Entladeleistung, PV bevorzugt bei begrenzter Einspeisung |
 | 4 | AC-Import | **Xset** (aktives Ziel) | `PBattery = Xset + PV (Charge)`. Xset = bewusst aus dem Netz bezogene Leistung, bevorzugt aus dem Netz gedeckt |
 | 5 | AC-Export | **Xset** (aktives Ziel, **zapft die Batterie an**) | `PBattery = Xset (Discharge)`. "PV power is preferred. When PV energy is insufficient, the battery WILL discharge." **Keine reine Deckelung** — live bestätigt als Ursache für unbeabsichtigte Batterie-Entladung (EMS-Branch-3b-Vorfall, 03./04.08.2026) |
