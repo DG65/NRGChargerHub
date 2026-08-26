@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.47-beta.1] - 2026-08-26
+
+### Changed
+- Überschussladen bezieht jetzt zusätzlich die Speicher-Ladeleistung über
+  `IHUB_GetFunctions()` (`batPowerID`, InverterHub-Contract 1.0, function_exists-abgesichert)
+  mit ein. Hintergrund (Dietmar, 26.08.2026): der Wechselrichter bedient erst alle lokalen
+  Verbraucher — inkl. Wallbox, die für ihn ein ganz normaler AC-Verbraucher ist — und lädt
+  ERST DANACH den Speicher mit dem Rest. Was die Batterie gerade zieht, taucht am
+  NAP-Zähler nie auf, ist aber Überschuss, den mehr Wallbox-Strom automatisch von der
+  Batterie abziehen würde, ohne Netzbezug auszulösen. Bisher zählte nur der NAP-Zähler,
+  wodurch echter Überschuss unsichtbar blieb, solange die Batterie ihn komplett
+  abgegriffen hat. `StorageSharePercent` reserviert weiterhin zusätzlich einen Anteil vom
+  jetzt größeren Gesamt-Überschuss. Status zeigt bei Batterie-Beitrag die Aufteilung
+  „(Netz X W + Speicher Y W)" an. Ohne InverterHub bleibt das Verhalten wie zuvor
+  (nur Netzzähler).
+
 ## [0.9.46-beta.1] - 2026-08-26
 
 ### Added

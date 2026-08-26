@@ -1443,6 +1443,7 @@ class ChargerHub extends IPSModule
     // FindGridSurplusW().
     private const METERHUB_GUID = '{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}';
     private const EMS_GUID = '{90286A25-E6C9-4A66-BD4E-0CFB707C2C6C}';
+    private const INVERTERHUB_GUID = '{BBE2C593-1A91-426D-A714-29A9C7E87589}';
 
     // Regler-Kennzeichnung (Verbund-Vokabular, mit EMS abgestimmt). Wer hat die
     // Hoheit über diesen Ladepunkt? Wird als 'managedBy' im Vertrag gemeldet;
@@ -1706,17 +1707,24 @@ class ChargerHub extends IPSModule
             $this->SetSurplusStatus('⏸️ Inaktiv — kein Fahrzeug angesteckt.');
             return;
         }
-        $surplusW = $this->FindGridSurplusW();
-        if ($surplusW === null) {
+        $gridSurplusW = $this->FindGridSurplusW();
+        if ($gridSurplusW === null) {
             $this->SetSurplusStatus('⚠️ Kein passender MeterHub-Zähler am Netzanschlusspunkt gefunden (function=grid, latency=realtime) — bitte unten manuell auswählen, falls einer vorhanden ist.');
             return;
         }
+        // Der Wechselrichter bedient erst die Wallbox (ganz normaler AC-Verbraucher aus
+        // seiner Sicht) und lädt DANACH den Speicher mit dem Rest — was die Batterie
+        // gerade zieht, würde bei mehr Wallbox-Strom einfach automatisch weniger, nicht
+        // zusätzlicher Netzbezug. Das taucht am NAP-Zähler nie auf, muss also dazu.
+        $batteryChargeW = $this->GetBatteryChargeW();
+        $surplusW = $gridSurplusW + $batteryChargeW;
 
         // Erst der Speicher, dann die Wallbox: der eingestellte Anteil bleibt dem
         // Speicher vorbehalten und fließt nicht in die Ampere-Berechnung ein.
         $storageShare = max(0, min(100, $this->ReadPropertyInteger('StorageSharePercent')));
         $storageW = $surplusW * ($storageShare / 100.0);
         $surplusW -= $storageW;
+        $sourceNote = $batteryChargeW > 0 ? ' (Netz ' . round($gridSurplusW) . ' W + Speicher ' . round($batteryChargeW) . ' W)' : '';
 
         // Je nach aktuell konfiguriertem Phasenmodus rechnen — Umschalten der
         // Phasenzahl automatisch vorzunehmen ist bewusst NICHT Teil dieser
@@ -1732,7 +1740,7 @@ class ChargerHub extends IPSModule
             if ($enabled) {
                 $this->RequestAction('ctl_enable', false);
             }
-            $this->SetSurplusStatus('🔌 Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
+            $this->SetSurplusStatus('🔌 Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
             return;
         }
         if (!$enabled) {
@@ -1746,7 +1754,7 @@ class ChargerHub extends IPSModule
             $this->RequestAction('ctl_curr_limit', $amp);
         }
         $storageNote = $storageShare > 0 ? " (nach $storageShare % Speicheranteil, davon " . round($storageW) . ' W für Speicher)' : '';
-        $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$storageNote → $amp A ($phases-phasig).");
+        $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote$storageNote → $amp A ($phases-phasig).");
     }
 
     // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
@@ -1899,6 +1907,34 @@ class ChargerHub extends IPSModule
     private function SurplusMeterLabel(): string
     {
         return $this->lastSurplusMeterName ?? 'Zähler unbekannt';
+    }
+
+    // Der Wechselrichter bedient erst alle lokalen Verbraucher (inkl. Wallbox) und lädt
+    // ERST DANACH den Speicher mit dem, was übrig bleibt (Dietmar, 26.08.2026). Was die
+    // Batterie also gerade an Ladeleistung zieht, ist Überschuss, den ich der Wallbox
+    // zusätzlich zuteilen könnte, ohne Netzbezug auszulösen — am NAP-Zähler taucht das
+    // nie auf, weil der Wechselrichter es vorher abgreift.
+    private function GetBatteryChargeW(): float
+    {
+        if (!function_exists('IHUB_GetFunctions')) {
+            return 0.0;
+        }
+        $totalChargeW = 0.0;
+        foreach (@IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [] as $iid) {
+            $fns = @IHUB_GetFunctions($iid);
+            $vid = (int)($fns['batPowerID'] ?? 0);
+            if ($vid <= 0) {
+                continue;
+            }
+            $raw = @GetValue($vid);
+            if (!is_numeric($raw)) {
+                continue;
+            }
+            // GoodWe-Konvention (InverterHub-Contract 1.0, live verifiziert 26.08.2026):
+            // negativ = Laden, positiv = Entladen.
+            $totalChargeW += max(0.0, -(float)$raw);
+        }
+        return $totalChargeW;
     }
 
     // Ist EMS installiert UND aktuell aktiv? (Mit EMS-Sitzung abgestimmt,
@@ -2133,7 +2169,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.46-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.47-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
