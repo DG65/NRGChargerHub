@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.49-beta.1] - 2026-08-27
+
+### Changed
+- Überschussladen schaltet die Phasenzahl jetzt auch WÄHREND einer laufenden Ladung
+  selbstständig um, nicht mehr nur beim Start (Dietmar: „Wenn er den ganzen Tag lädt, dann
+  soll er zwangsläufig in den 3-phasigen Betrieb gehen und dann Richtung Abend muss er auch
+  selbstständig wieder in den 1-Phasen Betrieb gehen um die letzten Sonnenstrahlen ausnutzen
+  zu können."). Hysterese von +2 A beim Hochschalten verhindert Pendeln direkt an der
+  Schaltschwelle — ein Wechsel bedeutet einen kurzen Relais-Schaltvorgang. Treiberunabhängig:
+  greift für jede Wallbox mit `ctl_phase_mode`-Ident, nicht nur go-e (aktuell einziger
+  Treiber mit dieser Fähigkeit, aber die Logik ist generisch).
+
 ## [0.9.48-beta.1] - 2026-08-27
 
 ### Fixed

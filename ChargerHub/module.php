@@ -1742,24 +1742,36 @@ class ChargerHub extends IPSModule
         $sourceNote = $batteryChargeW > 0 ? ' (Netz ' . round($gridSurplusW) . ' W + Speicher ' . round($batteryChargeW) . ' W)' : '';
 
         $enabled = (bool)$this->GetVarValue('ctl_enable');
-        $currentPhases = ($this->GetVarValue('ctl_phase_mode') === 1) ? 1 : 3;
-        if ($enabled) {
-            // Läuft die Ladung schon, bleibt die Phasenzahl unangetastet — ein
-            // Wechsel mitten im Ladevorgang schaltet am go-e ein Relais und
-            // unterbricht kurz den Ladevorgang.
-            $phases = $currentPhases;
-        } else {
-            // Vor dem Start: erst 3-phasig versuchen, bei zu wenig Überschuss auf
-            // 1-phasig umschalten — senkt die Start-Schwelle von 3×230×6=4140 W
-            // auf 230×6=1380 W drastisch, das Laden beginnt so viel früher
-            // (Dietmar, 27.08.2026: „Du kannst doch auch 1-phasig mit dem laden
-            // starten, damit wird die Überschuss-Mindestgrenze drastisch
-            // reduziert").
-            $amp3 = (int)floor($surplusW / (3 * 230.0));
+        // Phasenumschaltung ist kein go-e-Spezifikum — jede Wallbox mit dieser Fähigkeit
+        // bekommt hier dieselbe Logik, solange sie den Ident bereitstellt.
+        $canSwitchPhases = (bool)$this->FindVarByIdent('ctl_phase_mode');
+        $currentPhases = $canSwitchPhases && $this->GetVarValue('ctl_phase_mode') === 1 ? 1 : 3;
+        $amp3 = (int)floor($surplusW / (3 * 230.0));
+
+        if (!$canSwitchPhases) {
+            $phases = 3;
+        } elseif (!$enabled) {
+            // Ladebeginn: erst 3-phasig versuchen, bei zu wenig Überschuss auf 1-phasig
+            // umschalten — senkt die Start-Schwelle von 3×230×6=4140 W auf 230×6=1380 W.
             $phases = ($amp3 >= self::MIN_CURRENT) ? 3 : 1;
-            if ($phases !== $currentPhases) {
-                $this->RequestAction('ctl_phase_mode', $phases === 1 ? 1 : 2);
+        } else {
+            // Während der laufenden Ladung selbstständig hoch-/runterschalten (Dietmar,
+            // 27.08.2026: tagsüber 3-phasig, Richtung Abend automatisch zurück auf
+            // 1-phasig, um die letzten Sonnenstrahlen noch zu nutzen — gilt für jede
+            // phasenumschaltfähige Wallbox, nicht nur go-e). Hysterese (+2 A Marge fürs
+            // Hochschalten) verhindert ein Pendeln direkt an der Schaltschwelle; jeder
+            // Wechsel bedeutet einen kurzen Relais-Schaltvorgang, daher nicht bei jedem
+            // kleinen Schwanken.
+            if ($currentPhases === 1 && $amp3 >= self::MIN_CURRENT + 2) {
+                $phases = 3;
+            } elseif ($currentPhases === 3 && $amp3 < self::MIN_CURRENT) {
+                $phases = 1;
+            } else {
+                $phases = $currentPhases;
             }
+        }
+        if ($canSwitchPhases && $phases !== $currentPhases) {
+            $this->RequestAction('ctl_phase_mode', $phases === 1 ? 1 : 2);
         }
         $amp = (int)floor($surplusW / ($phases * 230.0));
         $amp = max(0, min($this->GetMaxCurrentA(), $amp));
@@ -2197,7 +2209,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.48-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.49-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
