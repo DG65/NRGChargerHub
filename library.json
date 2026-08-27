@@ -1,12 +1,12 @@
 {
   "id": "{B6F25FEC-BCF6-4C68-9DE9-968C766CB749}",
   "author": "DG65",
-  "name": "ChargerHub for IP-Symcon",
+  "name": "NRG-Stack ChargerHub for IP-Symcon",
   "url": "https://github.com/DG65/NRGChargerHub",
   "compatibility": {
     "version": "9.0"
   },
-  "version": "0.9.11-beta.1",
-  "build": 33,
+  "version": "0.9.51-beta.1",
+  "build": 73,
   "date": 1785110400
 }

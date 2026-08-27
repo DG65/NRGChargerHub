@@ -127,8 +127,6 @@ Ganz konkret fehlt mir Hardware für:
 - **Heidelberg Energy Control** — dito.
 - **KEBA P40** — die Ladefreigabe funktioniert dort anders als beim P30. Mit einer Rückmeldung
   baue ich das sauber ein.
-- **go-eCharger, Schreibseite** — Lesen läuft bestätigt, aber Stromlimit und Phasenumschaltung
-  habe ich noch nicht systematisch gegen die App gegengeprüft.
 
 Und zwei Wallboxen stehen auf der Liste, mir fehlen die Registertabellen:
 
