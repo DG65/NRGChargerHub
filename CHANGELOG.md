@@ -3,6 +3,26 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.48-beta.1] - 2026-08-27
+
+### Fixed
+- Energie-Limit-Bug erneut aufgetreten (27.08.2026): das go-e-Register stand wieder auf
+  echtem 0 Wh und blockierte das Laden komplett (go-e-App: „Dein Limit von 0 kWh wurde
+  erreicht"), obwohl unser eigener Schreibpfad das nicht ausgelöst hatte — unsere Oberfläche
+  lässt eine echte 0 als Limit gar nicht zu (0/negativ bedeutet bei uns immer
+  "deaktivieren" → schreibt Inf). Der go-e fällt also selbstständig auf sein Werks-Default
+  zurück (Neustart o. ä.). `Update()` erkennt jetzt ein gelesenes echtes 0 Wh automatisch als
+  Geräte-Rücksprung (nie gewollter Nutzerwert) und schreibt sofort wieder Inf zurück, statt
+  nur die eigene Anzeige zu korrigieren.
+
+### Added
+- Überschussladen startet jetzt bevorzugt 1-phasig, wenn der Überschuss für einen 3-phasigen
+  Start nicht reicht (Dietmar: „Du kannst doch auch 1-phasig mit dem laden starten, damit
+  wird die Überschuss-Mindestgrenze drastisch reduziert"). Senkt die Start-Schwelle von
+  3×230×6=4140 W auf 230×6=1380 W. Die Phasenzahl wird nur beim Start gewählt und während
+  einer laufenden Ladung nicht mehr gewechselt (Relais-Schaltvorgang würde den Ladevorgang
+  kurz unterbrechen).
+
 ## [0.9.47-beta.1] - 2026-08-26
 
 ### Changed
