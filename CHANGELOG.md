@@ -3,6 +3,21 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.51-beta.1] - 2026-08-27
+
+### Added
+- Die Beobachtungszeit vorm Phasenwechsel während laufender Ladung ist jetzt variabel
+  (Dietmar: „Vielleicht kannst Du auch die 'Zuschaltdauer' variabel gestalten, je nachdem
+  ob es einen Speicher gibt, nach Speichergröße und dem SOC des Speichers?"). Neue
+  Property „Speicherkapazität (kWh)" (`BatteryCapacityKWh`, 0 = kein Speicher/unbekannt) —
+  der InverterHub-Contract liefert SOC, aber keine kWh-Kapazität, daher manuell hinterlegbar.
+  `GetStorageHeadroomKWh()` errechnet daraus die freie Pufferkapazität (Kapazität ×
+  (100 % − SOC)); je mehr davon übrig ist, desto länger darf beobachtet werden (+1 Poll je
+  angefangene 5 kWh, gedeckelt bei 10 Polls) — ein Wechsel kostet dann effektiv nichts, der
+  Überschuss lädt in der Zwischenzeit einfach den Speicher weiter. Ohne Speicher/Kapazität
+  bleibt es bei der bisherigen festen Grund-Wartezeit (3 Polls) — die Anti-Pendel-Untergrenze
+  wird nie unterschritten.
+
 ## [0.9.50-beta.1] - 2026-08-27
 
 ### Fixed
