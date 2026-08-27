@@ -1452,6 +1452,9 @@ class ChargerHub extends IPSModule
         'goe'        => 32,
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
+    // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
+    // die Phasenzahl während einer laufenden Ladung tatsächlich gewechselt wird.
+    private const PHASE_SWITCH_STABLE_POLLS = 3;
 
     // Verbund-Vertrag MeterHub (mit MeterHub-Sitzung abgestimmt, 26.08.2026)
     // — für die optionale Eigenregelung des Überschussladens, siehe
@@ -1492,6 +1495,11 @@ class ChargerHub extends IPSModule
         // Steuervariablen dadurch bei JEDEM Übernehmen neu (IDs wechselten
         // ständig), statt nur einmalig zu migrieren.
         $this->RegisterAttributeBoolean('ControlActionsMigrated', false);
+        // Beobachtungszähler fürs Phasen-Umschalten beim Überschussladen — ein
+        // Wechsel wird erst nach mehreren AUFEINANDERFOLGENDEN Polls mit derselben
+        // Tendenz ausgelöst, nicht schon beim ersten (verhindert Pendeln).
+        $this->RegisterAttributeInteger('PhaseSwitchStableCount', 0);
+        $this->RegisterAttributeInteger('PhaseSwitchStableTarget', 0);
 
         $this->RegisterPropertyBoolean('Active', true);
         $this->RegisterPropertyString('Manufacturer', 'keba');
@@ -1732,14 +1740,28 @@ class ChargerHub extends IPSModule
         // gerade zieht, würde bei mehr Wallbox-Strom einfach automatisch weniger, nicht
         // zusätzlicher Netzbezug. Das taucht am NAP-Zähler nie auf, muss also dazu.
         $batteryChargeW = $this->GetBatteryChargeW();
-        $surplusW = $gridSurplusW + $batteryChargeW;
+        // Was WIR selbst gerade laden, steckt schon im Netzzähler drin (zieht den
+        // gemessenen Überschuss künstlich runter) — muss zurückaddiert werden, sonst
+        // sieht die Regelung bei jeder Erhöhung sofort "weniger Überschuss" und
+        // schwingt sich selbst hoch und runter (live beobachtet, Dietmar 27.08.2026:
+        // „vermutlich auch deshalb weil Du bei der Überschussberechnung Dich selbst
+        // vergisst"). `power` ist der treiberübergreifende Ist-Ladeleistungs-Ident.
+        $ownPowerW = (float)$this->GetVarValue('power');
+        $surplusW = $gridSurplusW + $batteryChargeW + $ownPowerW;
 
         // Erst der Speicher, dann die Wallbox: der eingestellte Anteil bleibt dem
         // Speicher vorbehalten und fließt nicht in die Ampere-Berechnung ein.
         $storageShare = max(0, min(100, $this->ReadPropertyInteger('StorageSharePercent')));
         $storageW = $surplusW * ($storageShare / 100.0);
         $surplusW -= $storageW;
-        $sourceNote = $batteryChargeW > 0 ? ' (Netz ' . round($gridSurplusW) . ' W + Speicher ' . round($batteryChargeW) . ' W)' : '';
+        $sourceParts = ['Netz ' . round($gridSurplusW) . ' W'];
+        if ($batteryChargeW > 0) {
+            $sourceParts[] = 'Speicher ' . round($batteryChargeW) . ' W';
+        }
+        if ($ownPowerW > 0) {
+            $sourceParts[] = 'eigene Ladung ' . round($ownPowerW) . ' W';
+        }
+        $sourceNote = (count($sourceParts) > 1) ? ' (' . implode(' + ', $sourceParts) . ')' : '';
 
         $enabled = (bool)$this->GetVarValue('ctl_enable');
         // Phasenumschaltung ist kein go-e-Spezifikum — jede Wallbox mit dieser Fähigkeit
@@ -1759,15 +1781,34 @@ class ChargerHub extends IPSModule
             // 27.08.2026: tagsüber 3-phasig, Richtung Abend automatisch zurück auf
             // 1-phasig, um die letzten Sonnenstrahlen noch zu nutzen — gilt für jede
             // phasenumschaltfähige Wallbox, nicht nur go-e). Hysterese (+2 A Marge fürs
-            // Hochschalten) verhindert ein Pendeln direkt an der Schaltschwelle; jeder
-            // Wechsel bedeutet einen kurzen Relais-Schaltvorgang, daher nicht bei jedem
-            // kleinen Schwanken.
+            // Hochschalten) UND ein Beobachtungszähler (self::PHASE_SWITCH_STABLE_POLLS
+            // aufeinanderfolgende Polls mit derselben Tendenz) verhindern ein Pendeln
+            // direkt an der Schaltschwelle — jeder Wechsel bedeutet einen kurzen
+            // Relais-Schaltvorgang, daher nicht schon bei der ersten Schwankung reagieren
+            // (Dietmar, live beobachtet: „Wäre es nicht ratsam alles erstmal zu
+            // beobachten, bevor man sofort schaltet?").
             if ($currentPhases === 1 && $amp3 >= self::MIN_CURRENT + 2) {
-                $phases = 3;
+                $wantPhases = 3;
             } elseif ($currentPhases === 3 && $amp3 < self::MIN_CURRENT) {
-                $phases = 1;
+                $wantPhases = 1;
             } else {
+                $wantPhases = $currentPhases;
+            }
+            if ($wantPhases === $currentPhases) {
+                $this->WriteAttributeInteger('PhaseSwitchStableCount', 0);
                 $phases = $currentPhases;
+            } else {
+                $stableCount = $this->ReadAttributeInteger('PhaseSwitchStableTarget') === $wantPhases
+                    ? $this->ReadAttributeInteger('PhaseSwitchStableCount') + 1
+                    : 1;
+                $this->WriteAttributeInteger('PhaseSwitchStableTarget', $wantPhases);
+                $this->WriteAttributeInteger('PhaseSwitchStableCount', $stableCount);
+                if ($stableCount >= self::PHASE_SWITCH_STABLE_POLLS) {
+                    $phases = $wantPhases;
+                    $this->WriteAttributeInteger('PhaseSwitchStableCount', 0);
+                } else {
+                    $phases = $currentPhases; // noch am Beobachten, noch nicht schalten
+                }
             }
         }
         if ($canSwitchPhases && $phases !== $currentPhases) {
@@ -2209,7 +2250,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.49-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.50-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
