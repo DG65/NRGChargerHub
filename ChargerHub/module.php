@@ -1455,6 +1455,7 @@ class ChargerHub extends IPSModule
     // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
     // die Phasenzahl während einer laufenden Ladung tatsächlich gewechselt wird.
     private const PHASE_SWITCH_STABLE_POLLS = 3;
+    private const PHASE_SWITCH_STABLE_POLLS_MAX = 10;
 
     // Verbund-Vertrag MeterHub (mit MeterHub-Sitzung abgestimmt, 26.08.2026)
     // — für die optionale Eigenregelung des Überschussladens, siehe
@@ -1536,6 +1537,10 @@ class ChargerHub extends IPSModule
         // Anteil des Netz-Überschusses, der dem Speicher vorbehalten bleibt (0-100 %) —
         // wird VOR der Ampere-Berechnung vom Überschuss abgezogen.
         $this->RegisterPropertyInteger('StorageSharePercent', 0);
+        // Kapazität des Speichers in kWh (0 = unbekannt/kein Speicher) — nur fürs
+        // Abschätzen der freien Pufferkapazität (GetStorageHeadroomKWh()), der
+        // InverterHub-Contract liefert SOC, aber keine kWh-Kapazität.
+        $this->RegisterPropertyFloat('BatteryCapacityKWh', 0.0);
         // go-e-exklusiv: RFID-Kartenzähler (Name + Energie je Karte 0–9)
         // stehen NICHT über Modbus zur Verfügung (offizielle Registertabelle
         // enthält sie nicht), nur über MQTT (Topics go-eCharger/<Seriennummer>/
@@ -1803,7 +1808,7 @@ class ChargerHub extends IPSModule
                     : 1;
                 $this->WriteAttributeInteger('PhaseSwitchStableTarget', $wantPhases);
                 $this->WriteAttributeInteger('PhaseSwitchStableCount', $stableCount);
-                if ($stableCount >= self::PHASE_SWITCH_STABLE_POLLS) {
+                if ($stableCount >= $this->GetPhaseSwitchStablePolls()) {
                     $phases = $wantPhases;
                     $this->WriteAttributeInteger('PhaseSwitchStableCount', 0);
                 } else {
@@ -2016,6 +2021,47 @@ class ChargerHub extends IPSModule
             $totalChargeW += max(0.0, -(float)$raw);
         }
         return $totalChargeW;
+    }
+
+    // Wieviel freie Speicherkapazität (kWh) steht gerade noch zur Verfügung? Nur
+    // ermittelbar, wenn der Nutzer die Kapazität manuell hinterlegt hat (der
+    // InverterHub-Contract 1.0 liefert SOC, aber keine kWh-Kapazität) UND
+    // InverterHub einen SOC liefert. null = unbekannt/kein Speicher.
+    private function GetStorageHeadroomKWh(): ?float
+    {
+        $capacityKWh = $this->ReadPropertyFloat('BatteryCapacityKWh');
+        if ($capacityKWh <= 0.0 || !function_exists('IHUB_GetFunctions')) {
+            return null;
+        }
+        foreach (@IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [] as $iid) {
+            $fns = @IHUB_GetFunctions($iid);
+            $vid = (int)($fns['socID'] ?? 0);
+            if ($vid <= 0) {
+                continue;
+            }
+            $soc = @GetValue($vid);
+            if (!is_numeric($soc)) {
+                continue;
+            }
+            $socClamped = max(0.0, min(100.0, (float)$soc));
+            return $capacityKWh * (100.0 - $socClamped) / 100.0;
+        }
+        return null;
+    }
+
+    // Je mehr freie Speicherkapazität übrig ist, desto geduldiger kann die
+    // Phasenumschaltung beobachten, bevor sie schaltet — ein Wechsel kostet dann
+    // effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach weiter den
+    // Speicher (Dietmar, 27.08.2026). Ohne Speicher bzw. ohne hinterlegte Kapazität
+    // bleibt es bei der bisherigen, vorsichtigen Grund-Wartezeit.
+    private function GetPhaseSwitchStablePolls(): int
+    {
+        $headroomKWh = $this->GetStorageHeadroomKWh();
+        if ($headroomKWh === null) {
+            return self::PHASE_SWITCH_STABLE_POLLS;
+        }
+        $extraPolls = (int)floor($headroomKWh / 5.0); // je angefangene 5 kWh Puffer +1 Poll
+        return min(self::PHASE_SWITCH_STABLE_POLLS + $extraPolls, self::PHASE_SWITCH_STABLE_POLLS_MAX);
     }
 
     // Ist EMS installiert UND aktuell aktiv? (Mit EMS-Sitzung abgestimmt,
@@ -2250,7 +2296,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.50-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.51-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2305,6 +2351,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => 'Nur wirksam, wenn oben „Wer regelt?" auf „Niemand" steht UND kein aktives EMS installiert ist UND genau eine ChargerHub-Instanz aktiv ist (bei mehreren Wallboxen bitte EMS für die Koordination nutzen) UND ein MeterHub-Zähler am Netzanschlusspunkt einen Echtzeit-Wert liefert. Ist EMS aktiv, hat es immer Vorrang — diese Option greift dann automatisch nicht. Sichtbarer Status (aktiv/warum nicht) erscheint als eigene Variable „Überschussladen", sobald diese Option angehakt ist.'],
                         ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag)', 'moduleID' => self::METERHUB_GUID],
                         ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
+                        ['type' => 'NumberSpinner', 'name' => 'BatteryCapacityKWh', 'caption' => '🆕 Speicherkapazität (kWh, 0 = kein Speicher/unbekannt)', 'minimum' => 0, 'maximum' => 200, 'digits' => 1, 'suffix' => 'kWh'],
+                        ['type' => 'Label', 'caption' => 'Nur für die Phasenumschalt-Wartezeit: je mehr freie Speicherkapazität (Kapazität × (100 % − SOC), SOC über InverterHub) gerade übrig ist, desto länger darf beobachtet werden, bevor die Phasenzahl während einer laufenden Ladung wechselt — ein Wechsel kostet dann effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach den Speicher weiter. 0 = feste Grund-Wartezeit wie ohne Speicher.'],
                         ['type' => 'Label', 'caption' => 'Dieser Anteil des Überschusses bleibt dem Speicher vorbehalten und wird von der Ampere-Berechnung fürs Laden abgezogen. 0 % = kompletter Überschuss geht in die Wallbox, 100 % = nichts geht in die Wallbox.'],
                     ],
                 ],
