@@ -1,9 +1,9 @@
 # ChargerHub
 
-![Symcon](https://img.shields.io/badge/Symcon-PHPModul-blue)
-![Modul Version](https://img.shields.io/badge/Modul_Version-0.9.11--beta.1-blue)
+![Modul Version](https://img.shields.io/badge/Modul_Version-0.9.51--beta.1-blue)
 ![Symcon Version](https://img.shields.io/badge/Symcon_Version-9.0%2B-blue)
 ![License](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-lightgrey)
+[![Check Style](https://github.com/DG65/NRGChargerHub/actions/workflows/check-style.yml/badge.svg)](https://github.com/DG65/NRGChargerHub/actions/workflows/check-style.yml)
 [![PayPal](https://img.shields.io/badge/PayPal-Me-blue?logo=paypal)](https://paypal.me/DietmarGureth)
 
 IP-Symcon-Modul für Wallboxen (Ladestationen für Elektrofahrzeuge) verschiedener Hersteller
@@ -54,6 +54,43 @@ Das Modul **ChargerHubDiscovery** durchsucht einen IP-Bereich nach den oben gena
 Wallbox-Typen (Modbus-TCP-Port 502) und legt gefundene Geräte per Klick als ChargerHub-Instanz
 mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an — analog zu InverterHubDiscovery/
 MeterHubDiscovery.
+
+## Migration vom go-eCharger-Modul (IPSCoyote/GO-eCharger)
+
+Wer von diesem verbreiteten Fremdmodul (github.com/IPSCoyote/GO-eCharger, GUID
+`{B4624A42-...}`) auf ChargerHub umsteigt, kann über **MigrationsHub** die Historie
+übernehmen (siehe „Einbindung in den Modul-Verbund" unten). Folgende Ident-Zuordnung wurde am
+Quellcode des Fremdmoduls verifiziert (Stand 03.08.2026, MigrationsHub-Sitzung):
+
+| Alt-Ident (GO-eCharger) | Neu-Ident (ChargerHub)    | Hinweis                              |
+| ------------------------ | -------------------------- | ------------------------------------- |
+| `status`                 | `state`                    |                                        |
+| `powerToCarLineL1/L2/L3` | `power_l1`/`power_l2`/`power_l3` |                                  |
+| `powerToCarTotal`        | `power`                     |                                        |
+| `ampToCarLineL1/L2/L3`   | `current_l1`/`current_l2`/`current_l3` |                            |
+| `energyTotal`            | `energy_total`              |                                        |
+| `energyLoadCycle`        | `energy_session`            |                                        |
+| `serialID`               | `dev_serial`                |                                        |
+| `error`                  | `dev_error`                 |                                        |
+| `supplyLineN`            | `voltage_n`                 |                                        |
+| `supplyLineL1/L2/L3`     | `voltage_l1`/`voltage_l2`/`voltage_l3` |                             |
+| `adapterAttached`        | `adapter`                   |                                        |
+| `unlockedByRFID`         | `unlocked_by`                |                                       |
+| `cableUnlockMode`        | `ctl_cable_lock`             |                                       |
+| `accessControl`          | `ctl_access`                 |                                       |
+| `cableCapability`        | `cable_current`              |                                       |
+| `energyChargedCard1`…`10`| `card0_energy`…`card9_energy` | **Achtung Index-Offset**: Alt-Modul zählt Karten 1-basiert (1–10), ChargerHub 0-basiert (0–9) — `energyChargedCard1` entspricht `card0_energy`, nicht `card1_energy`. |
+
+**Kein Alt-Gegenpart vorhanden** (im Fremdmodul-Quellcode nicht enthalten, keine Migration
+nötig/möglich): `carConnected`, `firmwareVersion`. Diese Werte liest ChargerHub trotzdem — nur
+eben ohne übertragbare Alt-Historie. `carConnected`/`vehicle_plugged` ließe sich im Prinzip aus
+dem Alt-Ident `status` ableiten (z. B. status≠1 → verbunden) — das ist aber eine
+Werte-Transformation, kein reiner Ident-Bezug, und müsste bei Bedarf in ChargerHub selbst gelöst
+werden, nicht über MigrationsHubs generisches Ident-Matching.
+
+**RFID-Kartennamen** (z. B. „Karte 0: Name") hat das Fremdmodul nicht als eigene Variable —
+diese kommen bei ChargerHub ausschließlich über den neuen MQTT-Kartenzähler (siehe oben,
+„RFID-Kartenzähler"), nicht aus einer Migration.
 
 ## Einbindung in den Modul-Verbund
 

@@ -324,6 +324,221 @@ interface ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// CHUB_MqttMiniClient — minimaler MQTT-3.1.1-Client (nur QoS 0, keine
+// Persistenz zwischen Aufrufen) für die go-e-RFID-Kartenzähler, die nur über
+// MQTT verfügbar sind (siehe GoeChargerDriver-Kommentar). Bewusst KEINE
+// Abhängigkeit von einer fremden Symcon-"MQTT Client"-Instanz (Splitter) —
+// exakt dasselbe Prinzip wie CHUB_ModbusTcpClient: eigener roher Socket,
+// Verbindung wird bei jedem Poll neu aufgebaut (kein Zustand über
+// Timer-Aufrufe hinweg, siehe dortiger Kommentar). Da go-e seine Werte als
+// RETAINED Topics veröffentlicht, liefert der Broker den aktuellen Stand
+// sofort nach dem SUBSCRIBE — ein Neuaufbau pro Poll ist dafür ausreichend.
+// PUBACK für QoS 1 wird bewusst NICHT gesendet (kurzlebige Verbindung, der
+// Broker liefert beim nächsten Poll ohnehin erneut — unschädlich, da wir nur
+// den letzten Stand je Topic übernehmen, keine Zustellgarantie brauchen).
+class CHUB_MqttMiniClient
+{
+    private $host;
+    private $port;
+    private $lastError = '';
+
+    public function __construct(string $host, int $port)
+    {
+        $this->host = $host;
+        $this->port = $port;
+    }
+
+    public function getLastError(): string
+    {
+        return $this->lastError;
+    }
+
+    // Verbindet, abonniert $topicFilters, sammelt für $budgetSec Sekunden
+    // eingehende PUBLISH-Nachrichten und trennt wieder. Rückgabe:
+    // [['topic' => string, 'payload' => string], ...]
+    public function fetch(array $topicFilters, string $clientId, string $username = '', string $password = '', float $budgetSec = 2.5): array
+    {
+        $this->lastError = '';
+        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($sock === false) {
+            $this->lastError = "Verbindung fehlgeschlagen: $errstr ($errno)";
+            return [];
+        }
+        stream_set_timeout($sock, 3);
+
+        @fwrite($sock, $this->buildConnect($clientId, $username, $password));
+        $connAck = $this->readPacket($sock, 3.0);
+        if ($connAck === null || $connAck['type'] !== 2) {
+            $this->lastError = 'CONNACK fehlgeschlagen (keine/unvollständige Antwort)';
+            @fclose($sock);
+            return [];
+        }
+        $returnCode = ord($connAck['body'][1] ?? "\xFF");
+        if ($returnCode !== 0) {
+            $labels = [
+                1 => 'nicht akzeptierte Protokollversion',
+                2 => 'Client-ID abgelehnt',
+                3 => 'Server nicht verfügbar',
+                4 => 'Benutzername/Passwort falsch',
+                5 => 'nicht autorisiert',
+            ];
+            $this->lastError = 'CONNACK-Fehlercode ' . $returnCode . ' (' . ($labels[$returnCode] ?? 'unbekannt') . ')';
+            @fclose($sock);
+            return [];
+        }
+
+        @fwrite($sock, $this->buildSubscribe($topicFilters, 1));
+        // SUBACK abwarten, aber Inhalt nicht auswerten — reicht als Bestätigung,
+        // dass der Broker die Anfrage verarbeitet hat.
+        $this->readPacket($sock, 2.0);
+
+        $results = [];
+        $deadline = microtime(true) + $budgetSec;
+        while (microtime(true) < $deadline) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0) {
+                break;
+            }
+            $pkt = $this->readPacket($sock, $remaining);
+            if ($pkt === null) {
+                break; // Timeout ohne weitere Daten — fertig.
+            }
+            if ($pkt['type'] === 3) { // PUBLISH
+                $parsed = $this->parsePublish($pkt['flags'], $pkt['body']);
+                if ($parsed !== null) {
+                    $results[] = $parsed;
+                }
+            }
+        }
+
+        @fclose($sock);
+        return $results;
+    }
+
+    private function buildConnect(string $clientId, string $username = '', string $password = ''): string
+    {
+        $protoName = $this->encodeStr('MQTT');
+        $flags     = 0x02; // Clean Session
+        $payload   = $this->encodeStr($clientId);
+        if ($username !== '') {
+            $flags   |= 0x80; // Username Flag
+            $payload .= $this->encodeStr($username);
+            if ($password !== '') {
+                $flags   |= 0x40; // Password Flag
+                $payload .= $this->encodeStr($password);
+            }
+        }
+        $keepAlive = pack('n', 60);
+        $varHeader = $protoName . "\x04" . chr($flags) . $keepAlive;
+        $remaining = $this->encodeLength(strlen($varHeader) + strlen($payload));
+        return "\x10" . $remaining . $varHeader . $payload;
+    }
+
+    private function buildSubscribe(array $topicFilters, int $packetId): string
+    {
+        $varHeader = pack('n', $packetId);
+        $payload   = '';
+        foreach ($topicFilters as $t) {
+            $payload .= $this->encodeStr($t) . "\x00"; // QoS 0 angefragt
+        }
+        $remaining = $this->encodeLength(strlen($varHeader) + strlen($payload));
+        return "\x82" . $remaining . $varHeader . $payload;
+    }
+
+    private function parsePublish(int $flags, string $body)
+    {
+        if (strlen($body) < 2) {
+            return null;
+        }
+        $topicLen = (ord($body[0]) << 8) | ord($body[1]);
+        if (strlen($body) < 2 + $topicLen) {
+            return null;
+        }
+        $topic  = substr($body, 2, $topicLen);
+        $offset = 2 + $topicLen;
+        $qos    = ($flags >> 1) & 0x03;
+        if ($qos > 0) {
+            $offset += 2; // Packet Identifier überspringen (nicht benötigt)
+        }
+        $payload = substr($body, $offset);
+        return ['topic' => $topic, 'payload' => $payload];
+    }
+
+    // Liest genau EIN vollständiges MQTT-Kontrollpaket (Fixed Header +
+    // Remaining Length + Body) oder gibt null zurück, wenn innerhalb von
+    // $timeoutSec nichts Vollständiges ankommt.
+    private function readPacket($sock, float $timeoutSec)
+    {
+        $deadline = microtime(true) + max($timeoutSec, 0.1);
+        $first = $this->readExact($sock, 1, $deadline);
+        if ($first === null) {
+            return null;
+        }
+        $type  = (ord($first) >> 4) & 0x0F;
+        $flags = ord($first) & 0x0F;
+
+        $multiplier = 1;
+        $remaining  = 0;
+        do {
+            $b = $this->readExact($sock, 1, $deadline);
+            if ($b === null) {
+                return null;
+            }
+            $byte = ord($b);
+            $remaining += ($byte & 0x7F) * $multiplier;
+            $multiplier *= 128;
+        } while (($byte & 0x80) !== 0);
+
+        $body = $remaining > 0 ? $this->readExact($sock, $remaining, $deadline) : '';
+        if ($body === null) {
+            return null;
+        }
+        return ['type' => $type, 'flags' => $flags, 'body' => $body];
+    }
+
+    private function readExact($sock, int $len, float $deadline)
+    {
+        $buf = '';
+        while (strlen($buf) < $len) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0 || feof($sock)) {
+                return null;
+            }
+            stream_set_timeout($sock, (int)max(1, ceil($remaining)));
+            $chunk = @fread($sock, $len - strlen($buf));
+            if ($chunk === false || $chunk === '') {
+                $meta = @stream_get_meta_data($sock);
+                if (!empty($meta['timed_out'])) {
+                    return null;
+                }
+                continue;
+            }
+            $buf .= $chunk;
+        }
+        return $buf;
+    }
+
+    private function encodeStr(string $s): string
+    {
+        return pack('n', strlen($s)) . $s;
+    }
+
+    private function encodeLength(int $len): string
+    {
+        $out = '';
+        do {
+            $byte = $len % 128;
+            $len  = intdiv($len, 128);
+            if ($len > 0) {
+                $byte |= 0x80;
+            }
+            $out .= chr($byte);
+        } while ($len > 0);
+        return $out;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // KebaDriver — KEBA KeContact P30/P40, Modbus TCP, Unit-ID standardmäßig 255.
 // Registeradressen und Eigenheiten gegen die evcc-Referenzimplementierung
 // (charger/keba-modbus.go, an realer Hardware erprobt) abgeglichen:
@@ -383,10 +598,10 @@ class KebaDriver implements ChargerDriverInterface
     public function getBaseVars()
     {
         return [
-            ['connected',      'Verbindung',           'B', '~Alert.Reversed',  false, 'errors', ''],
+            ['connected',      'Verbindung',           'B', '~Alert.Reversed',  true, 'errors', ''],
             ['state',          'Ladestatus',            'I', 'CHB.KebaState',   true,  'device', 'Holding 1000-1001 (U32)'],
-            ['cable_state',    'Kabelstatus',           'I', 'CHB.KebaCable',   false, 'device', 'Holding 1004-1005 (U32)'],
-            ['vehicle_plugged','Fahrzeug verbunden',    'B', '~Switch',         false, 'device', 'abgeleitet: Kabelstatus >= 5'],
+            ['cable_state',    'Kabelstatus',           'I', 'CHB.KebaCable',   true, 'device', 'Holding 1004-1005 (U32)'],
+            ['vehicle_plugged','Fahrzeug verbunden',    'B', '~Switch',         true, 'device', 'abgeleitet: Kabelstatus >= 5'],
             ['power',          'Ladeleistung',          'F', 'NRG.Watt',        true,  'device', 'Holding 1020-1021 (mW)'],
             ['energy_total',   'Energie gesamt',        'F', 'NRG.kWh',         true,  'device', 'Holding 1036-1037 (0,1 Wh)'],
             ['energy_session', 'Energie akt. Sitzung',  'F', 'CHB.kWhSession',  true,  'device', 'Holding 1502-1503 (0,1 Wh)'],
@@ -397,12 +612,12 @@ class KebaDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Strom/Spannung je Phase', 'vars' => [
-                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', false, 'phases', 'Holding 1008-1009 (mA)'],
-                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', false, 'phases', 'Holding 1010-1011 (mA)'],
-                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', false, 'phases', 'Holding 1012-1013 (mA)'],
-                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   false, 'phases', 'Holding 1040-1041 (V)'],
-                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   false, 'phases', 'Holding 1042-1043 (V)'],
-                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   false, 'phases', 'Holding 1044-1045 (V)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 1008-1009 (mA)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 1010-1011 (mA)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 1012-1013 (mA)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 1040-1041 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 1042-1043 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 1044-1045 (V)'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
                 ['dev_serial',   'Seriennummer',     'S', '', false, 'device', 'Holding 1014-1015 (U32)'],
@@ -556,10 +771,10 @@ class AlfenDriver implements ChargerDriverInterface
     public function getBaseVars()
     {
         return [
-            ['connected',   'Verbindung',        'B', '~Alert.Reversed', false, 'errors', ''],
+            ['connected',   'Verbindung',        'B', '~Alert.Reversed', true, 'errors', ''],
             ['state',       'Sockel-Status',      'I', 'CHB.AlfenAvail',  true,  'device', 'Holding 1200'],
             ['power',       'Ladeleistung',       'F', 'NRG.Watt',        true,  'device', 'Holding 344'],
-            ['actual_curr', 'Angewandtes Limit',  'F', 'NRG.Ampere',      false, 'device', 'Holding 1206'],
+            ['actual_curr', 'Angewandtes Limit',  'F', 'NRG.Ampere',      true, 'device', 'Holding 1206'],
         ];
     }
 
@@ -567,12 +782,12 @@ class AlfenDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
-                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   false, 'phases', 'Holding 308'],
-                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   false, 'phases', 'Holding 310'],
-                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   false, 'phases', 'Holding 312'],
-                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', false, 'phases', 'Holding 322'],
-                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', false, 'phases', 'Holding 324'],
-                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', false, 'phases', 'Holding 326'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 308'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 310'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 312'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 322'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 324'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 326'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
                 ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',    false, 'control', 'RW Holding 1210/1214'],
@@ -689,9 +904,9 @@ class HeidelbergDriver implements ChargerDriverInterface
     public function getBaseVars()
     {
         return [
-            ['connected', 'Verbindung',  'B', '~Alert.Reversed', false, 'errors', ''],
+            ['connected', 'Verbindung',  'B', '~Alert.Reversed', true, 'errors', ''],
             ['state',     'Ladestatus',  'I', 'CHB.HdbState',    true,  'device', 'Holding 5'],
-            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', '~Switch', false, 'device', 'abgeleitet: Status 3-8 (ohne 6)'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', '~Switch', true, 'device', 'abgeleitet: Status 3-8 (ohne 6)'],
             ['power',     'Leistung',    'F', 'NRG.Watt',        true,  'device', 'Holding 14'],
         ];
     }
@@ -700,13 +915,13 @@ class HeidelbergDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Spannung/Strom je Phase + Temperatur', 'vars' => [
-                ['current_l1', 'Strom L1',      'F', 'NRG.Ampere', false, 'phases', 'Holding 6'],
-                ['current_l2', 'Strom L2',      'F', 'NRG.Ampere', false, 'phases', 'Holding 7'],
-                ['current_l3', 'Strom L3',      'F', 'NRG.Ampere', false, 'phases', 'Holding 8'],
-                ['voltage_l1', 'Spannung L1',   'F', 'NRG.Volt',   false, 'phases', 'Holding 10'],
-                ['voltage_l2', 'Spannung L2',   'F', 'NRG.Volt',   false, 'phases', 'Holding 11'],
-                ['voltage_l3', 'Spannung L3',   'F', 'NRG.Volt',   false, 'phases', 'Holding 12'],
-                ['pcb_temp',   'PCB-Temperatur','F', 'NRG.Celsius',false, 'device', 'Holding 9'],
+                ['current_l1', 'Strom L1',      'F', 'NRG.Ampere', true, 'phases', 'Holding 6'],
+                ['current_l2', 'Strom L2',      'F', 'NRG.Ampere', true, 'phases', 'Holding 7'],
+                ['current_l3', 'Strom L3',      'F', 'NRG.Ampere', true, 'phases', 'Holding 8'],
+                ['voltage_l1', 'Spannung L1',   'F', 'NRG.Volt',   true, 'phases', 'Holding 10'],
+                ['voltage_l2', 'Spannung L2',   'F', 'NRG.Volt',   true, 'phases', 'Holding 11'],
+                ['voltage_l3', 'Spannung L3',   'F', 'NRG.Volt',   true, 'phases', 'Holding 12'],
+                ['pcb_temp',   'PCB-Temperatur','F', 'NRG.Celsius',true, 'device', 'Holding 9'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
                 ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',   false, 'control', 'RW Holding 261'],
@@ -892,9 +1107,9 @@ class GoeChargerDriver implements ChargerDriverInterface
     public function getBaseVars()
     {
         return [
-            ['connected',      'Verbindung',            'B', '~Alert.Reversed', false, 'errors', ''],
+            ['connected',      'Verbindung',            'B', '~Alert.Reversed', true, 'errors', ''],
             ['state',          'Ladestatus',             'I', 'CHB.GoeCarState', true,  'device', 'Input 100'],
-            ['vehicle_plugged','Fahrzeug verbunden',     'B', '~Switch',         false, 'device', 'abgeleitet: CAR_STATE 2/3/4'],
+            ['vehicle_plugged','Fahrzeug verbunden',     'B', '~Switch',         true, 'device', 'abgeleitet: CAR_STATE 2/3/4'],
             ['power',          'Ladeleistung',           'F', 'NRG.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
             ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWhSession',  true,  'device', 'Input 132-133 (Deka-Ws)'],
         ];
@@ -904,26 +1119,26 @@ class GoeChargerDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Spannung/Strom/Leistung je Phase', 'vars' => [
-                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   false, 'phases', 'Input 108-109 (V)'],
-                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   false, 'phases', 'Input 110-111 (V)'],
-                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   false, 'phases', 'Input 112-113 (V)'],
-                ['voltage_n',  'Spannung N',  'F', 'NRG.Volt',   false, 'phases', 'Input 144-145 (V)'],
-                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', false, 'phases', 'Input 114-115 (0,1 A)'],
-                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', false, 'phases', 'Input 116-117 (0,1 A)'],
-                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', false, 'phases', 'Input 118-119 (0,1 A)'],
-                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   false, 'phases', 'Input 146-147 (0,1 kW)'],
-                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   false, 'phases', 'Input 148-149 (0,1 kW)'],
-                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   false, 'phases', 'Input 150-151 (0,1 kW)'],
-                ['phases_charging', 'Genutzte Phasen (nach Schütz)', 'I', 'CHB.GoePhaseCount', false, 'phases', 'Input 205 (Bitmaske)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Input 108-109 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Input 110-111 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Input 112-113 (V)'],
+                ['voltage_n',  'Spannung N',  'F', 'NRG.Volt',   true, 'phases', 'Input 144-145 (V)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Input 114-115 (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Input 116-117 (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Input 118-119 (0,1 A)'],
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Input 146-147 (0,1 kW)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Input 148-149 (0,1 kW)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Input 150-151 (0,1 kW)'],
+                ['phases_charging', 'Genutzte Phasen (nach Schütz)', 'I', 'CHB.GoePhaseCount', true, 'phases', 'Input 205 (Bitmaske)'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
                 ['dev_serial',    'Seriennummer',        'S', '', false, 'device', 'Input 304-309 (ASCII)'],
                 ['dev_firmware',  'Firmware-Version',    'S', '', false, 'device', 'Input 105-106 (ASCII)'],
                 ['energy_total',  'Energie gesamt',      'F', 'NRG.kWh', true, 'device', 'Input 128-129 (0,1 kWh)'],
                 ['dev_error',     'Fehlercode',          'I', 'CHB.GoeError', true, 'errors', 'Input 107'],
-                ['cable_current', 'Kabel-Strombegrenzung','I', 'CHB.Ampere6to32', false, 'device', 'Input 101 (13-32, 0=kein Kabel)'],
-                ['adapter',       'Adapter angesteckt',  'B', '~Switch', false, 'device', 'Input 202 (1=16A-Adapter)'],
-                ['unlocked_by',   'Entsperrt durch RFID-Karte', 'I', '', false, 'device', 'Input 203'],
+                ['cable_current', 'Kabel-Strombegrenzung','I', 'CHB.Ampere6to32', true, 'device', 'Input 101 (13-32, 0=kein Kabel)'],
+                ['adapter',       'Adapter angesteckt',  'B', '~Switch', true, 'device', 'Input 202 (1=16A-Adapter)'],
+                ['unlocked_by',   'Entsperrt durch RFID-Karte', 'I', '', true, 'device', 'Input 203'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit, Phasen, Energie-Limit …)', 'vars' => [
                 ['ctl_enable',       'Ladefreigabe',        'B', '~Switch',           false, 'control', 'RW Holding 337 (FORCE_STATE)'],
@@ -931,7 +1146,7 @@ class GoeChargerDriver implements ChargerDriverInterface
                 ['ctl_phase_mode',   'Phasenumschaltung',   'I', 'CHB.GoePhaseMode',  false, 'control', 'RW Holding 332 (psm, ab FW 55.5)'],
                 ['ctl_access',       'Zugangskontrolle',    'I', 'CHB.GoeAccess',     false, 'control', 'RW Holding 201 (ACCESS_STATE)'],
                 ['ctl_cable_lock',   'Kabelverriegelung',   'I', 'CHB.GoeCableLock',  false, 'control', 'RW Holding 204'],
-                ['ctl_energy_limit', 'Energie-Limit Ladevorgang (0 = kein Limit)', 'F', 'CHB.kWhLimit', false, 'control', 'RW Holding 333-336 (dwo, Float64 Wh)'],
+                ['ctl_energy_limit', 'Energie-Limit Ladevorgang', 'F', 'CHB.kWhLimit', false, 'control', 'RW Holding 333-336 (dwo, Float64 Wh) — 0 oder negativ eingeben, um das Limit zu deaktivieren'],
                 ['ctl_led',          'LED-Helligkeit',      'I', 'CHB.Led255',        false, 'control', 'RW Holding 206 (0-255)'],
             ]],
             // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
@@ -1110,8 +1325,29 @@ class GoeChargerDriver implements ChargerDriverInterface
             $lim = $mb->readHolding(self::REG_ENERGY_LIMIT, 4);
             if ($lim !== null) {
                 $wh = $mb->readDouble64($lim, 0);
-                // Inf/NaN = "kein Limit" (dwo=null) -> 0 anzeigen.
-                $hub->SetVarFloat('ctl_energy_limit', is_finite($wh) ? $wh / 1000.0 : 0.0);
+                // Live bestätigt (26.08.2026): 0 als Anzeige für "kein Limit"
+                // war nicht von einem ECHTEN 0-Wh-Limit ("Dein Limit von 0 kWh
+                // wurde erreicht" in der go-e-App, Ladung komplett blockiert)
+                // zu unterscheiden — beides zeigte "0,0 kWh". -1 als Sentinel
+                // für "kein Limit" (Inf/NaN laut Doku), da 0 ein gültiger,
+                // ECHTER Limit-Wert ist. Zusammen mit der neuen Profil-
+                // Assoziation unten zeigt das jetzt eindeutig "Kein Limit" an.
+                //
+                // Live erneut aufgetreten (27.08.2026): das Register selbst
+                // stand wieder auf echtem 0 Wh und blockierte das Laden in der
+                // go-e-App, OHNE dass unser eigener Schreibpfad (RequestAction
+                // 'ctl_energy_limit', schreibt bei 0/negativ immer Inf) das
+                // ausgelöst hätte. Der go-e fällt selbstständig (Neustart,
+                // Firmware, o. ä.) auf sein Werks-Default 0 zurück. Da unsere
+                // eigene Oberfläche eine echte 0 als Limit gar nicht zulässt
+                // (0/negativ bedeutet bei uns immer "deaktivieren" -> Inf),
+                // ist ein gelesenes echtes 0 hier IMMER ein Geräte-Rücksprung,
+                // nie ein gewollter Nutzerwert — automatisch heilen.
+                if ($wh === 0.0) {
+                    $mb->writeDouble64(self::REG_ENERGY_LIMIT, INF);
+                    $wh = INF;
+                }
+                $hub->SetVarFloat('ctl_energy_limit', is_finite($wh) ? $wh / 1000.0 : -1.0);
             }
         }
 
@@ -1189,15 +1425,15 @@ class ChargerHub extends IPSModule
 {
     private const ATTR_REVIEW_HINT_GONE = 'ReviewHintDismissed';
 
+    // Name des zuletzt in FindGridSurplusW() gefundenen MeterHub-Zählers, für den
+    // sichtbaren Status — nur innerhalb eines Poll-Durchlaufs gültig, kein State.
+    private ?string $lastSurplusMeterName = null;
+
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.9.2';
+    private const NEWS_VERSION = '0.9.41';
     private const NEWS_ITEMS = [
-        'Neues Auswahlfeld „Wer regelt diesen Ladepunkt?" ersetzt die alte Checkbox „extern geregelt" — bitte einmal prüfen und den passenden Regler eintragen (z. B. go-e Controller, Tibber).',
-        'go-eCharger: viele neue Steuerungsmöglichkeiten (Phasenumschaltung, Zugangskontrolle, Kabelverriegelung, Energielimit je Ladevorgang, LED-Helligkeit) sowie mehr Statuswerte (Leistung je Phase, genutzte Phasen, Adapter, RFID-Karte).',
-        'KEBA-Registerkarte korrigiert (war fehlerhaft) — bitte Werte an echter Hardware neu prüfen.',
-        'Neue Property „Maximaler Anschlussstrom" — harte Grenze für jeden Schreibvorgang, unabhängig vom anfragenden Regler.',
-        'Gemeinsame Variablenprofile (NRG.Watt, NRG.kWh, NRG.Ampere, NRG.Volt, NRG.Celsius) statt eigener CHB.*-Profile — eine selbst gewählte „Wertanzeige" bitte einmal prüfen.',
+        'Neu: „Überschussladen selbst regeln" (Panel „Steuerungshoheit & Sicherheit") — ChargerHub kann jetzt eigenständig per PV-Überschuss laden, aber NUR als Fallback ohne EMS (EMS hat immer Vorrang, sobald es läuft). Voraussetzung: genau eine aktive ChargerHub-Instanz, ein MeterHub-Zähler am Netzanschlusspunkt mit Echtzeit-Wert. Standardmäßig aus.',
     ];
 
     private const DRIVERS = [
@@ -1216,6 +1452,17 @@ class ChargerHub extends IPSModule
         'goe'        => 32,
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
+    // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
+    // die Phasenzahl während einer laufenden Ladung tatsächlich gewechselt wird.
+    private const PHASE_SWITCH_STABLE_POLLS = 3;
+    private const PHASE_SWITCH_STABLE_POLLS_MAX = 10;
+
+    // Verbund-Vertrag MeterHub (mit MeterHub-Sitzung abgestimmt, 26.08.2026)
+    // — für die optionale Eigenregelung des Überschussladens, siehe
+    // FindGridSurplusW().
+    private const METERHUB_GUID = '{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}';
+    private const EMS_GUID = '{90286A25-E6C9-4A66-BD4E-0CFB707C2C6C}';
+    private const INVERTERHUB_GUID = '{BBE2C593-1A91-426D-A714-29A9C7E87589}';
 
     // Regler-Kennzeichnung (Verbund-Vokabular, mit EMS abgestimmt). Wer hat die
     // Hoheit über diesen Ladepunkt? Wird als 'managedBy' im Vertrag gemeldet;
@@ -1242,6 +1489,18 @@ class ChargerHub extends IPSModule
 
         $this->RegisterAttributeString('SeenNews', '');
         $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
+        // Einmal-Marker für die 0.9.14-Migration (control-Variablen ohne
+        // Kernel-Standardaktion neu anlegen, siehe RegisterVar()). Ein
+        // Attribut statt einer Live-Zustandsprüfung, weil sich Letzteres live
+        // als nicht zuverlässig herausstellte — 0.9.14 löschte/erzeugte die
+        // Steuervariablen dadurch bei JEDEM Übernehmen neu (IDs wechselten
+        // ständig), statt nur einmalig zu migrieren.
+        $this->RegisterAttributeBoolean('ControlActionsMigrated', false);
+        // Beobachtungszähler fürs Phasen-Umschalten beim Überschussladen — ein
+        // Wechsel wird erst nach mehreren AUFEINANDERFOLGENDEN Polls mit derselben
+        // Tendenz ausgelöst, nicht schon beim ersten (verhindert Pendeln).
+        $this->RegisterAttributeInteger('PhaseSwitchStableCount', 0);
+        $this->RegisterAttributeInteger('PhaseSwitchStableTarget', 0);
 
         $this->RegisterPropertyBoolean('Active', true);
         $this->RegisterPropertyString('Manufacturer', 'keba');
@@ -1265,6 +1524,40 @@ class ChargerHub extends IPSModule
         // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
         // Verteidigungslinie unabhängig vom EMS (EMS-Vertragsabsprache).
         $this->RegisterPropertyInteger('MaxCurrent', 16);
+        // Eigenständiges Überschussladen als Fallback, wenn EMS nicht
+        // vorhanden/aktiv ist (Dietmars Vorgabe, siehe SurplusChargeControl()).
+        // Default false — sicherer Opt-in, kein automatisches Verhalten ohne
+        // Zutun.
+        $this->RegisterPropertyBoolean('EnableSurplusCharging', false);
+        // 0 = automatische Zähler-Auswahl über den MeterHub-Vertrag
+        // (FindGridSurplusW()), sonst gezielt diese MeterHub-Instanz
+        // erzwingen — Rückfall, falls die Automatik keinen/den falschen
+        // Zähler findet (z. B. mehrere realtime-Grid-Zähler gleichzeitig).
+        $this->RegisterPropertyInteger('SurplusMeterID', 0);
+        // Anteil des Netz-Überschusses, der dem Speicher vorbehalten bleibt (0-100 %) —
+        // wird VOR der Ampere-Berechnung vom Überschuss abgezogen.
+        $this->RegisterPropertyInteger('StorageSharePercent', 0);
+        // Kapazität des Speichers in kWh (0 = unbekannt/kein Speicher) — nur fürs
+        // Abschätzen der freien Pufferkapazität (GetStorageHeadroomKWh()), der
+        // InverterHub-Contract liefert SOC, aber keine kWh-Kapazität.
+        $this->RegisterPropertyFloat('BatteryCapacityKWh', 0.0);
+        // go-e-exklusiv: RFID-Kartenzähler (Name + Energie je Karte 0–9)
+        // stehen NICHT über Modbus zur Verfügung (offizielle Registertabelle
+        // enthält sie nicht), nur über MQTT (Topics go-eCharger/<Seriennummer>/
+        // c0n…c9n bzw. c0e…c9e). Eigener roher MQTT-Client (CHUB_MqttMiniClient),
+        // daher direkt Host/Port statt einer Symcon-Splitter-Verknüpfung.
+        $this->RegisterPropertyBoolean('MqttCardsEnabled', false);
+        $this->RegisterPropertyString('MqttHost', '');
+        $this->RegisterPropertyInteger('MqttPort', 1883);
+        // Live bestätigt (03.08.2026): Symcons MQTT-Server lehnt CONNECT ohne
+        // Zugangsdaten ab (CONNACK-Fehlercode statt 0). Optional, da nicht
+        // jeder Broker Auth verlangt.
+        $this->RegisterPropertyString('MqttUsername', '');
+        $this->RegisterPropertyString('MqttPassword', '');
+        // go-e erlaubt ein eigenes MQTT-Topic-Präfix statt "go-eCharger/
+        // <Seriennummer>" (API-Key "mtp") — live bestätigt (03.08.2026):
+        // Dietmar nutzt "WB1"/"WB2" statt der Seriennummer. Leer = Standard.
+        $this->RegisterPropertyString('MqttTopicPrefix', '');
 
         // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
         // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
@@ -1336,12 +1629,278 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // Sichtbarer Wrapper um Update() für den Formular-Button (SUITE.md
+    // "Sichtbare Rückmeldung bei jeder Aktion", verbindlich seit 20.08.2026)
+    // — Update() selbst bleibt der reine Timer-Callback ohne UI-Nebenwirkung,
+    // damit nicht bei jedem FastTimer-Tick unnötig ein UpdateFormField läuft.
+    public function TestConnection()
+    {
+        if (!$this->ReadPropertyBoolean('Active')) {
+            @$this->UpdateFormField('ConnTestResult', 'caption', '⚠️ Kommunikation ist deaktiviert — bitte oben aktivieren.');
+            return;
+        }
+        $this->Update();
+        $ok = (bool)$this->GetVarValue('connected');
+        $ts = date('H:i:s');
+        if ($ok) {
+            @$this->UpdateFormField('ConnTestResult', 'caption', "✅ Verbindung erfolgreich, Daten gelesen ({$ts} Uhr).");
+        } else {
+            @$this->UpdateFormField('ConnTestResult', 'caption', "❌ Verbindung fehlgeschlagen ({$ts} Uhr) — IP-Adresse/Port/Unit-ID prüfen.");
+        }
+    }
+
     public function Update()
     {
         if (!$this->ReadPropertyBoolean('Active')) {
             return;
         }
         $this->GetDriver()->readValues($this->GetModbusClient(), $this);
+        if ($this->ReadPropertyString('Manufacturer') === 'goe' && $this->ReadPropertyBoolean('MqttCardsEnabled')) {
+            // Die Seriennummer (fürs Topic nötig) ist erst NACH dem ersten
+            // erfolgreichen Modbus-Lesevorgang bekannt — daher hier statt in
+            // ApplyChanges/direkt am Timer.
+            $this->PollMqttCards();
+        }
+        // Endet die Ladesitzung (Fahrzeug abgesteckt), verliert der zuletzt
+        // per SetVehicleName() gesetzte Name seine Gültigkeit — sonst zeigt
+        // die Instanz nach einem Fahrzeugwechsel weiter den alten Namen an.
+        // Nur aktiv löschen, wenn 'vehicle_plugged' beim jeweiligen Treiber
+        // überhaupt existiert und WIRKLICH false ist (nicht bei unbekanntem
+        // Zustand, z. B. Alfen/Heidelberg ohne dieses Ident).
+        $plugged = $this->GetVarValue('vehicle_plugged');
+        if ($plugged === false && $this->GetVarValue('vehicle_name') !== '') {
+            $this->SetVarStr('vehicle_name', '');
+        }
+        $this->SurplusChargeControl();
+    }
+
+    // Eigenständiges Überschussladen — NUR Fallback, wenn EMS nicht regelt
+    // (Dietmars Vorgabe, 26.08.2026, mit EMS/MeterHub abgestimmt): EMS hat
+    // immer Vorrang, sobald es läuft. ChargerHub übernimmt selbst nur, wenn
+    // alle folgenden Bedingungen gelten — sonst tut diese Methode nichts:
+    // - explizit per Property freigeschaltet (sicherer Opt-in, kein
+    //   automatisches Verhalten ohne Zutun),
+    // - kein anderer Regler hat laut managedBy die Hoheit,
+    // - EMS ist nicht installiert oder nicht aktiv (IsEmsActive()),
+    // - GENAU EINE aktive ChargerHub-Instanz existiert insgesamt — bei
+    //   mehreren Wallboxen würde jede für sich denselben Überschuss zu
+    //   nutzen versuchen (Koordination mehrerer Ladepunkte bleibt EMS
+    //   vorbehalten, das hier ist bewusst kein Ersatz dafür),
+    // - ein MeterHub-Zähler am Netzanschlusspunkt liefert einen
+    //   Echtzeit-Überschusswert (FindGridSurplusW()).
+    // Setzt die Statusvariable "Überschussladen" NUR, wenn sie existiert
+    // (wird ausschließlich bei aktivierter EnableSurplusCharging registriert,
+    // siehe RegisterVariables()) — sichtbare Rückmeldung, ob/warum die
+    // Eigenregelung gerade (nicht) eingreift, statt stillem Nichtstun.
+    private function SetSurplusStatus(string $text): void
+    {
+        if ($this->FindVarByIdent('surplus_status')) {
+            $this->SetVarStr('surplus_status', $text);
+        }
+    }
+
+    private function SurplusChargeControl(): void
+    {
+        if (!$this->ReadPropertyBoolean('EnableSurplusCharging')) {
+            return;
+        }
+        if ($this->GetManagedBy() !== 'none') {
+            $this->SetSurplusStatus('⏸️ Inaktiv — „Wer regelt?" steht nicht auf „Niemand".');
+            return;
+        }
+        if ($this->IsEmsActive()) {
+            $this->SetSurplusStatus('⏸️ Inaktiv — EMS ist aktiv und hat Vorrang.');
+            return;
+        }
+        $contendingInstances = 1; // sich selbst mitzählen
+        foreach (@IPS_GetInstanceListByModuleID('{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}') ?: [] as $iid) {
+            if ($iid === $this->InstanceID) {
+                continue;
+            }
+            if (@IPS_GetProperty($iid, 'Active') !== true) {
+                continue;
+            }
+            // Eine andere aktive Wallbox blockiert nur, wenn dort auch wirklich ein Fahrzeug hängt —
+            // sonst gibt es keine Konkurrenz um den Überschuss.
+            $vid = $this->FindIdentRecursive($iid, 'vehicle_plugged');
+            if ($vid === false || @GetValueBoolean($vid) === true) {
+                $contendingInstances++;
+            }
+        }
+        if ($contendingInstances !== 1) {
+            $this->SetSurplusStatus("⏸️ Inaktiv — $contendingInstances ChargerHub-Instanzen mit angestecktem Fahrzeug gefunden, es darf genau eine sein (sonst bitte EMS für die Koordination nutzen).");
+            return;
+        }
+        if ($this->GetVarValue('vehicle_plugged') === false) {
+            $this->SetSurplusStatus('⏸️ Inaktiv — kein Fahrzeug angesteckt.');
+            return;
+        }
+        $gridSurplusW = $this->FindGridSurplusW();
+        if ($gridSurplusW === null) {
+            $this->SetSurplusStatus('⚠️ Kein passender MeterHub-Zähler am Netzanschlusspunkt gefunden (function=grid, latency=realtime) — bitte unten manuell auswählen, falls einer vorhanden ist.');
+            return;
+        }
+        // Der Wechselrichter bedient erst die Wallbox (ganz normaler AC-Verbraucher aus
+        // seiner Sicht) und lädt DANACH den Speicher mit dem Rest — was die Batterie
+        // gerade zieht, würde bei mehr Wallbox-Strom einfach automatisch weniger, nicht
+        // zusätzlicher Netzbezug. Das taucht am NAP-Zähler nie auf, muss also dazu.
+        $batteryChargeW = $this->GetBatteryChargeW();
+        // Was WIR selbst gerade laden, steckt schon im Netzzähler drin (zieht den
+        // gemessenen Überschuss künstlich runter) — muss zurückaddiert werden, sonst
+        // sieht die Regelung bei jeder Erhöhung sofort "weniger Überschuss" und
+        // schwingt sich selbst hoch und runter (live beobachtet, Dietmar 27.08.2026:
+        // „vermutlich auch deshalb weil Du bei der Überschussberechnung Dich selbst
+        // vergisst"). `power` ist der treiberübergreifende Ist-Ladeleistungs-Ident.
+        $ownPowerW = (float)$this->GetVarValue('power');
+        $surplusW = $gridSurplusW + $batteryChargeW + $ownPowerW;
+
+        // Erst der Speicher, dann die Wallbox: der eingestellte Anteil bleibt dem
+        // Speicher vorbehalten und fließt nicht in die Ampere-Berechnung ein.
+        $storageShare = max(0, min(100, $this->ReadPropertyInteger('StorageSharePercent')));
+        $storageW = $surplusW * ($storageShare / 100.0);
+        $surplusW -= $storageW;
+        $sourceParts = ['Netz ' . round($gridSurplusW) . ' W'];
+        if ($batteryChargeW > 0) {
+            $sourceParts[] = 'Speicher ' . round($batteryChargeW) . ' W';
+        }
+        if ($ownPowerW > 0) {
+            $sourceParts[] = 'eigene Ladung ' . round($ownPowerW) . ' W';
+        }
+        $sourceNote = (count($sourceParts) > 1) ? ' (' . implode(' + ', $sourceParts) . ')' : '';
+
+        $enabled = (bool)$this->GetVarValue('ctl_enable');
+        // Phasenumschaltung ist kein go-e-Spezifikum — jede Wallbox mit dieser Fähigkeit
+        // bekommt hier dieselbe Logik, solange sie den Ident bereitstellt.
+        $canSwitchPhases = (bool)$this->FindVarByIdent('ctl_phase_mode');
+        $currentPhases = $canSwitchPhases && $this->GetVarValue('ctl_phase_mode') === 1 ? 1 : 3;
+        $amp3 = (int)floor($surplusW / (3 * 230.0));
+
+        if (!$canSwitchPhases) {
+            $phases = 3;
+        } elseif (!$enabled) {
+            // Ladebeginn: erst 3-phasig versuchen, bei zu wenig Überschuss auf 1-phasig
+            // umschalten — senkt die Start-Schwelle von 3×230×6=4140 W auf 230×6=1380 W.
+            $phases = ($amp3 >= self::MIN_CURRENT) ? 3 : 1;
+        } else {
+            // Während der laufenden Ladung selbstständig hoch-/runterschalten (Dietmar,
+            // 27.08.2026: tagsüber 3-phasig, Richtung Abend automatisch zurück auf
+            // 1-phasig, um die letzten Sonnenstrahlen noch zu nutzen — gilt für jede
+            // phasenumschaltfähige Wallbox, nicht nur go-e). Hysterese (+2 A Marge fürs
+            // Hochschalten) UND ein Beobachtungszähler (self::PHASE_SWITCH_STABLE_POLLS
+            // aufeinanderfolgende Polls mit derselben Tendenz) verhindern ein Pendeln
+            // direkt an der Schaltschwelle — jeder Wechsel bedeutet einen kurzen
+            // Relais-Schaltvorgang, daher nicht schon bei der ersten Schwankung reagieren
+            // (Dietmar, live beobachtet: „Wäre es nicht ratsam alles erstmal zu
+            // beobachten, bevor man sofort schaltet?").
+            if ($currentPhases === 1 && $amp3 >= self::MIN_CURRENT + 2) {
+                $wantPhases = 3;
+            } elseif ($currentPhases === 3 && $amp3 < self::MIN_CURRENT) {
+                $wantPhases = 1;
+            } else {
+                $wantPhases = $currentPhases;
+            }
+            if ($wantPhases === $currentPhases) {
+                $this->WriteAttributeInteger('PhaseSwitchStableCount', 0);
+                $phases = $currentPhases;
+            } else {
+                $stableCount = $this->ReadAttributeInteger('PhaseSwitchStableTarget') === $wantPhases
+                    ? $this->ReadAttributeInteger('PhaseSwitchStableCount') + 1
+                    : 1;
+                $this->WriteAttributeInteger('PhaseSwitchStableTarget', $wantPhases);
+                $this->WriteAttributeInteger('PhaseSwitchStableCount', $stableCount);
+                if ($stableCount >= $this->GetPhaseSwitchStablePolls()) {
+                    $phases = $wantPhases;
+                    $this->WriteAttributeInteger('PhaseSwitchStableCount', 0);
+                } else {
+                    $phases = $currentPhases; // noch am Beobachten, noch nicht schalten
+                }
+            }
+        }
+        if ($canSwitchPhases && $phases !== $currentPhases) {
+            $this->RequestAction('ctl_phase_mode', $phases === 1 ? 1 : 2);
+        }
+        $amp = (int)floor($surplusW / ($phases * 230.0));
+        $amp = max(0, min($this->GetMaxCurrentA(), $amp));
+
+        if ($amp < self::MIN_CURRENT) {
+            if ($enabled) {
+                $this->RequestAction('ctl_enable', false);
+            }
+            $this->SetSurplusStatus('🔌 Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
+            return;
+        }
+        if (!$enabled) {
+            $this->RequestAction('ctl_enable', true);
+        }
+        $current = (int)$this->GetVarValue('ctl_curr_limit');
+        // Mindestabstand 1 A, um nicht bei jedem Poll wegen Messrauschen neu
+        // zu schreiben (unnötiger Modbus-Traffic, Relais-Verschleiß bei
+        // ständigem Nachregeln).
+        if (abs($current - $amp) >= 1) {
+            $this->RequestAction('ctl_curr_limit', $amp);
+        }
+        $storageNote = $storageShare > 0 ? " (nach $storageShare % Speicheranteil, davon " . round($storageW) . ' W für Speicher)' : '';
+        $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote$storageNote → $amp A ($phases-phasig).");
+    }
+
+    // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
+    // (Tessie oder ein beliebiges anderes, bei jedem Nutzer mit beliebigen
+    // Fahrzeugen/Wallboxen) — ChargerHub kennt weder Fahrzeugnamen noch
+    // -Marken und rät auch nicht per GPS/Zeitfenster, WELCHES Fahrzeug hier
+    // hängt (das wäre eine Zuständigkeit, die woanders hingehört, siehe
+    // CLAUDE.md „Kein Modul darf ein anderes voraussetzen"). Ein aufrufendes
+    // Modul, das Fahrzeug UND Wallbox gleichzeitig sieht (z. B. per
+    // Ladestrom-Abgleich zwischen CHUB_GetFunctions()/powerID und der
+    // eigenen Fahrzeug-Telemetrie), trägt hier nur das Ergebnis ein.
+    public function SetVehicleName(string $name)
+    {
+        $this->SetVarStr('vehicle_name', $name);
+    }
+
+    // Eigener, roher MQTT-Poll — kein Symcon-Splitter/Parent-Instanz nötig,
+    // exakt dasselbe Prinzip wie GetModbusClient()/CHUB_ModbusTcpClient.
+    private function PollMqttCards(): void
+    {
+        $host = trim($this->ReadPropertyString('MqttHost'));
+        $serial = trim((string)$this->GetVarValue('dev_serial'));
+        if ($host === '' || $serial === '') {
+            return;
+        }
+        $client = new CHUB_MqttMiniClient($host, $this->ReadPropertyInteger('MqttPort'));
+        $clientId = 'chub_' . $this->InstanceID;
+        // go-e erlaubt ein eigenes Topic-Präfix statt "go-eCharger/
+        // <Seriennummer>" (API-Key "mtp") — leer = Standard-Präfix.
+        $prefix = trim($this->ReadPropertyString('MqttTopicPrefix'));
+        $topicBase = ($prefix !== '') ? $prefix : ('go-eCharger/' . $serial);
+        // MQTT-Wildcards gelten nur je ganzer Ebene ("+" allein, nicht "c+") —
+        // daher hier breiter abonniert und im Loop unten per Regex auf
+        // c0..c9 + n/e gefiltert.
+        $messages = $client->fetch(
+            [$topicBase . '/+'],
+            $clientId,
+            $this->ReadPropertyString('MqttUsername'),
+            $this->ReadPropertyString('MqttPassword')
+        );
+        if ($messages === [] && $client->getLastError() !== '') {
+            IPS_LogMessage('ChargerHub-MQTT', 'Instanz ' . $this->InstanceID . ': ' . $client->getLastError());
+            return;
+        }
+        foreach ($messages as $msg) {
+            // Topic: go-eCharger/<Seriennummer>/c<N><n|e> — die Seriennummer
+            // steht bereits im Subscribe-Filter fest, hier nur noch Index+Feld.
+            if (!preg_match('#/c([0-9])([ne])$#', $msg['topic'], $m)) {
+                continue;
+            }
+            $idx = (int)$m[1];
+            $payload = json_decode($msg['payload']);
+            if ($m[2] === 'n') {
+                $this->SetVarStr("card{$idx}_name", is_string($payload) ? $payload : $msg['payload']);
+            } else {
+                // c0e…c9e: Energie in Wh (uint64) laut offizieller go-e-API-Doku.
+                $wh = is_numeric($payload) ? (float)$payload : 0.0;
+                $this->SetVarFloat("card{$idx}_energy", $wh / 1000.0);
+            }
+        }
     }
 
     public function RequestAction($Ident, $Value)
@@ -1367,6 +1926,160 @@ class ChargerHub extends IPSModule
     // erster Vorschlag und noch mit der EMS-Sitzung abzustimmen, bevor er als
     // stabiler Vertrag gilt — die Steuer-IDs sind fürs EMS bestimmt, nicht für
     // Anzeigemodule.
+    // Aktueller Netz-Überschuss in Watt (positiv = Einspeisung/Überschuss,
+    // 0 = kein Überschuss), oder null, wenn kein geeigneter Zähler gefunden
+    // wurde. Verbund-Vertrag mit MeterHub abgestimmt (26.08.2026):
+    // - NIE über den Instanznamen gehen (frei wählbar, siehe eigene
+    //   Namens-Fallen-Erfahrung bei MigrationsHub) — nur über
+    //   MHUB_GetFunctions()['assignments'][*]['function'] === 'grid'.
+    // - 'latency' ('realtime'/'delayed') und 'authority' ('billing'/
+    //   'auxiliary') sind ORTHOGONAL — 'billing' heißt nur eichrechtlich
+    //   verbindlich, NICHT aktuell. Für eine Regelschleife zählt
+    //   ausschließlich 'realtime'; unter mehreren realtime-Treffern
+    //   zusätzlich 'billing' als Tiebreaker.
+    // - Vorzeichen bei MeterHub: + = Bezug, − = Einspeisung — daher
+    //   max(0, -powerValue), nicht der Rohwert.
+    private function FindGridSurplusW(): ?float
+    {
+        if (!function_exists('MHUB_GetFunctions')) {
+            return null;
+        }
+        $forcedID = $this->ReadPropertyInteger('SurplusMeterID');
+        $candidates = $forcedID > 0 ? [$forcedID] : (@IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: []);
+
+        $best = null; // ['powerID' => int, 'billing' => bool, 'iid' => int]
+        foreach ($candidates as $iid) {
+            // MHUB_GetFunctions() liefert (anders als unser eigenes
+            // CHUB_GetFunctions()) einen JSON-String, keinen nativen Array —
+            // mit MeterHub live abgeglichen, 26.08.2026. Struktur:
+            // {..., "assignments": [{"function":"grid", "powerID":..., ...}]}.
+            $fns = json_decode((string)@MHUB_GetFunctions($iid), true);
+            if (!is_array($fns) || !isset($fns['assignments']) || !is_array($fns['assignments'])) {
+                continue;
+            }
+            foreach ($fns['assignments'] as $assignment) {
+                if (!is_array($assignment)) {
+                    continue;
+                }
+                if (($assignment['function'] ?? '') !== 'grid') {
+                    continue;
+                }
+                if (($assignment['latency'] ?? '') !== 'realtime') {
+                    continue; // 'delayed' (z. B. Cloud-API) taugt nicht für eine Regelschleife.
+                }
+                $powerID = (int)($assignment['powerID'] ?? 0);
+                if ($powerID <= 0) {
+                    continue;
+                }
+                $billing = ($assignment['authority'] ?? '') === 'billing';
+                if ($best === null || ($billing && !$best['billing'])) {
+                    $best = ['powerID' => $powerID, 'billing' => $billing, 'iid' => $iid];
+                }
+            }
+        }
+        if ($best === null) {
+            $this->lastSurplusMeterName = null;
+            return null;
+        }
+        $raw = @GetValue($best['powerID']);
+        if (!is_numeric($raw)) {
+            $this->lastSurplusMeterName = null;
+            return null;
+        }
+        $this->lastSurplusMeterName = @IPS_GetName($best['iid']) ?: null;
+        return max(0.0, -(float)$raw);
+    }
+
+    private function SurplusMeterLabel(): string
+    {
+        return $this->lastSurplusMeterName ?? 'Zähler unbekannt';
+    }
+
+    // Der Wechselrichter bedient erst alle lokalen Verbraucher (inkl. Wallbox) und lädt
+    // ERST DANACH den Speicher mit dem, was übrig bleibt (Dietmar, 26.08.2026). Was die
+    // Batterie also gerade an Ladeleistung zieht, ist Überschuss, den ich der Wallbox
+    // zusätzlich zuteilen könnte, ohne Netzbezug auszulösen — am NAP-Zähler taucht das
+    // nie auf, weil der Wechselrichter es vorher abgreift.
+    private function GetBatteryChargeW(): float
+    {
+        if (!function_exists('IHUB_GetFunctions')) {
+            return 0.0;
+        }
+        $totalChargeW = 0.0;
+        foreach (@IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [] as $iid) {
+            $fns = @IHUB_GetFunctions($iid);
+            $vid = (int)($fns['batPowerID'] ?? 0);
+            if ($vid <= 0) {
+                continue;
+            }
+            $raw = @GetValue($vid);
+            if (!is_numeric($raw)) {
+                continue;
+            }
+            // GoodWe-Konvention (InverterHub-Contract 1.0, live verifiziert 26.08.2026):
+            // negativ = Laden, positiv = Entladen.
+            $totalChargeW += max(0.0, -(float)$raw);
+        }
+        return $totalChargeW;
+    }
+
+    // Wieviel freie Speicherkapazität (kWh) steht gerade noch zur Verfügung? Nur
+    // ermittelbar, wenn der Nutzer die Kapazität manuell hinterlegt hat (der
+    // InverterHub-Contract 1.0 liefert SOC, aber keine kWh-Kapazität) UND
+    // InverterHub einen SOC liefert. null = unbekannt/kein Speicher.
+    private function GetStorageHeadroomKWh(): ?float
+    {
+        $capacityKWh = $this->ReadPropertyFloat('BatteryCapacityKWh');
+        if ($capacityKWh <= 0.0 || !function_exists('IHUB_GetFunctions')) {
+            return null;
+        }
+        foreach (@IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [] as $iid) {
+            $fns = @IHUB_GetFunctions($iid);
+            $vid = (int)($fns['socID'] ?? 0);
+            if ($vid <= 0) {
+                continue;
+            }
+            $soc = @GetValue($vid);
+            if (!is_numeric($soc)) {
+                continue;
+            }
+            $socClamped = max(0.0, min(100.0, (float)$soc));
+            return $capacityKWh * (100.0 - $socClamped) / 100.0;
+        }
+        return null;
+    }
+
+    // Je mehr freie Speicherkapazität übrig ist, desto geduldiger kann die
+    // Phasenumschaltung beobachten, bevor sie schaltet — ein Wechsel kostet dann
+    // effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach weiter den
+    // Speicher (Dietmar, 27.08.2026). Ohne Speicher bzw. ohne hinterlegte Kapazität
+    // bleibt es bei der bisherigen, vorsichtigen Grund-Wartezeit.
+    private function GetPhaseSwitchStablePolls(): int
+    {
+        $headroomKWh = $this->GetStorageHeadroomKWh();
+        if ($headroomKWh === null) {
+            return self::PHASE_SWITCH_STABLE_POLLS;
+        }
+        $extraPolls = (int)floor($headroomKWh / 5.0); // je angefangene 5 kWh Puffer +1 Poll
+        return min(self::PHASE_SWITCH_STABLE_POLLS + $extraPolls, self::PHASE_SWITCH_STABLE_POLLS_MAX);
+    }
+
+    // Ist EMS installiert UND aktuell aktiv? (Mit EMS-Sitzung abgestimmt,
+    // 26.08.2026.) Bewusst die ECHTE Aktiv-Prüfung (Statusvariable
+    // EMS_Active_State), nicht nur unser eigenes managedBy-Feld — Dietmars
+    // Vorgabe war ausdrücklich "EMS nicht vorhanden ODER nicht eingeschaltet",
+    // ein rein statisches Feld würde das nicht abbilden, wenn EMS zwar
+    // eingetragen, aber gerade deinstalliert/deaktiviert ist.
+    private function IsEmsActive(): bool
+    {
+        $emsIDs = @IPS_GetInstanceListByModuleID(self::EMS_GUID) ?: [];
+        if ($emsIDs === []) {
+            return false;
+        }
+        $vid = $this->FindIdentRecursive($emsIDs[0], 'EMS_Active_State');
+        return $vid ? (bool)@GetValueBoolean($vid) : false;
+    }
+
     // Wirksame Ladestrom-Obergrenze: Hardware-Limit des Herstellers,
     // zusätzlich begrenzt durch die Property „Maximaler Anschlussstrom".
     public function GetMaxCurrentA(): int
@@ -1407,6 +2120,71 @@ class ChargerHub extends IPSModule
         return $v;
     }
 
+    // Schmale Auskunftsfunktion für MigrationsHub (Verbund-Konvention
+    // 03.08.2026, mit MigrationsHub abgestimmt als Alternative zu einer
+    // vollen "AdoptFromLegacyInstance"-Funktion in jedem Hub-Modul — wir
+    // liefern nur unser Ident/Typ-Wissen, Reparenting/Pruning/Simulation
+    // bleibt zentral bei MigrationsHub). Gibt für ein bekanntes Fremdmodul
+    // (per GUID) die Ident- und Typ-Zuordnung zurück, damit ein
+    // AC_ChangeVariableID-Aufruf vorher auf Typgleichheit geprüft werden
+    // kann, statt per Preflight-Sonde zu raten (Ursache des heutigen
+    // AC_ChangeVariableID-Crashs: Typ-Mismatch nicht erkannt).
+    // Rückgabeformat je Eintrag: ['oldIdent' => ..., 'newIdent' => ...,
+    // 'type' => 'Integer'|'Float'|'Boolean'|'String'].
+    // Verbund-Vertrag (03.08.2026, mit MigrationsHub/MeterHub/InverterHub
+    // abgestimmt, finale 3-Parameter-Fassung): $foreignIdents sind die an der
+    // Alt-Instanz TATSÄCHLICH vorhandenen Idents — reines GUID-Matching würde
+    // bei Firmware-abhängig unterschiedlich benannten Feldern ins Leere
+    // laufen. Rückgabe nur für tatsächlich erkannte Treffer, keyed nach dem
+    // Alt-Ident. $id wird von Symcon bei CHUB_GetIdentMapping($id, ...)
+    // automatisch injiziert, taucht daher hier nicht als PHP-Parameter auf
+    // (wie bei GetFunctions()/RequestAction() auch).
+    public function GetIdentMapping(string $foreignModuleGUID, array $foreignIdents): array
+    {
+        // Aktuell nur das go-eCharger-Fremdmodul (github.com/IPSCoyote/
+        // GO-eCharger) — Mapping am Quellcode verifiziert (siehe README,
+        // Abschnitt "Migration vom go-eCharger-Modul"). Karten-Index-Offset
+        // (Alt 1-basiert, ChargerHub 0-basiert) hier bereits eingerechnet.
+        if ($foreignModuleGUID !== '{B4624A42-F80A-4975-B692-7FB4D06CC805}') {
+            return [];
+        }
+        $map = [
+            'status'           => ['state',          VARIABLETYPE_INTEGER],
+            'powerToCarLineL1' => ['power_l1',        VARIABLETYPE_FLOAT],
+            'powerToCarLineL2' => ['power_l2',        VARIABLETYPE_FLOAT],
+            'powerToCarLineL3' => ['power_l3',        VARIABLETYPE_FLOAT],
+            'powerToCarTotal'  => ['power',            VARIABLETYPE_FLOAT],
+            'ampToCarLineL1'   => ['current_l1',       VARIABLETYPE_FLOAT],
+            'ampToCarLineL2'   => ['current_l2',       VARIABLETYPE_FLOAT],
+            'ampToCarLineL3'   => ['current_l3',       VARIABLETYPE_FLOAT],
+            'energyTotal'      => ['energy_total',     VARIABLETYPE_FLOAT],
+            'energyLoadCycle'  => ['energy_session',   VARIABLETYPE_FLOAT],
+            'serialID'         => ['dev_serial',       VARIABLETYPE_STRING],
+            'error'            => ['dev_error',        VARIABLETYPE_INTEGER],
+            'supplyLineN'      => ['voltage_n',        VARIABLETYPE_FLOAT],
+            'supplyLineL1'     => ['voltage_l1',       VARIABLETYPE_FLOAT],
+            'supplyLineL2'     => ['voltage_l2',       VARIABLETYPE_FLOAT],
+            'supplyLineL3'     => ['voltage_l3',       VARIABLETYPE_FLOAT],
+            'adapterAttached'  => ['adapter',          VARIABLETYPE_BOOLEAN],
+            'unlockedByRFID'   => ['unlocked_by',      VARIABLETYPE_INTEGER],
+            'cableUnlockMode'  => ['ctl_cable_lock',   VARIABLETYPE_INTEGER],
+            'accessControl'    => ['ctl_access',       VARIABLETYPE_INTEGER],
+            'cableCapability'  => ['cable_current',    VARIABLETYPE_INTEGER],
+        ];
+        for ($n = 1; $n <= 10; $n++) {
+            $map['energyChargedCard' . $n] = ['card' . ($n - 1) . '_energy', VARIABLETYPE_FLOAT];
+        }
+
+        $result = [];
+        foreach ($foreignIdents as $oldIdent) {
+            if (isset($map[$oldIdent])) {
+                [$newIdent, $type] = $map[$oldIdent];
+                $result[$oldIdent] = ['ident' => $newIdent, 'type' => $type];
+            }
+        }
+        return $result;
+    }
+
     public function GetFunctions(): array
     {
         $powerID = $this->FindVarByIdent('power');
@@ -1425,7 +2203,7 @@ class ChargerHub extends IPSModule
             // im EMS-Repo). Konsumenten prüfen die Major; additive Felder
             // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
             // 1.1: managedBy ergänzt.
-            'contractVersion'    => '1.1',
+            'contractVersion'    => '1.2',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -1448,6 +2226,11 @@ class ChargerHub extends IPSModule
             // Kompatibilität (Vertrag 1.0): abgeleitet aus managedBy — true,
             // sobald ein anderer Regler als none/ems die Hoheit hat.
             'externallyManaged'  => !in_array($this->GetManagedBy(), ['none', 'ems'], true),
+            // 1.2: Zugeordnetes Fahrzeug (leerer String, wenn kein
+            // Fahrzeug-Modul CHUB_SetVehicleName() aufgerufen hat oder
+            // kein Fahrzeug angesteckt ist) — Wert-ID, kein eigenes Feld,
+            // damit Konsumenten wie gewohnt per GetValue() lesen.
+            'vehicleNameID'      => $this->FindVarByIdent('vehicle_name') ?: 0,
         ]];
     }
 
@@ -1513,7 +2296,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.11-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.51-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -1541,6 +2324,7 @@ class ChargerHub extends IPSModule
                     'caption'  => '🔌  Verbindung',
                     'expanded' => true,
                     'items'    => [
+                        ['type' => 'Label', 'caption' => 'ℹ️ Über die Suche (Modul „ChargerHub Suche") werden diese Felder beim Anlegen automatisch befüllt — von Hand eintragen ist nur nötig, wenn die Instanz manuell angelegt oder die IP-Adresse der Wallbox geändert wurde.'],
                         ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
                         ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535],
                         ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247],
@@ -1563,6 +2347,13 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards oder eine §14a-Steuerung —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit.'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
+                        ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Überschussladen selbst regeln (nur Fallback ohne EMS)'],
+                        ['type' => 'Label', 'caption' => 'Nur wirksam, wenn oben „Wer regelt?" auf „Niemand" steht UND kein aktives EMS installiert ist UND genau eine ChargerHub-Instanz aktiv ist (bei mehreren Wallboxen bitte EMS für die Koordination nutzen) UND ein MeterHub-Zähler am Netzanschlusspunkt einen Echtzeit-Wert liefert. Ist EMS aktiv, hat es immer Vorrang — diese Option greift dann automatisch nicht. Sichtbarer Status (aktiv/warum nicht) erscheint als eigene Variable „Überschussladen", sobald diese Option angehakt ist.'],
+                        ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag)', 'moduleID' => self::METERHUB_GUID],
+                        ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
+                        ['type' => 'NumberSpinner', 'name' => 'BatteryCapacityKWh', 'caption' => '🆕 Speicherkapazität (kWh, 0 = kein Speicher/unbekannt)', 'minimum' => 0, 'maximum' => 200, 'digits' => 1, 'suffix' => 'kWh'],
+                        ['type' => 'Label', 'caption' => 'Nur für die Phasenumschalt-Wartezeit: je mehr freie Speicherkapazität (Kapazität × (100 % − SOC), SOC über InverterHub) gerade übrig ist, desto länger darf beobachtet werden, bevor die Phasenzahl während einer laufenden Ladung wechselt — ein Wechsel kostet dann effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach den Speicher weiter. 0 = feste Grund-Wartezeit wie ohne Speicher.'],
+                        ['type' => 'Label', 'caption' => 'Dieser Anteil des Überschusses bleibt dem Speicher vorbehalten und wird von der Ampere-Berechnung fürs Laden abgezogen. 0 % = kompletter Überschuss geht in die Wallbox, 100 % = nichts geht in die Wallbox.'],
                     ],
                 ],
                 [
@@ -1571,9 +2362,28 @@ class ChargerHub extends IPSModule
                     'expanded' => true,
                     'items'    => $groupItems,
                 ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🆕 📇  RFID-Kartenzähler (nur go-eCharger, per MQTT)',
+                    'expanded' => false,
+                    'items'    => [
+                        ['type' => 'Label', 'caption' => 'Kartenname + Energie je RFID-Karte (0–9) stehen nicht über Modbus zur Verfügung — nur über MQTT. Der go-eCharger muss dafür MQTT aktiviert haben und auf denselben Broker zeigen, der hier eingetragen wird (App → Internet → Erweiterte Einstellungen → MQTT). Modul verbindet sich selbst — keine zusätzliche Symcon-Instanz nötig.'],
+                        ['type' => 'CheckBox', 'name' => 'MqttCardsEnabled', 'caption' => 'RFID-Kartenzähler per MQTT abbilden'],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttHost', 'caption' => 'MQTT-Broker (IP/Hostname)', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
+                        ['type' => 'NumberSpinner', 'name' => 'MqttPort', 'caption' => 'MQTT-Port', 'minimum' => 1, 'maximum' => 65535],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttUsername', 'caption' => 'MQTT-Benutzername (falls vom Broker verlangt)'],
+                        ['type' => 'PasswordTextBox', 'name' => 'MqttPassword', 'caption' => 'MQTT-Passwort'],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttTopicPrefix', 'caption' => 'MQTT-Topic-Präfix (leer = Standard „go-eCharger/Seriennummer")'],
+                    ],
+                ],
             ],
             'actions' => [
-                ['type' => 'Button', 'caption' => 'Verbindung testen / Daten sofort lesen', 'onClick' => 'CHUB_Update($id);'],
+                ['type' => 'Button', 'caption' => 'Verbindung testen / Daten sofort lesen', 'onClick' => 'CHUB_TestConnection($id);'],
+                ['type' => 'Label', 'name' => 'ConnTestResult', 'caption' => ''],
+                // Praktisch nach einem Modul-Update, wenn der reguläre Weg
+                // (Modulverwaltung → Aktualisieren → Übernehmen) einmal nicht
+                // gegriffen hat (EMS-Vorschlag, Muster wie dort).
+                ['type' => 'Button', 'caption' => '🔄 Übernehmen erzwingen (ohne Formularänderung)', 'onClick' => "IPS_ApplyChanges(\$id); echo '✅ ApplyChanges() ausgeführt.';"],
             ],
             'status' => [
                 ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte IP-Adresse oder Hostname eintragen.'],
@@ -1638,6 +2448,18 @@ class ChargerHub extends IPSModule
     // InverterHub/MeterHub.
     // -----------------------------------------------------------------------
 
+    // RFID-Kartenzähler je Karte (0–9): Name + Energie. Nur go-eCharger, nur
+    // wenn per Property freigeschaltet — kommt ausschließlich über MQTT
+    // (siehe ReceiveData()), nicht über Modbus, daher unabhängig von den
+    // Treiber-Datenpunktgruppen behandelt statt über ChargerDriverInterface.
+    private function RegisterMqttCardVars(): void
+    {
+        for ($i = 0; $i <= 9; $i++) {
+            $this->RegisterVar(["card{$i}_name", "Karte {$i}: Name", 'S', '', false, 'cards', ''], 100 + $i * 2);
+            $this->RegisterVar(["card{$i}_energy", "Karte {$i}: Energie", 'F', '~Electricity', false, 'cards', ''], 100 + $i * 2 + 1);
+        }
+    }
+
     private function RegisterVariables()
     {
         $driver = $this->GetDriver();
@@ -1653,6 +2475,22 @@ class ChargerHub extends IPSModule
                 }
             }
         }
+        $mqttCardsActive = $this->ReadPropertyString('Manufacturer') === 'goe'
+            && $this->ReadPropertyBoolean('MqttCardsEnabled');
+        if ($mqttCardsActive) {
+            for ($i = 0; $i <= 9; $i++) {
+                $valid["card{$i}_name"]   = true;
+                $valid["card{$i}_energy"] = true;
+            }
+        }
+        // Herstellerunabhängig, kommt nie über Modbus/den Treiber, sondern
+        // ausschließlich per CHUB_SetVehicleName() von außen (Tessie oder ein
+        // beliebiges anderes Fahrzeug-Modul) — siehe SetVehicleName().
+        $valid['vehicle_name'] = true;
+        $surplusActive = $this->ReadPropertyBoolean('EnableSurplusCharging');
+        if ($surplusActive) {
+            $valid['surplus_status'] = true;
+        }
         $this->PruneForeignObjects($valid);
 
         $pos = 0;
@@ -1666,6 +2504,17 @@ class ChargerHub extends IPSModule
                 }
             }
         }
+        if ($mqttCardsActive) {
+            $this->RegisterMqttCardVars();
+        }
+        $this->RegisterVar(['vehicle_name', 'Zugeordnetes Fahrzeug', 'S', '', true, 'device', ''], $pos++);
+        if ($surplusActive) {
+            $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);
+        }
+
+        // Migration abgeschlossen — ab hier nie wieder Steuervariablen
+        // löschen/neu anlegen (siehe RegisterVar()).
+        $this->WriteAttributeBoolean('ControlActionsMigrated', true);
     }
 
     // Variablen liegen in Untergruppen-Kategorien (siehe EnsureCategory), nicht
@@ -1674,38 +2523,72 @@ class ChargerHub extends IPSModule
     // deaktivierten Gruppe nie erkannt und blieben stehen.
     private function PruneForeignObjects(array $validIdents)
     {
-        $all = [];
-        $collect = function ($pid) use (&$collect, &$all) {
+        // (id, parentIsInstance) je Ident sammeln, um anschließend zwei
+        // Aufräumschritte in einem Durchlauf zu erledigen.
+        $byIdent = [];
+        $collect = function ($pid, $depth) use (&$collect, &$byIdent) {
             foreach (@IPS_GetChildrenIDs($pid) ?: [] as $cid) {
-                $all[] = $cid;
-                if (IPS_GetObject($cid)['ObjectType'] === 0) {
-                    $collect($cid);
+                $obj = IPS_GetObject($cid);
+                if ($obj['ObjectType'] === 2 && $obj['ObjectIdent'] !== '') {
+                    $byIdent[$obj['ObjectIdent']][] = ['id' => $cid, 'directChild' => ($depth === 0)];
+                }
+                if ($obj['ObjectType'] === 0) {
+                    $collect($cid, $depth + 1);
                 }
             }
         };
-        $collect($this->InstanceID);
+        $collect($this->InstanceID, 0);
 
-        foreach ($all as $cid) {
-            if (!IPS_ObjectExists($cid)) {
+        foreach ($byIdent as $ident => $entries) {
+            if (!isset($validIdents[$ident])) {
+                // Fremder/nicht mehr gültiger Ident (abgewählte Gruppe,
+                // Herstellerwechsel) — alle Fundstellen löschen.
+                foreach ($entries as $e) {
+                    $this->DeleteVariableSafely($e['id']);
+                }
                 continue;
             }
-            $obj = IPS_GetObject($cid);
-            if ($obj['ObjectType'] !== 2 || $obj['ObjectIdent'] === '') {
-                continue;
-            }
-            if (!isset($validIdents[$obj['ObjectIdent']])) {
-                @IPS_DeleteVariable($cid);
+            if (count($entries) > 1) {
+                // Karteileiche aus dem 0.9.13-Zwischenfall (ApplyChanges brach
+                // mitten im Lauf ab, siehe CHANGELOG): RegisterVariableX legte
+                // eine zweite Variable direkt unter der Instanz an, das
+                // anschließende IPS_SetParent in die Kategorie schlug wegen
+                // der Ident-Kollision fehl und blieb dort stehen — die
+                // korrekte, in einer Kategorie verschachtelte Variable blieb
+                // daneben unangetastet bestehen. Direkte Instanz-Kinder mit
+                // einem Ident, der auch verschachtelt vorkommt, sind immer
+                // die Karteileiche.
+                foreach ($entries as $e) {
+                    if ($e['directChild']) {
+                        $this->DeleteVariableSafely($e['id']);
+                    }
+                }
             }
         }
     }
 
-    // WICHTIG: bewusst KEIN RegisterVariable*() — das bindet den Ident an die
-    // Instanzebene. Beim zweiten ApplyChanges (Configurator-Erstellung ruft es
-    // mehrfach) fände RegisterVariable* die längst in die Kategorie verschobene
-    // Variable nicht mehr, legte sie neu an und kollidierte beim Verschieben
-    // („Ident muss für jede Ebene eindeutig sein" — real gemeldet beim Anlegen
-    // aus der Discovery). Stattdessen das InverterHub-Muster: rekursiv suchen,
-    // sonst IPS_CreateVariable + IPS_SetIdent direkt unter der Kategorie.
+    // IPS_DeleteVariable() scheitert still (kein Fehler, keine Löschung),
+    // wenn unter der Variable noch ein Kind-Objekt hängt — live beobachtet
+    // bei einer Karteileiche mit einem Link-Objekt darunter (vermutlich aus
+    // einer Visualisierung). Kind-Objekte vorher entfernen.
+    private function DeleteVariableSafely(int $vid): void
+    {
+        foreach (@IPS_GetChildrenIDs($vid) ?: [] as $cid) {
+            $obj = IPS_GetObject($cid);
+            if ($obj['ObjectType'] === 6) {
+                @IPS_DeleteLink($cid);
+            }
+        }
+        @IPS_DeleteVariable($vid);
+    }
+
+    // Erzeugung über RegisterVariableX (nötig für die Kernel-Standardaktion,
+    // siehe EnableAction()-Aufruf unten), aber NUR bei echter Neuanlage
+    // (!$vid) — ein erneuter Aufruf, nachdem die Variable längst in ihre
+    // Kategorie verschoben wurde, kollidiert dort beim IPS_SetParent
+    // ("Ident muss für jede Ebene eindeutig sein", siehe CHANGELOG 0.9.13/14).
+    // Bereits bestehende Variablen werden über die rekursive FindVarByIdent()
+    // gefunden (InverterHub-Muster), nicht erneut registriert.
     private function RegisterVar(array $def, int $pos)
     {
         [$ident, $caption, $type, $profile, $archive, $group, $reg] = $def;
@@ -1724,11 +2607,61 @@ class ChargerHub extends IPSModule
             @IPS_DeleteVariable($vid);
             $vid = 0;
         }
-        $created = false;
+        // Einmalige Migration für "control"-Variablen, die noch VOR dem
+        // RegisterVariableX-Fix per rohem IPS_CreateVariable() erzeugt wurden
+        // (fehlende Kernel-Standardaktion). Steuerung über ein PERSISTENTES
+        // Attribut, NICHT über eine Live-Zustandsprüfung von VariableAction:
+        // Live bestätigt (25.07.2026) lieferte IPS_GetVariable()['VariableAction']
+        // nach der Migration weiterhin 0 zurück (das Feld spiegelt offenbar
+        // etwas anderes als die per RegisterVariableX/IPS_SetVariableCustomAction
+        // gesetzte Bindung), wodurch dieser Zweig bei JEDEM Übernehmen erneut
+        // feuerte und die IDs bei jedem Aufruf neu vergeben wurden — ein
+        // Attribut kann das nicht, es wird exakt einmal auf true gesetzt.
+        if ($vid && $group === 'control' && !$this->ReadAttributeBoolean('ControlActionsMigrated')) {
+            @IPS_DeleteVariable($vid);
+            $vid = 0;
+        }
+        // RegisterVariableX NUR bei echter Neuanlage aufrufen (!$vid), nicht
+        // bei jedem ApplyChanges: der Ident-Registrierung dieser SDK-Methode
+        // ist instanzweit, nicht nur auf direkte Kinder beschränkt — ein
+        // erneuter Aufruf NACHDEM die Variable längst in eine Kategorie
+        // verschoben wurde, kollidiert dort mit sich selbst ("Ident muss für
+        // jede Ebene eindeutig sein", live reproduziert 25.07.2026). Die bei
+        // der Neuanlage gesetzte Kernel-Standardaktion bleibt beim späteren
+        // IPS_SetParent in die Kategorie erhalten, muss also nicht erneut
+        // durch RegisterVariableX bestätigt werden — nur das explizite
+        // IPS_SetVariableCustomAction($vid, 0) weiter unten läuft jedes Mal.
         if (!$vid) {
-            $vid = IPS_CreateVariable($vtype);
-            IPS_SetIdent($vid, $ident);
-            $created = true;
+            switch ($type) {
+                case 'F':
+                    $vid = $this->RegisterVariableFloat($ident, $caption, $profile, $pos);
+                    break;
+                case 'I':
+                    $vid = $this->RegisterVariableInteger($ident, $caption, $profile, $pos);
+                    break;
+                case 'B':
+                    $vid = $this->RegisterVariableBoolean($ident, $caption, $profile, $pos);
+                    break;
+                case 'S':
+                    $vid = $this->RegisterVariableString($ident, $caption, $profile, $pos);
+                    break;
+            }
+            // WICHTIG: IPS_SetVariableCustomAction($vid, 0) ist die falsche API
+            // für modul-EIGENE Variablen (von dieser Instanz per
+            // RegisterVariableX angelegt) — sie sieht korrekt aus (kein Fehler),
+            // bleibt aber wirkungslos, insbesondere in WebFront/Konsole
+            // (unabhängig bestätigt sowohl live bei uns als auch bei
+            // InverterHub, das denselben Bug hatte). Richtig ist die
+            // SDK-eigene $this->EnableAction($Ident). Die MUSS hier, VOR dem
+            // IPS_SetParent() weiter unten, aufgerufen werden: EnableAction()
+            // löst den Ident intern über das flache GetIDForIdent() auf, das
+            // nur direkte Instanz-Kinder findet — die Variable steht hier noch
+            // an der Instanz, bevor sie gleich in ihre Kategorie verschoben
+            // wird. Die dabei gesetzte Standardaktion bleibt über den
+            // IPS_SetParent()-Umzug hinweg erhalten.
+            if ($group === 'control') {
+                $this->EnableAction($ident);
+            }
         }
 
         $catID = $this->EnsureCategory($group);
@@ -1736,17 +2669,13 @@ class ChargerHub extends IPSModule
         IPS_SetPosition($vid, $pos);
         IPS_SetName($vid, $caption);
 
-        // Profil bei jedem Übernehmen unconditional setzen. Die vorherige
-        // Beschränkung auf Neuanlage (bzw. "nur wenn aktuell leer") sollte ein
-        // von Nutzer:innen selbst gewähltes Profil schützen, hat aber live
-        // reproduzierbar dazu geführt, dass Ladefreigabe UND reine
-        // Anzeigevariablen (z. B. Ladeleistung) dauerhaft ganz ohne Profil
-        // blieben — die Bedingung selbst war fehlerhaft/zu vorsichtig. Ein
-        // bewusst individuelles Profil ist für diese generierten Variablen
-        // kein unterstützter Anwendungsfall, daher einfach und robust: immer
-        // setzen, kein Sonderfall.
+        // Profil bei jedem Übernehmen unconditional nachziehen (siehe oben,
+        // 0.9.11) — RegisterVariableX setzt es zwar schon bei Neuanlage, aber
+        // ein Hersteller-/Typwechsel kann ein anderes Profil erfordern.
         if ($profile !== '') {
-            IPS_SetVariableCustomProfile($vid, $profile);
+            if (@IPS_GetVariable($vid)['VariableCustomProfile'] !== $profile) {
+                IPS_SetVariableCustomProfile($vid, $profile);
+            }
         }
         if ($reg !== '') {
             @IPS_SetInfo($vid, (string)$reg);
@@ -1768,6 +2697,7 @@ class ChargerHub extends IPSModule
             'device'  => 'Gerät',
             'phases'  => 'Phasen',
             'control' => 'Steuerung',
+            'cards'   => 'RFID-Karten',
         ];
         $cid = IPS_CreateCategory();
         IPS_SetParent($cid, $this->InstanceID);
@@ -1868,6 +2798,12 @@ class ChargerHub extends IPSModule
                 IPS_SetVariableProfileDigits($name, $digits);
             } elseif ($type === VARIABLETYPE_INTEGER) {
                 IPS_SetVariableProfileValues($name, $min, $max, $step);
+            }
+            // CHB.kWhLimit: -1 als eigene Textassoziation für "Kein Limit"
+            // (siehe readValues()-Kommentar zum Sentinel) — Assoziationen
+            // funktionieren auch bei Float-Profilen, nicht nur bei Enums.
+            if ($name === 'CHB.kWhLimit') {
+                IPS_SetVariableProfileAssociation($name, -1, 'Kein Limit', '', -1);
             }
         }
 
