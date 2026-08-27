@@ -1332,6 +1332,21 @@ class GoeChargerDriver implements ChargerDriverInterface
                 // für "kein Limit" (Inf/NaN laut Doku), da 0 ein gültiger,
                 // ECHTER Limit-Wert ist. Zusammen mit der neuen Profil-
                 // Assoziation unten zeigt das jetzt eindeutig "Kein Limit" an.
+                //
+                // Live erneut aufgetreten (27.08.2026): das Register selbst
+                // stand wieder auf echtem 0 Wh und blockierte das Laden in der
+                // go-e-App, OHNE dass unser eigener Schreibpfad (RequestAction
+                // 'ctl_energy_limit', schreibt bei 0/negativ immer Inf) das
+                // ausgelöst hätte. Der go-e fällt selbstständig (Neustart,
+                // Firmware, o. ä.) auf sein Werks-Default 0 zurück. Da unsere
+                // eigene Oberfläche eine echte 0 als Limit gar nicht zulässt
+                // (0/negativ bedeutet bei uns immer "deaktivieren" -> Inf),
+                // ist ein gelesenes echtes 0 hier IMMER ein Geräte-Rücksprung,
+                // nie ein gewollter Nutzerwert — automatisch heilen.
+                if ($wh === 0.0) {
+                    $mb->writeDouble64(self::REG_ENERGY_LIMIT, INF);
+                    $wh = INF;
+                }
                 $hub->SetVarFloat('ctl_energy_limit', is_finite($wh) ? $wh / 1000.0 : -1.0);
             }
         }
@@ -1726,16 +1741,29 @@ class ChargerHub extends IPSModule
         $surplusW -= $storageW;
         $sourceNote = $batteryChargeW > 0 ? ' (Netz ' . round($gridSurplusW) . ' W + Speicher ' . round($batteryChargeW) . ' W)' : '';
 
-        // Je nach aktuell konfiguriertem Phasenmodus rechnen — Umschalten der
-        // Phasenzahl automatisch vorzunehmen ist bewusst NICHT Teil dieser
-        // ersten Fassung (das kann der Nutzer selbst über „Phasenumschaltung"
-        // regeln, z. B. auf 1-phasig stellen, wenn der Überschuss meist zu
-        // gering für 3-phasig ist).
-        $phases = ($this->GetVarValue('ctl_phase_mode') === 1) ? 1 : 3;
+        $enabled = (bool)$this->GetVarValue('ctl_enable');
+        $currentPhases = ($this->GetVarValue('ctl_phase_mode') === 1) ? 1 : 3;
+        if ($enabled) {
+            // Läuft die Ladung schon, bleibt die Phasenzahl unangetastet — ein
+            // Wechsel mitten im Ladevorgang schaltet am go-e ein Relais und
+            // unterbricht kurz den Ladevorgang.
+            $phases = $currentPhases;
+        } else {
+            // Vor dem Start: erst 3-phasig versuchen, bei zu wenig Überschuss auf
+            // 1-phasig umschalten — senkt die Start-Schwelle von 3×230×6=4140 W
+            // auf 230×6=1380 W drastisch, das Laden beginnt so viel früher
+            // (Dietmar, 27.08.2026: „Du kannst doch auch 1-phasig mit dem laden
+            // starten, damit wird die Überschuss-Mindestgrenze drastisch
+            // reduziert").
+            $amp3 = (int)floor($surplusW / (3 * 230.0));
+            $phases = ($amp3 >= self::MIN_CURRENT) ? 3 : 1;
+            if ($phases !== $currentPhases) {
+                $this->RequestAction('ctl_phase_mode', $phases === 1 ? 1 : 2);
+            }
+        }
         $amp = (int)floor($surplusW / ($phases * 230.0));
         $amp = max(0, min($this->GetMaxCurrentA(), $amp));
 
-        $enabled = (bool)$this->GetVarValue('ctl_enable');
         if ($amp < self::MIN_CURRENT) {
             if ($enabled) {
                 $this->RequestAction('ctl_enable', false);
@@ -2169,7 +2197,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.47-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.48-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
