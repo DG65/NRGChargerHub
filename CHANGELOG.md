@@ -3,6 +3,26 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.50-beta.1] - 2026-08-27
+
+### Fixed
+- Überschussladen hat sich live selbst zum Pendeln gebracht (Dietmar: „Im Moment schaltest
+  Du hin und her, vermutlich auch deshalb weil Du bei der Überschussberechnung Dich selbst
+  vergisst"). Ursache: die eigene aktuelle Ladeleistung steckt schon im Netzzähler-Wert
+  drin (zieht den gemessenen Überschuss künstlich runter) und wurde nirgends
+  zurückaddiert — jede Erhöhung des Ladestroms ließ den nächsten Poll sofort "weniger
+  Überschuss" sehen und wieder drosseln, klassische Selbstregelschwingung. Der
+  treiberübergreifende Ist-Leistungs-Ident `power` wird jetzt zum Überschuss
+  zurückaddiert, bevor irgendetwas berechnet wird. Status zeigt bei laufender Ladung
+  jetzt zusätzlich „eigene Ladung X W" in der Aufschlüsselung.
+
+### Added
+- Phasenumschaltung während laufender Ladung braucht jetzt zusätzlich zur
+  Hysterese (+2 A) einen Beobachtungszähler: `PHASE_SWITCH_STABLE_POLLS` (3)
+  aufeinanderfolgende Update()-Polls mit derselben Umschalt-Tendenz, bevor tatsächlich
+  geschaltet wird — verhindert, dass eine einzelne kurze Schwankung schon einen
+  Relais-Wechsel auslöst.
+
 ## [0.9.49-beta.1] - 2026-08-27
 
 ### Changed
