@@ -945,6 +945,22 @@ Identität gebraucht wird (nicht nur zur Anzeige), braucht `"save": true` --
 vor jedem `List`-Formular mit `grep -n '"columns"' -A 30` prüfen, ob
 ID-/Schlüsselspalten das tragen.
 
+**20. Jeder Parameter einer öffentlichen `PREFIX_`-Funktion braucht einen
+expliziten `bool`/`int`/`float`/`string`-Typ, sonst meckert IPS bei jedem
+Reload im Log.** Live gefunden (StrukturHub, 28.08.2026): ein ungetypter
+Parameter (gedacht, wahlweise Array oder JSON-String entgegenzunehmen)
+erzeugt die Warnung „Parameter X in der Funktion Y hat keinen Datentyp
+oder einen nicht unterstützten Datentyp." — **`array` ist explizit NICHT**
+in der Liste unterstützter Typen, auch nicht als Hinweis, nur die vier
+Skalartypen. Kein Fatal, kein Crash, aber ein lauter, wiederkehrender
+Log-Eintrag. **Fix:** Die ohnehin geltende "Rückgabe ist JSON-String, kein
+Array"-Konvention (siehe `contractVersion`-Abschnitt) auch auf
+EINGABE-Parameter anwenden — Aufrufer übergeben `json_encode($array)`, die
+Methode dekodiert intern, der Parameter selbst bleibt `string` typisiert.
+Betrifft jedes Modul mit einer öffentlichen Methode, die eine
+Formular-Liste (`List`-Feld) als Parameter entgegennimmt — bei
+Verdacht das eigene Log nach obigem Warnungstext durchsuchen.
+
 ## GoodWe-Steuerregister (InverterHub, Stand 27.07.2026)
 
 Ident-Tabelle für `IPS_RequestAction($InstanceID, $Ident, $Value)` auf einer InverterHub-Instanz:
