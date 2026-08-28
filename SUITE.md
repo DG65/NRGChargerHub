@@ -930,6 +930,21 @@ Modul, das Tages-/Wochen-/Monatsgrenzen oder Slot-Raster berechnet, prüft
 seinen Code auf `+86400`/`*86400`/feste Tagessekundenzahlen und ersetzt sie
 durch `strtotime('+1 day', ...)`/`mktime()`/`DateTime::modify()`.
 
+**19. Eine `List`-Formularspalte OHNE `edit`-Definition wird beim Speichern
+verworfen, außer sie trägt explizit `"save": true`.** Live gefunden
+(StrukturHub, 28.08.2026, an der ersten Test-Instanz): eine reine Anzeige-/
+ID-Spalte (dort "CategoryID", als Join-Schlüssel zurück in die Property
+gebraucht) war nach "Übernehmen" komplett weg, nur editierbare Spalten
+überlebten — kein Fehler, keine Warnung, einfach lautlos verschwunden.
+Symptom danach: der gespeicherte Wert war beim nächsten Formularaufbau
+nicht mehr auflösbar, der Code fiel auf einen falschen Default zurück.
+Vorbild für die richtige Schreibweise: `NRGDashboardTile/form.json`s
+"Key"-Spalte (`"visible": false, "save": true`). **Regel:** Jede
+`List`-Spalte, deren Wert über einen Save-Zyklus hinweg als Join-Schlüssel/
+Identität gebraucht wird (nicht nur zur Anzeige), braucht `"save": true` --
+vor jedem `List`-Formular mit `grep -n '"columns"' -A 30` prüfen, ob
+ID-/Schlüsselspalten das tragen.
+
 ## GoodWe-Steuerregister (InverterHub, Stand 27.07.2026)
 
 Ident-Tabelle für `IPS_RequestAction($InstanceID, $Ident, $Value)` auf einer InverterHub-Instanz:
