@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.52-beta.1] - 2026-08-28
+
+### Fixed
+- Die Variable „Fahrzeug verbunden" (`vehicle_plugged`) nutzte bisher das
+  Standardprofil `~Switch` (Assoziationen „An"/„Aus"). Ein generischer
+  Downstream-Renderer (NRGDashboardTile, Energiefluss-Kachel) zeigt
+  Variablenname + formatierten Wert automatisch zusammen an — das ergab
+  „Fahrzeug verbunden … An", grammatikalisch unpassend für einen
+  Verbindungsstatus. Neues eigenes Profil `CHB.Connected` mit „Ja"/„Nein"
+  statt „An"/„Aus". Der Ident `vehicle_plugged` selbst bleibt unverändert
+  (Vertrag/API, siehe CLAUDE.md Punkt 4) — nur das angezeigte Profil ändert
+  sich, bestehende Verknüpfungen/Skripte sind nicht betroffen.
+
 ## [0.9.51-beta.1] - 2026-08-27
 
 ### Added
