@@ -601,7 +601,7 @@ class KebaDriver implements ChargerDriverInterface
             ['connected',      'Verbindung',           'B', '~Alert.Reversed',  true, 'errors', ''],
             ['state',          'Ladestatus',            'I', 'CHB.KebaState',   true,  'device', 'Holding 1000-1001 (U32)'],
             ['cable_state',    'Kabelstatus',           'I', 'CHB.KebaCable',   true, 'device', 'Holding 1004-1005 (U32)'],
-            ['vehicle_plugged','Fahrzeug verbunden',    'B', '~Switch',         true, 'device', 'abgeleitet: Kabelstatus >= 5'],
+            ['vehicle_plugged','Fahrzeug verbunden',    'B', 'CHB.Connected',   true, 'device', 'abgeleitet: Kabelstatus >= 5'],
             ['power',          'Ladeleistung',          'F', 'NRG.Watt',        true,  'device', 'Holding 1020-1021 (mW)'],
             ['energy_total',   'Energie gesamt',        'F', 'NRG.kWh',         true,  'device', 'Holding 1036-1037 (0,1 Wh)'],
             ['energy_session', 'Energie akt. Sitzung',  'F', 'CHB.kWhSession',  true,  'device', 'Holding 1502-1503 (0,1 Wh)'],
@@ -906,7 +906,7 @@ class HeidelbergDriver implements ChargerDriverInterface
         return [
             ['connected', 'Verbindung',  'B', '~Alert.Reversed', true, 'errors', ''],
             ['state',     'Ladestatus',  'I', 'CHB.HdbState',    true,  'device', 'Holding 5'],
-            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', '~Switch', true, 'device', 'abgeleitet: Status 3-8 (ohne 6)'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', 'CHB.Connected', true, 'device', 'abgeleitet: Status 3-8 (ohne 6)'],
             ['power',     'Leistung',    'F', 'NRG.Watt',        true,  'device', 'Holding 14'],
         ];
     }
@@ -1109,7 +1109,7 @@ class GoeChargerDriver implements ChargerDriverInterface
         return [
             ['connected',      'Verbindung',            'B', '~Alert.Reversed', true, 'errors', ''],
             ['state',          'Ladestatus',             'I', 'CHB.GoeCarState', true,  'device', 'Input 100'],
-            ['vehicle_plugged','Fahrzeug verbunden',     'B', '~Switch',         true, 'device', 'abgeleitet: CAR_STATE 2/3/4'],
+            ['vehicle_plugged','Fahrzeug verbunden',     'B', 'CHB.Connected',   true, 'device', 'abgeleitet: CAR_STATE 2/3/4'],
             ['power',          'Ladeleistung',           'F', 'NRG.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
             ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWhSession',  true,  'device', 'Input 132-133 (Deka-Ws)'],
         ];
@@ -2814,6 +2814,19 @@ class ChargerHub extends IPSModule
             foreach ($values as $val => [$label, $color]) {
                 IPS_SetVariableProfileAssociation($name, $val, $label, '', $color);
             }
+        }
+
+        // 'vehicle_plugged' lief bisher ueber '~Switch' (Assoziationen An/Aus) -
+        // grammatikalisch unpassend fuer einen Verbindungsstatus, wird u.a. von
+        // NRGDashboardTile generisch als "<Variablenname> <formatierter Wert>"
+        // gerendert ("Fahrzeug verbunden ... An"). Eigenes Boolean-Profil mit
+        // Ja/Nein statt An/Aus - der Ident 'vehicle_plugged' selbst bleibt
+        // unveraendert (Vertrag/API, siehe CLAUDE.md Punkt 4), nur das
+        // angezeigte Profil aendert sich.
+        if (!IPS_VariableProfileExists('CHB.Connected')) {
+            IPS_CreateVariableProfile('CHB.Connected', VARIABLETYPE_BOOLEAN);
+            IPS_SetVariableProfileAssociation('CHB.Connected', false, 'Nein', '', -1);
+            IPS_SetVariableProfileAssociation('CHB.Connected', true, 'Ja', '', -1);
         }
     }
 }
