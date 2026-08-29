@@ -968,7 +968,7 @@ Ident-Tabelle für `IPS_RequestAction($InstanceID, $Ident, $Value)` auf einer In
 | Ident | Label | Register | Wertebereich |
 |---|---|---|---|
 | `ctl_work_mode` | Steuermodus | RW 47000 | 0=Selbstverbrauch, 1=Inselbetrieb, 2=Backup, 3=Wirtschaftlich, 4=Peak-Shaving, 5=Erw. Selbstverbrauch |
-| `ctl_ems_enable` | EMS-Steuerung aktiv | RW 47505 | bool — Hauptschalter, ohne `true` ignoriert der WR jeden `ctl_ems_mode`/`ctl_ems_power`-Befehl. **⚠️ Siehe Warnung nach der Tabelle -- `true` destabilisiert `ctl_ems_mode` selbst.** |
+| `ctl_ems_enable` | EMS-Steuerung aktiv | RW 47505 | bool — **⚠️ Siehe Warnung nach der Tabelle, 29.08.2026 korrigiert: `false` haelt den zuletzt kommandierten Modus dauerhaft ohne Heartbeat, `true` braucht periodisches Neuschreiben.** |
 | `ctl_ems_mode` | EMS Leistungsmodus | RW 47511 | 0-12, siehe vollständige Tabelle unten |
 | `ctl_ems_power` | EMS Leistung (W) | RW 47512 | 0–34500 W |
 | `ctl_export_enable` | Einspeisebegrenzung aktiv | RW 47509 | bool |
@@ -1002,18 +1002,38 @@ sieht diesen Zustand praktisch nie, weil es beide Register in JEDEM
 Regelzyklus (~1s) neu schreibt, auch bei fehlenden Messwerten explizit
 AUTO+0 statt gar nichts -- Praevention statt Reaktion.
 
-**Praktische Konsequenz:** `ctl_ems_mode`/`ctl_ems_power` brauchen zwingend
-`ctl_ems_enable=true`, um ueberhaupt zu wirken -- der Zielkonflikt laesst
-sich nicht umgehen, nur eingrenzen. EMS' eigener Normalbetrieb ist davon
+**⚠️ ZWEITE KORREKTUR, noch am selben Tag (Dietmar, 29.08.2026, nach
+genauerem Nachfragen):** Die urspruengliche Fund-25.07.2026-Annahme
+"`ctl_ems_enable=false` -> WR ignoriert `ctl_ems_mode`/`-power` komplett und
+faehrt seine eigene Selbstverbrauchslogik" ist FALSCH und wird hiermit
+zurueckgezogen. Was tatsaechlich passiert, durch Dietmars A/B-Test klar
+belegt:
+- **`ctl_ems_enable=false`:** Ein gesendeter `ctl_ems_mode`/`ctl_ems_power`-
+  Befehl wird vom WR angenommen und **dauerhaft ausgefuehrt, OHNE
+  Heartbeat** -- bis ein neuer Befehl kommt. Das ist der einfachere,
+  robustere Weg fuer einen einmaligen/seltenen Befehl.
+- **`ctl_ems_enable=true`:** Derselbe Befehl muss **periodisch (< 60-70s)
+  wiederholt** werden, sonst faellt der WR nach ~70-120s auf 255/STOPPED
+  zurueck (s.o.). Kein grundsaetzlicher Unterschied darin, OB der Befehl
+  wirkt -- nur darin, ob er einen Heartbeat braucht.
+- **Wichtig fuer "zurueck in echte Automatik":** `enable=false` ALLEIN
+  reicht dafuer NICHT -- es friert nur den zuletzt kommandierten Modus ein
+  (auch eine vorherige Entladung o.ae.), es faellt NICHT von selbst auf
+  Automatik zurueck. Fuer echte Automatik-Uebergabe muss explizit
+  `enable=false` + `mode=1` (Automatik) + `power=0` **zusammen** gesendet
+  werden.
+
+EMS' eigener Normalbetrieb ist von der `enable=true`-Heartbeat-Anforderung
 GROSSTEILS ABGESCHIRMT: `applyDecision()` schreibt bei laufendem
 `EMS_Active` alle `EMS_Interval` Sekunden (Default 30s) neu -- deutlich
-unter dem 70-120s-Zerfallsfenster (2-4x Sicherheitsabstand, wenn auch nicht
-so knapp getaktet wie OpenEMS' ~1s). Betroffen sind vor allem manuelle
+unter dem 70-120s-Zerfallsfenster. Betroffen sind vor allem manuelle
 Ad-hoc-Tests/Einzelbefehle OHNE fortlaufenden Reassert (z.B.
-Diagnose-Skripte) -- dort haelt ein einzeln gesetzter Modus nur kurzzeitig.
-**Wer `ctl_ems_enable` manuell/einzeln setzt: entweder `EMS_Active` gleich
-mitlaufen lassen (uebernimmt den Reassert automatisch), oder selbst
-periodisch (< 60s) neu schreiben.**
+Diagnose-Skripte) -- dort haelt ein einzeln mit `enable=true` gesetzter
+Modus nur kurzzeitig, waehrend derselbe Befehl mit `enable=false` sofort
+dauerhaft haelt. **Empfehlung fuer jeden Konsumenten: fuer einmalige/seltene
+Befehle grundsaetzlich `enable=false` verwenden (kein Reassert noetig,
+kein Instabilitaetsrisiko); `enable=true` nur, wenn ein laufender
+Reassert-Zyklus (< 60s) ohnehin schon existiert.**
 
 **InverterHub-Totmann-Empfaenger (0.74.5-beta.1, Build 199, live im Test):**
 Erkennt `readFast()` die 255 im Ruecklesepfad, schaltet InverterHub
