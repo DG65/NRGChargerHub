@@ -624,8 +624,8 @@ class KebaDriver implements ChargerDriverInterface
                 ['dev_firmware', 'Firmware-Version', 'S', '', false, 'device', 'Holding 1018-1019 (U32)'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',       'Ladefreigabe',   'B', '~Switch',          false, 'control', 'RW Holding 5014 (P30)'],
-                ['ctl_curr_limit',   'Stromlimit (A)', 'I', 'CHB.Ampere10to63', false, 'control', 'RW Holding 5004 (mA)'],
+                ['ctl_enable',       'Ladefreigabe',   'B', '~Switch',          true,  'control', 'RW Holding 5014 (P30)'],
+                ['ctl_curr_limit',   'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true,  'control', 'RW Holding 5004 (mA)'],
             ]],
         ];
     }
@@ -790,8 +790,8 @@ class AlfenDriver implements ChargerDriverInterface
                 ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 326'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',    false, 'control', 'RW Holding 1210/1214'],
-                ['ctl_curr_limit', 'Stromlimit (A)', 'F', 'NRG.Ampere', false, 'control', 'RW Holding 1210'],
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',    true,  'control', 'RW Holding 1210/1214'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'F', 'NRG.Ampere', true,  'control', 'RW Holding 1210'],
             ]],
         ];
     }
@@ -924,8 +924,8 @@ class HeidelbergDriver implements ChargerDriverInterface
                 ['pcb_temp',   'PCB-Temperatur','F', 'NRG.Celsius',true, 'device', 'Holding 9'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',   false, 'control', 'RW Holding 261'],
-                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to32', false, 'control', 'RW Holding 261'],
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',   true,  'control', 'RW Holding 261'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to32', true,  'control', 'RW Holding 261'],
             ]],
         ];
     }
@@ -1141,12 +1141,12 @@ class GoeChargerDriver implements ChargerDriverInterface
                 ['unlocked_by',   'Entsperrt durch RFID-Karte', 'I', '', true, 'device', 'Input 203'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit, Phasen, Energie-Limit …)', 'vars' => [
-                ['ctl_enable',       'Ladefreigabe',        'B', '~Switch',           false, 'control', 'RW Holding 337 (FORCE_STATE)'],
-                ['ctl_curr_limit',   'Stromlimit (A)',      'I', 'CHB.Ampere6to32',   false, 'control', 'RW Holding 299 (AMPERE_VOLATILE)'],
-                ['ctl_phase_mode',   'Phasenumschaltung',   'I', 'CHB.GoePhaseMode',  false, 'control', 'RW Holding 332 (psm, ab FW 55.5)'],
+                ['ctl_enable',       'Ladefreigabe',        'B', '~Switch',           true,  'control', 'RW Holding 337 (FORCE_STATE)'],
+                ['ctl_curr_limit',   'Stromlimit (A)',      'I', 'CHB.Ampere6to32',   true,  'control', 'RW Holding 299 (AMPERE_VOLATILE)'],
+                ['ctl_phase_mode',   'Phasenumschaltung',   'I', 'CHB.GoePhaseMode',  true,  'control', 'RW Holding 332 (psm, ab FW 55.5)'],
                 ['ctl_access',       'Zugangskontrolle',    'I', 'CHB.GoeAccess',     false, 'control', 'RW Holding 201 (ACCESS_STATE)'],
                 ['ctl_cable_lock',   'Kabelverriegelung',   'I', 'CHB.GoeCableLock',  false, 'control', 'RW Holding 204'],
-                ['ctl_energy_limit', 'Energie-Limit Ladevorgang', 'F', 'CHB.kWhLimit', false, 'control', 'RW Holding 333-336 (dwo, Float64 Wh) — 0 oder negativ eingeben, um das Limit zu deaktivieren'],
+                ['ctl_energy_limit', 'Energie-Limit Ladevorgang', 'F', 'CHB.kWhLimit', true,  'control', 'RW Holding 333-336 (dwo, Float64 Wh) — 0 oder negativ eingeben, um das Limit zu deaktivieren'],
                 ['ctl_led',          'LED-Helligkeit',      'I', 'CHB.Led255',        false, 'control', 'RW Holding 206 (0-255)'],
             ]],
             // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
@@ -2296,7 +2296,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.51-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.52-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2730,8 +2730,22 @@ class ChargerHub extends IPSModule
 
     private function SetArchive($vid)
     {
-        if (function_exists('AC_SetLoggingStatus') && IPS_GetInstanceListByModuleID('{018EF6B5-AB94-40C6-AA53-46943E824ACF}') !== []) {
-            $archiveID = IPS_GetInstanceListByModuleID('{018EF6B5-AB94-40C6-AA53-46943E824ACF}')[0];
+        // {43192F0B-...} ist die GUID des Kernel-Moduls "Archive Control" — live
+        // verifiziert 29.08.2026. Vorher stand hier eine falsche GUID
+        // ({018EF6B5-...}), wodurch diese Funktion auf jedem System kommentarlos
+        // nichts tat und KEINE einzige Variable je archiviert wurde (von Dietmar
+        // im Dashboard bemerkt: "bei den Wallboxen liegen keine Archivdaten vor").
+        if (!function_exists('AC_SetLoggingStatus')) {
+            return;
+        }
+        $archiveIDs = IPS_GetInstanceListByModuleID('{43192F0B-135B-4CE7-A0A7-1475603F3060}');
+        if ($archiveIDs === []) {
+            return;
+        }
+        $archiveID = $archiveIDs[0];
+        // Nur anfassen, wenn noch nicht aktiv — spart das teure ApplyChanges am
+        // Archiv bei jedem Übernehmen (läuft pro archivierter Variable).
+        if (!@AC_GetLoggingStatus($archiveID, $vid)) {
             AC_SetLoggingStatus($archiveID, $vid, true);
             IPS_ApplyChanges($archiveID);
         }

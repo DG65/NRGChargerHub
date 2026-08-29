@@ -3,6 +3,25 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.52-beta.1] - 2026-08-29
+
+### Fixed
+- Archivierung funktionierte auf keinem System: `SetArchive()` suchte das Archive-Control-Modul
+  unter einer falschen GUID ({018EF6B5-…} statt der korrekten {43192F0B-135B-4CE7-A0A7-1475603F3060}),
+  fand daher nie eine Instanz und brach kommentarlos ab — es wurde trotz gesetzter Archiv-Flags
+  KEINE einzige Variable archiviert (von Dietmar im Dashboard bemerkt: „bei den Wallboxen liegen
+  keine Archivdaten vor"). Zusätzlich prüft `SetArchive()` jetzt per `AC_GetLoggingStatus`, ob
+  die Variable schon archiviert wird, bevor es das teure `IPS_ApplyChanges` am Archiv auslöst.
+
+### Changed
+- Die regelungsrelevanten Steuer-Datenpunkte `ctl_enable`, `ctl_curr_limit`, `ctl_phase_mode`
+  und `ctl_energy_limit` werden jetzt ebenfalls archiviert (alle Treiber) — für Wartung und
+  Fehlersuche (z. B. Nachvollziehen der Überschussregelung oder des go-e-Energie-Limit-Rücksprungs)
+  muss sichtbar sein, WANN sich Freigabe/Limit/Phasenzahl geändert haben. Sie ändern sich nur bei
+  echten Schaltvorgängen und erzeugen daher kaum Archivlast. Weiterhin bewusst NICHT archiviert:
+  `dev_serial`/`dev_firmware` (statisch), `ctl_led`/`ctl_access`/`ctl_cable_lock` (kosmetisch/selten)
+  und `surplus_status` (ändert den Text bei jedem Poll — würde das Archiv fluten).
+
 ## [0.9.51-beta.1] - 2026-08-27
 
 ### Added
