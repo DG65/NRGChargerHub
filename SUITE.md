@@ -1114,6 +1114,82 @@ einmalig, sondern hält den Sollwert über eine State-Machine laufend neu geschr
 halten will, muss ihn periodisch neu schreiben — ein einmaliger Befehl reicht nicht.
 Referenz: [OpenEMS-Forum](https://community.openems.io/t/set-emspowermode-and-emspowerset-not-working/2115).
 
+## WR-Totmann-Vertrag: EMS-Pflichten je Hersteller (InverterHub, 29.08.2026)
+
+Auslöser: die GoodWe-255-Diagnose (oben) warf die Frage auf, ob Totmann-/
+Heartbeat-Mechanismen auch bei anderen von InverterHub unterstützten WR-
+Herstellern existieren. InverterHub hat auf Dietmars Auftrag alle
+unterstützten Hersteller über verfügbare Kanäle (Herstellerdoku,
+Modbus-Register-Referenzen, OpenEMS-Quellcode/-Doku, Foren) recherchiert.
+Quellen-URLs stehen in InverterHubs eigener CLAUDE.md, Abschnitt
+"Heartbeat-/Totmann-Mechanismen ALLER unterstützten Hersteller"
+(Commit `281b928`). Konfidenz-Markierung: `[Doku]` = Herstellerdokumentation,
+`[Comm]` = Community/Forum, `[live]` = an Dietmars Anlage verifiziert,
+`[?]` = unklar/unbelegt.
+
+**Verbindliche Regel:** `controllable=true` von InverterHub heißt künftig
+auch "Totmann-Klasse ist hier dokumentiert" — vor Freigabe der Steuerung für
+einen neuen Hersteller muss diese Tabelle zuerst ergänzt werden. EMS als
+einziger Steuer-Konsument verlässt sich auf diese Angaben, ohne sie jedes
+Mal neu erforschen zu müssen.
+
+**Klasse 1 — Totmann vorhanden, EMS MUSS zyklisch schreiben:**
+
+- **GoodWe**: `ctl_ems_enable=true` NUR mit Reassert < 60s auf
+  `ctl_ems_mode`+`ctl_ems_power`, sonst 255/STOPPED (~70-120s) = Stillstand.
+  Bevorzugt: `ctl_ems_enable=false`-Betrieb (Modus hält dauerhaft ohne
+  Heartbeat, siehe oben). `[Doku+live]`
+- **Sungrow SH**: sauberste Lösung — dediziertes Heartbeat-Register 13080
+  (Wert = Timeout in s), Empfehlung 20 setzen und alle ~10s erneuern.
+  EMS-Modus via Register 13050=3. Timeout → Eigenverbrauch. Nur an
+  Master schreiben (Master/Slave-Systeme). `[Doku]` — Register bei
+  InverterHub noch nicht implementiert, auf Zuruf nachrüstbar.
+- **FoxESS**: Remote-Block 44000-44003; Countdown lädt NUR beim
+  Sollwert-Schreiben (44002) neu, nicht bei 44000. Timeout 35s setzen,
+  Sollwert alle 30s erneuern. Timeout → Normalmodus. `[Comm]`
+- **SolarEdge**: 0xE00B (Timeout) UND 0xE00D (Rückfallmodus) beide
+  explizit setzen — Default-Timeout 3600s ist für EMS-Regelung zu lang.
+  Timeout → konfigurierter Default. `[Doku]`
+- **Kostal**: Sollwerte 1024ff. verfallen firmwareintern nach ~60s, alle
+  20-50s erneuern. Steuerung sauber zurückgeben: volle Timeout-Dauer
+  gar nichts schreiben (jedes weitere Register hält die Steuerung
+  teilweise am Leben). `[Doku/Comm]`
+- **SolaX**: Kommando-Duration + Timeout-Register + Rückfallziel im
+  0x7C-Block; bei Duration 20-30s alle ~10s erneuern, ≥1s Abstand
+  zwischen Befehlen. `[Comm]`
+- **Victron ESS Mode 3**: Setpoint < 60s erneuern, sonst PASSTHRU
+  (Batterie tot, KEIN Eigenverbrauch!). Für häufiges Schreiben in
+  Mode 2 die 32-Bit-Register 2716/2717 nutzen (GX-Flash-Schonung).
+  `[Doku]`
+
+**Klasse 2 — Totmann nur opt-in, Default ungeschützt (Befehl bleibt sonst
+ewig):**
+
+- **Fronius GEN24**: SunSpec `RvrtTms` setzen (60-300s empfohlen),
+  Default 0 = kein Timeout! Jede Modbus-Nachricht resettet den Timer.
+  `[Doku]`
+- **SMA STP**: 41193=2507 + 41195 (Timeout) + 41197 (Fallback-%) aktiv
+  konfigurieren — gilt nur für P-Limit; für Batterie-Register kein
+  Watchdog-Beleg, dort wie Klasse 3 behandeln. `[Doku]`
+- **Huawei**: 42019 (valid duration) setzen (Default 0 = ewig gültig) +
+  42405 (Failsafe-Limit); LUNA-Batterie-Register ohne Watchdog-Beleg,
+  dort wie Klasse 3 behandeln. `[Doku, Verhalten teils unklar]`
+
+**Klasse 3 — kein Totmann, EMS braucht eigene Absicherung:**
+
+- **Deye, Solis, Growatt SPH/MOD/MIX, Victron ESS Mode 2**: persistente
+  Register, EMS-Ausfall friert letzten Befehl unbegrenzt ein.
+  EMS-Pflichten: (a) Zeitfenster/begrenzte Befehle statt Dauerbefehle wo
+  möglich, (b) definierter Neutralzustand beim EMS-Shutdown (z.B.
+  Eigenverbrauchsmodus schreiben), (c) sparsame Schreibzyklen —
+  EEPROM-Verschleiß ist bei Deye/Growatt ein reales Community-Thema,
+  (d) eigener Software-Watchdog im EMS (stirbt die Regelschleife →
+  Neutralzustand schreiben, extern überwacht z.B. via IPS-Watchdog).
+- **Growatt WIT** (Sonderfall): befehlsgebundene Ablaufzeit Register
+  30408 (Minuten) — vor Ablauf erneuern, Timeout → TOU-Schedule. `[Comm]`
+- **Solplanet**: öffentlich ungeklärt — keine Steuerung freigeben, bis
+  Dokumentation vorliegt.
+
 ## §14a-Lastabwurf-Priorisierung (EMS-Koordinationsebene)
 
 **Reservierter Stellhebel (15.08.2026):** `SetZ1HeatRequestTemperature` mit
