@@ -611,7 +611,7 @@ besonders kritisch dort, weil jeder unnoetige Klick ein Geraet unnoetig weckt):*
 | MeterHub | 0.18.0-beta.1 (Build 28) | beta | `MHUB_GetFunctions` **1.1**, `MHUBV_GetFunctions` **1.1** (1.1 = latency/authority/pollInterval/energyKind/sourceCount) |
 | ChargerHub | 0.9.14-beta.1 | ems-integration | `CHUB_GetFunctions` **1.1** (inkl. `managedBy`), Schreibzugriff via `IPS_RequestAction($InstanceID, $Ident, $Value)` (live verifiziert 25.07.2026, echtes Fahrzeug an WB1: 6A/20W → 10A/4310W) |
 | MigrationsHub | 0.1.x-beta | beta | (Werkzeug, kein Datenvertrag — Kompatibilitätsgröße sind die Idents der Zielmodule) |
-| SteuerboxHub | in Arbeit (PR #1) | ems-integration | `SBH_GetState` **1.0** (final freigegeben, zwei Achsen: load*/feedIn*; Kontakte-Weg + GZF-Rechenhilfe funktionsfähig, EEBus als Konfigurationsgerüst zurückgebaut, Test gegen echte Instanz steht noch aus) |
+| SteuerboxHub | beta (PR #3 gemerged, 28.08.2026 — ems-integration/beta identisch) | ems-integration / beta | `SBH_GetState` **1.0**, **beidseitig live verifiziert**: Kontakte-Weg + GZF-Rechenhilfe, EMS konsumiert es als oberste Priorität (loadDimmActive → Wallboxen aus, feedInDimmActive → InverterHub-Einspeisegrenze), voller Zyklustest (Sperre+Aufhebung) an Dietmars Testinstanz bestanden |
 | Prognose (PVF/LFC/Bilanz) | 0.20-beta (Build 51) | beta (Store) | `PVF_Get*` **1.0**, `LFC_Get*` **1.0** |
 | HeishaMon | 1.1.1 main / 1.3.0 beta, **1.4 auf ems-integration** (Stand 13.08.2026, Commit 3f2fcc2) | Store / ems-integration | `HEISHA_GetFunctions` **1.4** auf ems-integration (Anlagenschema-Felder: 14 Pumpen-/Ventil-/Temperaturfelder in 1.3 + 4 externe Heizkreis-Pumpe/Mischventil-Felder z1/z2 in 1.4, additiv); **1.1** auf beta 1.3.0 (unit-Feld); main liefert keins der Felder → gilt als 1.0 |
 | WPHub | 0.1.0 Build 2 (10.08.2026, neu) | ems-integration | `WPHUB_GetFunctions` **1.2** (Type=>'heatpump', konsistent zu HeishaMon 1.2). Panasonic Comfort Cloud, `PowerID`/`EnergyID` bewusst 0 (Cloud liefert keine Momentanleistung/kumulativen Zähler, siehe neue Grundregel bei "Gemeinsame Variablenprofile") — noch nicht am echten Konto verifiziert |
@@ -624,6 +624,7 @@ besonders kritisch dort, weil jeder unnoetige Klick ein Geraet unnoetig weckt):*
 | ModbusSlave (NRGModbusSlave) | 1.4.0 | ems-integration | (Export-Endpunkt: Modbus-TCP-Server für externe Master, kein `*_GetFunctions`-Vertrag) — blue'Log-RPC-Emulation als Direktvermarktungs-Andockpunkt; künftig Quelle für `EMS_GetSpecialEvents` (`source: 'marketer'`) |
 | NRGDashboard | 0.1.0-beta.1 | beta | (Darstellungsschicht, kein Datenvertrag — konsumiert alle *_GetFunctions/GetState) |
 | Szenariorechner | 0.2.0-beta.1 | ems-integration | (Analysewerkzeug, kein Datenvertrag — konsumiert Tibber/Prognose/Archive Control) |
+| StrukturHub | 0.1 (28.08.2026, Vertrag eingefroren nach Feedback von EMS/MeterHub/Dashboard, Commit b285fa9 auf main/beta/ems-integration) | main / beta / ems-integration | `STRUKT_GetStructure($id): string` **1.0**, **final** (JSON-STRING, kein Array — `structureChangedAt` (Unix-ts, aendert sich nur bei echter inhaltlicher Aenderung) → `levels[]`/`rooms[]` mit persistenten, umbenennungsstabilen Keys, `rooms[]` zusaetzlich `roomType`/`order`, `deviceInstanceIDs` dedupliziert+bereinigt, Variablen-Links auf ihre Elterninstanz aufgeloest statt verworfen). Objektbaum-Konventions-/Gerüst-Modul, siehe eigener Abschnitt unten |
 
 Das erste **abgeschlossene** Suite-Release wird ausgerufen, wenn ein Satz von Ständen
 gemeinsam an Dietmars Anlage verifiziert ist; ab dann wird je Release eine neue
@@ -928,6 +929,37 @@ Minute statt Sekunden arbeitet und DST intern selbst auflöst. **Regel:** Jedes
 Modul, das Tages-/Wochen-/Monatsgrenzen oder Slot-Raster berechnet, prüft
 seinen Code auf `+86400`/`*86400`/feste Tagessekundenzahlen und ersetzt sie
 durch `strtotime('+1 day', ...)`/`mktime()`/`DateTime::modify()`.
+
+**19. Eine `List`-Formularspalte OHNE `edit`-Definition wird beim Speichern
+verworfen, außer sie trägt explizit `"save": true`.** Live gefunden
+(StrukturHub, 28.08.2026, an der ersten Test-Instanz): eine reine Anzeige-/
+ID-Spalte (dort "CategoryID", als Join-Schlüssel zurück in die Property
+gebraucht) war nach "Übernehmen" komplett weg, nur editierbare Spalten
+überlebten — kein Fehler, keine Warnung, einfach lautlos verschwunden.
+Symptom danach: der gespeicherte Wert war beim nächsten Formularaufbau
+nicht mehr auflösbar, der Code fiel auf einen falschen Default zurück.
+Vorbild für die richtige Schreibweise: `NRGDashboardTile/form.json`s
+"Key"-Spalte (`"visible": false, "save": true`). **Regel:** Jede
+`List`-Spalte, deren Wert über einen Save-Zyklus hinweg als Join-Schlüssel/
+Identität gebraucht wird (nicht nur zur Anzeige), braucht `"save": true` --
+vor jedem `List`-Formular mit `grep -n '"columns"' -A 30` prüfen, ob
+ID-/Schlüsselspalten das tragen.
+
+**20. Jeder Parameter einer öffentlichen `PREFIX_`-Funktion braucht einen
+expliziten `bool`/`int`/`float`/`string`-Typ, sonst meckert IPS bei jedem
+Reload im Log.** Live gefunden (StrukturHub, 28.08.2026): ein ungetypter
+Parameter (gedacht, wahlweise Array oder JSON-String entgegenzunehmen)
+erzeugt die Warnung „Parameter X in der Funktion Y hat keinen Datentyp
+oder einen nicht unterstützten Datentyp." — **`array` ist explizit NICHT**
+in der Liste unterstützter Typen, auch nicht als Hinweis, nur die vier
+Skalartypen. Kein Fatal, kein Crash, aber ein lauter, wiederkehrender
+Log-Eintrag. **Fix:** Die ohnehin geltende "Rückgabe ist JSON-String, kein
+Array"-Konvention (siehe `contractVersion`-Abschnitt) auch auf
+EINGABE-Parameter anwenden — Aufrufer übergeben `json_encode($array)`, die
+Methode dekodiert intern, der Parameter selbst bleibt `string` typisiert.
+Betrifft jedes Modul mit einer öffentlichen Methode, die eine
+Formular-Liste (`List`-Feld) als Parameter entgegennimmt — bei
+Verdacht das eigene Log nach obigem Warnungstext durchsuchen.
 
 ## GoodWe-Steuerregister (InverterHub, Stand 27.07.2026)
 
@@ -1314,6 +1346,25 @@ Ergaenzend gilt seit 19.08.2026: Alle Links und `library.json`/`module.json`-
 URLs im Verbund zeigen direkt auf die kanonischen `NRG*`-Namen (verbundweiter
 Sweep, inkl. der ModulControl-relevanten URLs) — kein neuer Link darf einen
 Alt-Namen verwenden, auch nicht "weil der Redirect ja funktioniert".
+
+**`library.json`→`"name"` (die Zeile, die in der Modulverwaltung erscheint)
+folgt IMMER dem Muster `"NRG-Stack <Modul>"` (Bindestrich + Leerzeichen bei
+"NRG-Stack"), OHNE "for IP-Symcon"-Suffix — Store-Review-Checkliste Punkt 6
+verbietet "IPS"/"Symcon" im Modulnamen.** Live gefunden und einmal selbst
+FALSCH korrigiert (28./29.08.2026): StrukturHub meldete zunaechst einen
+"for IP-Symcon"-Vokabular-Drift bei SteuerboxHub/Szenariorechner (analog zum
+outsideTempID/outdoorTemperatureID-Fall), ich habe daraufhin faelschlich
+"NRG-Stack <Modul> for IP-Symcon" als Regel dokumentiert und sogar EMS'
+eigenen Namen so geaendert — Was-wäre-wenn hat das über Dietmars
+Modulverwaltungs-Screenshot richtiggestellt: das Suffix widerspricht Punkt 6,
+etwa die Haelfte der Module (ChargerHub/InverterHub/MeterHub/MigrationsHub/
+Tessie/WPHub) traegt es zu Unrecht, die andere Haelfte (CometWiFi/Dashboard/
+EMS/HeishaMon/ModbusSlave/Prognose/StromGedacht/Tibber) korrekt ohne. EMS
+zurueckkorrigiert auf `"NRG-Stack EMS"`. **Offene Aufraeumarbeit:** die sechs
+Module mit dem Suffix muessten ihn noch entfernen, jedes in der eigenen
+Sitzung. **Vor dem ersten `library.json`-Commit eines neuen Moduls dieses
+Muster pruefen, nicht den eigenen Repo-Namen 1:1 uebernehmen und kein
+Suffix ergaenzen.**
 
 ## Lizenz
 
