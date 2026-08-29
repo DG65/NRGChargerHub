@@ -315,6 +315,37 @@ Referenzimplementierungen (`module.php`, EMS 0.21.3):
   da nur der Tagesplan betroffen ist, kein ⛔).
 - `getGridFieldStatusLine()` — Netzmesspunkte-Panel, gemischt: Gesamtleistung hat einen
   Automatik-Pfad (InverterHub `gridPowerID`), die uebrigen Felder ehrlich ohne.
+
+## Einführungs-Tour für Kacheln (Dashboard, 29.08.2026)
+
+Für Kacheln mit eigenem `module.html` (HTML-SDK, `GetVisualizationTile()`)
+gilt eine "Einführungs-Tour bei erster Benutzung" (Schritt-für-Schritt-
+Overlay, nur per "✓ Verstanden, nicht mehr zeigen"-Button schließbar, kein
+X/Escape) als Konvention, sobald ein Modul sowas baut — nicht Pflicht für
+jede Kachel, aber wer es baut, baut es so:
+
+1. **Reset-Button feste Platzierung:** ein Konsolen-Button "Einführungs-Tour
+   erneut anzeigen" gehört immer ins Panel "📖 Dokumentation & Hilfe" (siehe
+   Formular-Optik oben) — nicht freistehend am Formularende, nicht in einem
+   separaten `form.json`-`actions`-Bereich. `onClick` ruft eine öffentliche
+   `<PREFIX>_ResetTour($id)` auf, die ein Attribut (z. B. `TourSeen`)
+   zurücksetzt. Dashboard hatte das anfangs uneinheitlich (mal Doku-Panel,
+   mal Formularende, mal `actions`) — Dietmar hat's bemängelt, nachträglich
+   bei allen 7 eigenen Kacheln vereinheitlicht.
+2. **Grundmuster für HTML-SDK-Tiles ohne anderen Rückkanal:** eine per
+   `GetVisualizationTile()`/eigenem `module.html` gerenderte Kachel kann
+   nicht direkt in die PHP-Instanz zurückschreiben (Sandbox). Muster:
+   - `RegisterAttributeBoolean('TourSeen', false)` in `Create()`.
+   - Payload-Feld `showTour: !ReadAttributeBoolean('TourSeen')`.
+   - WebHook-Zweig `?dismissTour=1` in `ProcessHookData()`, setzt
+     `TourSeen=true`.
+   - `module.html` zeigt das Overlay bei `showTour===true`, ruft beim
+     Schließen `fetch(HOOK_PATH + '?dismissTour=1')`.
+   - Öffentliche `ResetTour()`-Methode (siehe Punkt 1) für den
+     Konsolen-Button.
+
+Referenzimplementierung: `NRGDashboardTile/module.php`+`module.html`
+(Commit `db22a85`, DG65/NRGDashboard, Branch `ems-integration`).
 - `getBatterySocStatusLine()` — Batteriespeicher-Panel, Bat1-SOC-Feld: erste ⛔-Stufe im
   Verbund, weil BuildDayPlan() den SOC bislang komplett am InverterHub-Automatik-Pfad vorbei
   gelesen hatte (`getCurrentBatterySoc()`, gleicher Fehlertyp wie die PT15M-Preise selbst —
