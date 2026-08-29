@@ -968,34 +968,7 @@ Ident-Tabelle für `IPS_RequestAction($InstanceID, $Ident, $Value)` auf einer In
 | Ident | Label | Register | Wertebereich |
 |---|---|---|---|
 | `ctl_work_mode` | Steuermodus | RW 47000 | 0=Selbstverbrauch, 1=Inselbetrieb, 2=Backup, 3=Wirtschaftlich, 4=Peak-Shaving, 5=Erw. Selbstverbrauch |
-| `ctl_ems_enable` | EMS-Steuerung aktiv | RW 47505 | bool — Hauptschalter, ohne `true` ignoriert der WR jeden `ctl_ems_mode`/`ctl_ems_power`-Befehl. **⚠️ Siehe Warnung direkt unten -- `true` destabilisiert `ctl_ems_mode` selbst.** |
-
-**⚠️ WARNUNG (Dietmar + InverterHub, sauberer A/B-Test 29.08.2026, 10:22-10:44
-Uhr): `ctl_ems_enable=true` ("3rd party EMS", im SEMS+-Portal sichtbar)
-DESTABILISIERT die `ctl_ems_mode`-Steuerung selbst -- Register 47511 faellt
-damit binnen ~70-120 Sekunden auf den ungueltigen Sentinel 255 zurueck, auch
-bei zuvor unauffaelligen Modi (getestet: 1/8/11).** Bei `ctl_ems_enable=false`
-halten alle getesteten Modi dauerhaft stabil und der WR setzt sie real um
-(Phase A: Modus 11/3500W hielt 9+ Minuten, Batterie lud real -3530W). Einzige
-Variable zwischen dem stabilen und dem instabilen Testlauf war
-`ctl_ems_enable` -- unabhaengig reproduziert (Dietmar manuell, InverterHub
-per Skript). Ein kurzer Aus→An-*Wechsel* von `ctl_ems_enable` wirkt zudem wie
-ein WR-interner Reset (passt strukturell zur bereits dokumentierten
-Notfall-Erkenntnis, dass `ctl_ems_mode=7` einen feststeckenden WR aus dem
-Standby holt, s.u.) -- die Firmware scheint auf Flanken zu reagieren, nicht
-auf Pegel.
-
-**Praktische Konsequenz:** `ctl_ems_mode`/`ctl_ems_power` brauchen zwingend
-`ctl_ems_enable=true`, um ueberhaupt zu wirken -- der Zielkonflikt laesst
-sich nicht umgehen, nur eingrenzen. EMS' eigener Normalbetrieb ist davon
-GROSSTEILS ABGESCHIRMT: `applyDecision()` schreibt bei laufendem
-`EMS_Active` alle `EMS_Interval` Sekunden (Default 30s) neu -- deutlich
-unter dem 70-120s-Zerfallsfenster (2-4x Sicherheitsabstand). Betroffen sind
-vor allem manuelle Ad-hoc-Tests/Einzelbefehle OHNE fortlaufenden Reassert
-(z.B. Diagnose-Skripte) -- dort haelt ein einzeln gesetzter Modus nur
-kurzzeitig. **Wer `ctl_ems_enable` manuell/einzeln setzt: entweder
-`EMS_Active` gleich mitlaufen lassen (uebernimmt den Reassert automatisch),
-oder selbst periodisch (< 60s) neu schreiben.**
+| `ctl_ems_enable` | EMS-Steuerung aktiv | RW 47505 | bool — Hauptschalter, ohne `true` ignoriert der WR jeden `ctl_ems_mode`/`ctl_ems_power`-Befehl. **⚠️ Siehe Warnung nach der Tabelle -- `true` destabilisiert `ctl_ems_mode` selbst.** |
 | `ctl_ems_mode` | EMS Leistungsmodus | RW 47511 | 0-12, siehe vollständige Tabelle unten |
 | `ctl_ems_power` | EMS Leistung (W) | RW 47512 | 0–34500 W |
 | `ctl_export_enable` | Einspeisebegrenzung aktiv | RW 47509 | bool |
@@ -1003,6 +976,55 @@ oder selbst periodisch (< 60s) neu schreiben.**
 | `ctl_soc_min` | SOC Min. Entladung | RW 45356 | 0–100 % — **bestätigt ohne Wirkung, nicht empfehlen** |
 | `ctl_internet` | Cloud-Verbindung | RW 47017 | bool |
 | `ctl_restart` | WR Neustart | WO 45220 | bool, write-only |
+
+**⚠️ WARNUNG (Dietmar + InverterHub, sauberer A/B-Test 29.08.2026, 10:22-10:44
+Uhr, danach per OpenEMS-Quellcode-Recherche eingeordnet): `ctl_ems_enable=true`
+("3rd party EMS", im SEMS+-Portal sichtbar) DESTABILISIERT die
+`ctl_ems_mode`-Steuerung selbst -- Register 47511 faellt damit binnen
+~70-120 Sekunden auf 0xFF/255 zurueck, auch bei zuvor unauffaelligen Modi
+(getestet: 1/8/11).** Bei `ctl_ems_enable=false` halten alle getesteten Modi
+dauerhaft stabil und der WR setzt sie real um (Phase A: Modus 11/3500W hielt
+9+ Minuten, Batterie lud real -3530W). Einzige Variable zwischen dem stabilen
+und dem instabilen Testlauf war `ctl_ems_enable` -- unabhaengig reproduziert
+(Dietmar manuell, InverterHub per Skript). Ein kurzer Aus→An-*Wechsel* von
+`ctl_ems_enable` wirkt zudem wie ein WR-interner Reset (passt strukturell zur
+bereits dokumentierten Notfall-Erkenntnis, dass `ctl_ems_mode=7` einen
+feststeckenden WR aus dem Standby holt, s.u.) -- die Firmware scheint auf
+Flanken zu reagieren, nicht auf Pegel.
+
+**255/0xFF ist KEIN Fehlerwert, sondern der offizielle Modus STOPPED**
+(OpenEMS' `EmsPowerMode.java`: "System shutdown. Stop working and turn to
+wait mode"). Der WR selbst ist der Totmann-Vollzug: Bleibt bei `enable=true`
+der Heartbeat (periodisches Neuschreiben von `ctl_ems_mode`/`-power`) aus, so
+setzt sich die Firmware NACH ~70-120s AKTIV auf STOPPED und parkt sicher --
+keine Anomalie, ein beabsichtigter Sicherheitsmechanismus. OpenEMS selbst
+sieht diesen Zustand praktisch nie, weil es beide Register in JEDEM
+Regelzyklus (~1s) neu schreibt, auch bei fehlenden Messwerten explizit
+AUTO+0 statt gar nichts -- Praevention statt Reaktion.
+
+**Praktische Konsequenz:** `ctl_ems_mode`/`ctl_ems_power` brauchen zwingend
+`ctl_ems_enable=true`, um ueberhaupt zu wirken -- der Zielkonflikt laesst
+sich nicht umgehen, nur eingrenzen. EMS' eigener Normalbetrieb ist davon
+GROSSTEILS ABGESCHIRMT: `applyDecision()` schreibt bei laufendem
+`EMS_Active` alle `EMS_Interval` Sekunden (Default 30s) neu -- deutlich
+unter dem 70-120s-Zerfallsfenster (2-4x Sicherheitsabstand, wenn auch nicht
+so knapp getaktet wie OpenEMS' ~1s). Betroffen sind vor allem manuelle
+Ad-hoc-Tests/Einzelbefehle OHNE fortlaufenden Reassert (z.B.
+Diagnose-Skripte) -- dort haelt ein einzeln gesetzter Modus nur kurzzeitig.
+**Wer `ctl_ems_enable` manuell/einzeln setzt: entweder `EMS_Active` gleich
+mitlaufen lassen (uebernimmt den Reassert automatisch), oder selbst
+periodisch (< 60s) neu schreiben.**
+
+**InverterHub-Totmann-Empfaenger (0.74.5-beta.1, Build 199, live im Test):**
+Erkennt `readFast()` die 255 im Ruecklesepfad, schaltet InverterHub
+`ctl_ems_enable` selbststaendig auf Aus (WR faellt in native Eigenregelung
+zurueck) und loggt eine Warnung. **Konsequenz fuer Konsumenten:** Nach einem
+selbst verursachten Heartbeat-Abriss steht `ctl_ems_enable` danach
+automatisch auf `false` -- niemand darf den `enable`-Zustand annehmen, jeder
+Regelzyklus muss ihn aktiv setzen statt vorauszusetzen, dass er noch steht,
+wie zuletzt kommandiert. EMS' `setGoodweMode()` tut das bereits (schreibt
+`ctl_ems_enable` explizit bei jedem Aufruf) -- kein Code-Fund, nur zur
+Bestaetigung, dass das bestehende Muster hier weiterhin richtig ist.
 
 **Vollständige `ctl_ems_mode`-Tabelle (InverterHub, 12.08.2026, wörtlich aus der
 offiziellen GoodWe-Registerdokumentation "Modbus Protocol Hybrid ET/EH/BH/BT",
