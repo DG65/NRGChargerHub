@@ -748,6 +748,25 @@ Ein neuer Parameter braucht denselben Koordinationsaufwand wie ein Major-Bruch: 
 bekannten Aufrufer müssen vorher synchron umgestellt werden, nicht "läuft von selbst mit,
 weil er einen Default hat".
 
+**Zweiter Live-Vorfall als Beleg (MigrationsHub/MeterHub, 30.08.2026):** Ein weiterer
+additiv gedachter 5. Parameter (`$excludeInstanceID`) an `MIGHUB_FindLegacyCandidates()`
+(Commit `f5505c0`) crashte bei Dietmar live das komplette MeterHubDiscovery-
+Konfigurationsformular (`ArgumentCountError`, MeterHub rief noch vertragsgemäß mit 4
+Argumenten auf) — die Regel oben ist also kein theoretisches Risiko, sondern hat bereits
+zweimal ein echtes Formular gekillt. MeterHub hat auf 5 Argumente umgestellt (Commit
+`25a2a83`), ChargerHub war schon vorher synchron (`ff2734d`).
+**Zwei zusätzliche Konsequenzen daraus:**
+- Wer eine öffentliche `PREFIX_`-Funktion um einen Parameter erweitern will, sollte
+  stattdessen bevorzugt eine **neue Funktion** anbieten (z. B. `FindLegacyCandidates2`),
+  statt die alte Signatur zu ändern — oder, falls das nicht sinnvoll ist, VORHER eine
+  Rundmeldung an alle bekannten Konsumenten mit synchroner Umstellung machen (nicht erst
+  nachträglich, wenn's schon gekracht hat).
+- **Konsumenten-Empfehlung:** Aufrufe fremder `PREFIX_*`-Funktionen generell in
+  `try`/`catch (Throwable $e)` einpacken (siehe auch den `ArgumentCountError`-Nebenfund
+  im EMS/CLAUDE.md-Tagesplan-Abschnitt — `catch (Exception $e)` reicht dafür NICHT, da
+  `ArgumentCountError` von `Error` erbt). Ein künftiger Vertragsbruch degradiert dann nur
+  zu "kein Ergebnis" statt das ganze Formular/den ganzen Zyklus zu töten.
+
 **9. Presentation-OPTIONS-Arrays (ENUMERATION/VALUE_PRESENTATION) mit falschem
 Farb-Schluessel bringen NUR die Mobile-App zum Absturz, nicht Web/Konsole.**
 Live gefunden (HeishaMon, 13.08.2026, ueber eine Forum-Rueckmeldung eines
