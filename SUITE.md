@@ -767,6 +767,36 @@ zweimal ein echtes Formular gekillt. MeterHub hat auf 5 Argumente umgestellt (Co
   `ArgumentCountError` von `Error` erbt). Ein künftiger Vertragsbruch degradiert dann nur
   zu "kein Ergebnis" statt das ganze Formular/den ganzen Zyklus zu töten.
 
+**Dritter Beleg, jetzt auch auf normale Parameter (nicht nur ANBAU) ausgeweitet
+(OCPPHub, 31.08.2026):** Auch ein PHP-Standardwert auf einem von Anfang an
+so definierten Parameter einer öffentlichen Vertragsmethode (nicht erst
+nachträglich angebaut) geht beim Aufruf über die generierte globale
+`PREFIX_Methode()`-Funktion verloren — z. B.
+`public function RemoteStart(string $cpid, string $idTag = 'symcon')`.
+Per `ReflectionFunction` auf der generierten globalen Funktion live
+verifiziert: **alle** Parameter sind dort `isOptional() === false`,
+unabhängig vom Default im Quellcode — der Bug ist im PHP-Quellcode selbst
+unsichtbar, zeigt sich erst zur Laufzeit. Bei OCPPHub hat das den manuellen
+Ladestart über Dashboards Steuer-Kachel lahmgelegt (`OHUB_RemoteStart` mit
+2 statt 3 Argumenten aufgerufen), Fix: PHP-Standardwerte auf öffentlichen
+Vertragsmethoden ganz entfernt, jeder Aufrufer übergibt jetzt alle Parameter
+explizit. **Regel damit verschärft:** nicht nur "kein Anbau mit Default",
+sondern generell **keine PHP-Standardwerte auf öffentlichen Vertragsmethoden**
+— alle Parameter immer explizit vom Aufrufer übergeben lassen.
+**Diagnosewerkzeug bei Verdacht:**
+`(new ReflectionFunction('PREFIX_Methode'))->getParameters()` →
+`isDefaultValueAvailable()`/`isOptional()` LIVE prüfen (z. B. per
+`mcp__ips-automation__php_eval`), nicht am Quellcode ablesen — der
+Quellcode zeigt nur die (wirkungslose) Absicht.
+
+EMS-Selbstcheck (29.08.2026): vier öffentliche Vertragsmethoden hatten
+PHP-Defaults auf für externe Konsumenten gedachten Parametern
+(`GetSpecialEvents`, `GetInvoiceCheck`, `StartBatteryBoost`, `BuildDayPlan`)
+— alle internen Aufrufer riefen bereits mit expliziten Argumenten auf, daher
+gefahrlos entfernt (Signaturen jetzt ohne Default, Semantik unverändert:
+Aufrufer müssen z. B. `GetSpecialEvents(0, 0)` für "alle Events" jetzt
+explizit schreiben statt sich auf den Default zu verlassen).
+
 **9. Presentation-OPTIONS-Arrays (ENUMERATION/VALUE_PRESENTATION) mit falschem
 Farb-Schluessel bringen NUR die Mobile-App zum Absturz, nicht Web/Konsole.**
 Live gefunden (HeishaMon, 13.08.2026, ueber eine Forum-Rueckmeldung eines
