@@ -993,6 +993,28 @@ Betrifft jedes Modul mit einer öffentlichen Methode, die eine
 Formular-Liste (`List`-Feld) als Parameter entgegennimmt — bei
 Verdacht das eigene Log nach obigem Warnungstext durchsuchen.
 
+**21. Variablen-Einheit/-Typ NIE nur über `VariableProfile`/`VariableCustomProfile`
+erkennen — neue IPS-"Darstellungen" (Presentations, seit v8.0) haben BEIDE
+Profil-Felder leer.** Live gefunden (MeterHub, 30.08.2026): `MHUBV_ScanMeters`
+fand KNX-kWh-Variablen (Alt-Profile) zuverlässig, übersah aber alle
+KNX-Watt-Variablen und alle Shellys — die hängen an einer Darstellung statt
+an einem klassischen Profil. An Dietmars Anlage betrifft das bereits 3533
+Variablen, kein Randfall. **Korrekte Erkennung:** zusätzlich
+`VariableCustomPresentation`/`VariablePresentation` aus `IPS_GetVariable()`
+auswerten (Arrays, leer wenn keine Darstellung gesetzt; ältere IPS-Kerne
+liefern die Felder evtl. gar nicht → mit `?? null` absichern). Zwei reale
+Formen kommen vor: (a) direkter Suffix-Schlüssel
+(`{"SUFFIX":" W","PRESENTATION":"{GUID}"}`), (b) eingebettete
+Alt-Profil-Referenz (`{"PROFILE":"~...","PRESENTATION":...}`) — dann den
+Suffix über `IPS_GetVariableProfile()` des referenzierten Profils auflösen.
+Reihenfolge: erst den klassischen Profil-Pfad prüfen, Darstellung als
+Fallback. Referenzfix: `MeterHubVirtual::UnitOf()`, MeterHub 0.23.2-beta.1,
+Commit `e8252aa`. **Betrifft jedes Modul, das Variablen nach Einheit/Typ
+filtert oder klassifiziert** (Scans, Discovery, Kanalauswahl) — bei
+Verdacht `grep -rn "VariableProfile\|GetVariableProfile"` im eigenen Code
+prüfen. EMS selbst: kein Fund (29.08.2026 geprüft, EMS klassifiziert keine
+Variablen nach Profil/Einheit).
+
 ## GoodWe-Steuerregister (InverterHub, Stand 27.07.2026)
 
 Ident-Tabelle für `IPS_RequestAction($InstanceID, $Ident, $Value)` auf einer InverterHub-Instanz:
