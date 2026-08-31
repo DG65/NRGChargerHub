@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.54-beta.1] - 2026-08-31
+
+### Fixed
+- `Update()` (FastTimer-Callback) warf beim Systemstart vereinzelt „InstanceInterface is
+  not available" / „InstanceManager: Kann Schnittstellen-Instanz nicht erstellen" (Fund
+  der OCPPHub-Sitzung beim Systemlog-Review, zeitgleich bei MeterHub/MigrationsHub
+  beobachtet). Ursache: reines Kernel-Boot-Timing — der Timer feuert bereits, bevor der
+  Kernel alle Instanzen fertig angebunden hat, jeder `ReadPropertyX()`-Aufruf in diesem
+  kurzen Fenster wirft die Warnung. Neue Wache `IPS_GetKernelRunlevel() !== KR_READY` als
+  allererste Zeile in `Update()`, vor jedem Property-Zugriff — der Timer feuert kurz
+  danach ohnehin erneut, sobald der Kernel bereit ist.
+
 ## [0.9.53-beta.1] - 2026-08-29
 
 ### Fixed

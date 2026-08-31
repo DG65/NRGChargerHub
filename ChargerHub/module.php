@@ -1651,6 +1651,18 @@ class ChargerHub extends IPSModule
 
     public function Update()
     {
+        // Der FastTimer kann bereits feuern, bevor der Kernel beim Systemstart
+        // ALLE Instanzen fertig angebunden hat — jeder ReadPropertyX()-Aufruf
+        // wirft dann "InstanceInterface is not available"
+        // ("InstanceManager: Kann Schnittstellen-Instanz nicht erstellen").
+        // Live gefunden (31.08.2026, OCPPHub-Sitzung beim Systemlog-Review,
+        // zeitgleich bei MeterHub/MigrationsHub beobachtet — reines
+        // Kernel-Boot-Timing, keine ChargerHub-spezifische Ursache). Der
+        // Timer feuert kurz danach erneut, sobald der Kernel bereit ist —
+        // einfach abbrechen, bevor irgendeine Property gelesen wird.
+        if (IPS_GetKernelRunlevel() !== KR_READY) {
+            return;
+        }
         if (!$this->ReadPropertyBoolean('Active')) {
             return;
         }
@@ -2296,7 +2308,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.53-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.54-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
