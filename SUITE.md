@@ -630,6 +630,19 @@ besonders kritisch dort, weil jeder unnoetige Klick ein Geraet unnoetig weckt):*
    dass die Property selbst schon geschrieben ist, muss das im Rückmeldungstext klarstellen —
    sonst wirkt "sichtbar geändert" wie "gespeichert", und der Nutzer schließt das Formular ohne
    zu übernehmen, im Glauben es sei bereits fertig.
+5. **Fehlschlag/uneindeutige Antwort einer Aktion an ein fremdes System dauerhaft loggen,
+   nicht nur per `SendDebug()`.** Dietmars ausdrücklicher Wunsch (31.08.2026, "man steht wie
+   der Ochs vorm Berg"), nachdem OCPPHub gleich zweimal in dasselbe Muster lief: eine von
+   go-e abgelehnte `RemoteStartTransaction` blieb nur im flüchtigen Debug-Fenster sichtbar
+   (Dashboard bekam nur "keine Verbindung" statt des echten Grunds), danach verschwand eine
+   `GetConfiguration`-Diagnoseabfrage ohne Erfolgssignal genauso spurlos. **Regel:** jede vom
+   Modul selbst gesendete Aktion an ein fremdes System (OCPP-Call, HTTP-Request, Modbus-
+   Schreibbefehl o. ä.) muss bei Fehlschlag ODER bei einer Antwort ohne eindeutiges
+   Erfolgssignal per `IPS_LogMessage()` dauerhaft geloggt werden — `SendDebug()` ist nur
+   sichtbar, solange das Debug-Fenster gerade offen ist, und genau dann fehlt es meistens,
+   wenn man es bräuchte (Nutzer merkt Tage später, dass etwas nicht ging). `SendDebug()`
+   bleibt für den laufenden Entwicklungs-/Live-Blick sinnvoll, ersetzt aber nicht den
+   dauerhaften Log-Eintrag.
 
 ## Manifest
 
