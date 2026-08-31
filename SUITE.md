@@ -40,6 +40,20 @@ nach Lücken zu den vier Zielen suchen. Beispiele aus dem 27.07.2026: EMS hat Op
 Architektur gebaut wurde; Dashboard wurde gebeten, vor der eigenen Zeitreihen-Chart-Phase
 etablierte Grafana-Referenzdashboards (Solar Flow Plugin, Powerwall-Dashboard) anzuschauen.
 
+**Selbstverständnis, Dietmars ausdrückliche Korrektur (31.08.2026, via OCPPHub):**
+"Sorry, ich möchte nicht, dass MEIN Verbund, MEINE Programme flicken! Ich möchte, dass
+wir intelligente, innovative Programme schreiben, damit es den Nutzern und schlussendlich
+der Welt besser geht!" Anlass war eine Session, die ihre Fehlerbehebungen des Tages als
+"geflickt" beschrieben hatte. Gemeint ist keine neue Aufgabe, sondern wie der Verbund die
+eigene Arbeit versteht und beschreibt: nicht als Reparatur an etwas kaputt Angenommenem,
+sondern als Bauen von etwas, das Nutzern und am Ende der Welt wirklich weiterhilft — deckt
+sich mit Ziel 4 oben. Beispiel, das den Unterschied zeigt (OCPPHub, selber Tag): ein
+`block_reason`-Feld, das selbstständig erklärt, warum eine Ladung abgelehnt wurde, statt
+den Nutzer im Unklaren zu lassen, und eine automatische Ladefreigabe für erkannte
+Fahrzeuge, die ohne teure Zusatzhardware leistet, was sonst nur High-End-Wallboxen mit
+Autocharge können — kein Flicken, mitdenkende Software. Gilt für den ganzen Verbund, nicht
+nur für die Session, die den Anlass gab.
+
 ## Das Versionsmodell (drei Ebenen)
 
 ### 1. Modul-Version (SemVer, je Modul)
