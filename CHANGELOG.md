@@ -3,6 +3,27 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.55-beta.1] - 2026-09-01
+
+### Fixed
+- **Live-Vorfall** (gemeldet von der OCPPHub-Sitzung, 31.08./01.09.2026): WB2 war
+  gleichzeitig über ChargerHub (Modbus) und OCPPHub (OCPP) angebunden. OCPP-seitig sah
+  alles korrekt aus (Authorize/RemoteStart akzeptiert), die Wallbox blieb aber
+  stundenlang blockiert — selbst über die go-e-App ließ sich nichts starten. Ursache:
+  unser `ctl_enable=false` schreibt beim go-eCharger `FORCE_STATE=1` („Aus, erzwungen")
+  statt `0` („Neutral, Gerät/App/Backend entscheidet"). `FORCE_STATE=1` ist laut
+  go-e-Firmware ein GERÄTESEITIGER Hard-Lock mit Vorrang vor jedem anderen Kanal (App,
+  OCPP-Backend, alles) — ein Wechsel von „Wer regelt?" auf einen anderen Wert gab diese
+  Sperre bisher nicht frei, der neue Regler kannte/schrieb das FORCE_STATE-Register ja
+  gar nicht.
+- Neue `ReleaseForceLockOnHandoff()`: erkennt den Übergang „Niemand" → ein anderer Wert
+  bei „Wer regelt diesen Ladepunkt?" und schreibt beim go-eCharger automatisch
+  `FORCE_STATE=0` zurück, falls die Ladefreigabe gerade auf „aus" stand — die
+  Kontrollübergabe hinterlässt dadurch keine stille Blockade mehr für den neuen Regler.
+- Zwei-Regler-Warnung (Formular + README) erweitert: nennt jetzt explizit OCPPHub/andere
+  OCPP-Backends als gleichwertig gefährliche Kombination (nicht nur go-e Controller/EMS)
+  und erklärt den FORCE_STATE-Mechanismus, damit das nicht erneut unbemerkt auftritt.
+
 ## [0.9.54-beta.1] - 2026-08-31
 
 ### Fixed

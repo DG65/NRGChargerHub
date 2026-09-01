@@ -1496,6 +1496,9 @@ class ChargerHub extends IPSModule
         // Steuervariablen dadurch bei JEDEM Übernehmen neu (IDs wechselten
         // ständig), statt nur einmalig zu migrieren.
         $this->RegisterAttributeBoolean('ControlActionsMigrated', false);
+        // Für ReleaseForceLockOnHandoff() — merkt sich den zuletzt angewendeten
+        // „Wer regelt?"-Wert, um den ÜBERGANG none→(etwas anderes) zu erkennen.
+        $this->RegisterAttributeString('PrevManagedBy', 'none');
         // Beobachtungszähler fürs Phasen-Umschalten beim Überschussladen — ein
         // Wechsel wird erst nach mehreren AUFEINANDERFOLGENDEN Polls mit derselben
         // Tendenz ausgelöst, nicht schon beim ersten (verhindert Pendeln).
@@ -1598,6 +1601,45 @@ class ChargerHub extends IPSModule
         $this->SetTimerInterval('FastTimer', $this->ReadPropertyInteger('IntervalFast') * 1000);
         $this->SetTimerInterval('EnableActionsTimer', 200);
         $this->SetStatus(102);
+
+        $this->ReleaseForceLockOnHandoff();
+    }
+
+    // Live-Vorfall (31./01.09.2026, gemeldet von der OCPPHub-Sitzung): Dietmar
+    // hatte WB2 gleichzeitig über ChargerHub (Modbus) UND OCPPHub (OCPP)
+    // angebunden. OCPP-seitig sah alles korrekt aus (Authorize/RemoteStart
+    // akzeptiert), die Wallbox blieb aber stundenlang blockiert — SELBST über
+    // die go-e-App ließ sich nichts starten. Ursache gefunden: unser eigenes
+    // ctl_enable=false schreibt beim go-e IMMER FORCE_STATE=1 ("Aus,
+    // erzwungen") statt 0 ("Neutral, Gerät/App/Backend entscheidet") — siehe
+    // GoeChargerDriver::case 'ctl_enable'. FORCE_STATE=1 ist ein
+    // GERÄTESEITIGER Hard-Lock, der laut go-e-Firmware Vorrang vor JEDEM
+    // anderen Kanal hat (App, OCPP-Backend, alles). Schaltet der Nutzer „Wer
+    // regelt diesen Ladepunkt?" von „Niemand" auf einen anderen Wert um (gibt
+    // die Kontrolle an OCPPHub/EMS/Controller ab), bliebe ein zuvor von UNS
+    // gesetztes FORCE_STATE=1 sonst als stiller Hard-Lock liegen — der neue
+    // Regler kann ihn nicht überschreiben, weil er das FORCE_STATE-Register
+    // gar nicht kennt/anfasst. Beim Übergang „Niemand" → irgendwas anderes
+    // daher aktiv auf Neutral zurücksetzen, falls die Freigabe gerade auf
+    // „aus" steht (echtes "wir wollten aktiv blockieren"-Aus geht beim
+    // Übergang ohnehin an den neuen Regler über).
+    private function ReleaseForceLockOnHandoff(): void
+    {
+        $prev = $this->ReadAttributeString('PrevManagedBy');
+        $now  = $this->GetManagedBy();
+        $this->WriteAttributeString('PrevManagedBy', $now);
+
+        if ($prev !== 'none' || $now === 'none') {
+            return; // kein Übergang "wir haben abgegeben" -> nichts zu tun
+        }
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe') {
+            return; // FORCE_STATE ist ein go-e-Spezifikum
+        }
+        $enableID = $this->FindVarByIdent('ctl_enable');
+        if (!$enableID || @GetValueBoolean($enableID) !== false) {
+            return; // nicht blockiert (Neutral/An) -> nichts freizugeben
+        }
+        @$this->GetModbusClient()->writeMultiple(GoeChargerDriver::REG_FORCE_STATE, [0]);
     }
 
     // Wird 200 ms nach ApplyChanges einmalig aufgerufen (Muster wie
@@ -2308,7 +2350,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.54-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.55-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2356,7 +2398,7 @@ class ChargerHub extends IPSModule
                     'expanded' => true,
                     'items'    => [
                         ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Wer regelt diesen Ladepunkt?', 'options' => $managedByOptions],
-                        ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards oder eine §14a-Steuerung —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit.'],
+                        ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards, eine §14a-Steuerung ODER OCPPHub/ein anderes OCPP-Backend an DERSELBEN physischen Wallbox —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Beim go-eCharger besonders wichtig: unsere Ladefreigabe „Aus" setzt geräteseitig FORCE_STATE=1 (erzwungen aus) — das blockiert dann JEDEN anderen Kanal (App, OCPP-Backend) hart, bis hier wieder freigegeben wird. Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit; ChargerHub gibt beim Wechsel von „Niemand" auf einen anderen Wert eine zuvor gesetzte Zwangs-Aus-Sperre automatisch wieder frei.'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
                         ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Überschussladen selbst regeln (nur Fallback ohne EMS)'],
