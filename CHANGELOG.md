@@ -3,6 +3,21 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.56-beta.1] - 2026-09-01
+
+### Added
+- Neue öffentliche Methode `CHUB_ClearForceLock($InstanceID)`: setzt beim go-eCharger
+  `FORCE_STATE` aktiv auf 0 (Neutral) zurück — unabhängig von `ManagedBy`/`Active`. Für
+  externe Regler (z. B. OCPPHub), die dieselbe Wallbox parallel per anderem Protokoll
+  ansteuern und wiederholt an einem stillen ChargerHub-Hard-Lock scheitern (siehe
+  0.9.55, Root Cause des WB2-Vorfalls). Vorschlag/Kooperationsanfrage der OCPPHub-Sitzung
+  (01.09.2026): dort als automatischer Ausweichweg vorgesehen, sobald deren
+  RemoteStartTransaction wiederholt abgelehnt wird UND eine ChargerHub-Instanz für
+  dieselbe IP existiert (Cross-Hub-IP-Abgleich läuft bei OCPPHub bereits). Bei jedem
+  anderen Hersteller ein wirkungsloses No-Op (kein FORCE_STATE-Äquivalent bekannt),
+  bewusst kein Fehler. `ReleaseForceLockOnHandoff()` (0.9.55) nutzt jetzt dieselbe
+  Methode intern, statt den Schreibzugriff zu duplizieren.
+
 ## [0.9.55-beta.1] - 2026-09-01
 
 ### Fixed

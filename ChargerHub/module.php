@@ -1632,14 +1632,31 @@ class ChargerHub extends IPSModule
         if ($prev !== 'none' || $now === 'none') {
             return; // kein Übergang "wir haben abgegeben" -> nichts zu tun
         }
-        if ($this->ReadPropertyString('Manufacturer') !== 'goe') {
-            return; // FORCE_STATE ist ein go-e-Spezifikum
-        }
         $enableID = $this->FindVarByIdent('ctl_enable');
         if (!$enableID || @GetValueBoolean($enableID) !== false) {
             return; // nicht blockiert (Neutral/An) -> nichts freizugeben
         }
-        @$this->GetModbusClient()->writeMultiple(GoeChargerDriver::REG_FORCE_STATE, [0]);
+        $this->ClearForceLock();
+    }
+
+    // Öffentlich, für externe Regler (z. B. OCPPHub), die denselben go-e
+    // physisch parallel ansteuern: setzt FORCE_STATE aktiv auf 0 (Neutral)
+    // zurück, UNABHÄNGIG von ManagedBy/Active — der aufrufende Kanal weiß am
+    // besten, wann er selbst wiederholt an einem stillen Hard-Lock scheitert
+    // (siehe ReleaseForceLockOnHandoff()-Kommentar für den Hintergrund).
+    // Bei jedem anderen Hersteller ein wirkungsloses No-Op (kein
+    // FORCE_STATE-Äquivalent bekannt) — bewusst kein Fehler, damit ein
+    // Aufrufer nicht erst selbst nach Manufacturer==='goe' fragen muss.
+    // Rückgabewert: true nur, wenn tatsächlich geschrieben wurde.
+    public function ClearForceLock(): bool
+    {
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe') {
+            return false;
+        }
+        if ($this->ReadPropertyString('Host') === '') {
+            return false;
+        }
+        return (bool)@$this->GetModbusClient()->writeMultiple(GoeChargerDriver::REG_FORCE_STATE, [0]);
     }
 
     // Wird 200 ms nach ApplyChanges einmalig aufgerufen (Muster wie
@@ -2350,7 +2367,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.55-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.56-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
