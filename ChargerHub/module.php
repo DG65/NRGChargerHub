@@ -1506,6 +1506,13 @@ class ChargerHub extends IPSModule
         $this->RegisterAttributeInteger('PhaseSwitchStableTarget', 0);
 
         $this->RegisterPropertyBoolean('Active', true);
+        // Vorführmodus (Dashboard-Anfrage, 02.09.2026: öffentliche
+        // Modulvorstellung des Verbunds mit eigenem WebFront-Login) —
+        // deaktiviert die Steuer-Aktionsbindung in der Konsole/WebFront UND
+        // weist jeden Steuerbefehl serverseitig zurück (siehe RequestAction),
+        // damit ein Besucher der Demo nicht versehentlich die echte Wallbox
+        // schaltet, selbst wenn die Aktionsbindung sich umgehen ließe.
+        $this->RegisterPropertyBoolean('DemoMode', false);
         $this->RegisterPropertyString('Manufacturer', 'keba');
         $this->RegisterPropertyString('Host', '');
         $this->RegisterPropertyInteger('Port', 502);
@@ -1676,12 +1683,29 @@ class ChargerHub extends IPSModule
         // 1 = deaktivieren, >1 = konkrete Skript-ID. Die zuvor übergebene
         // Instanz-ID wurde als (nicht existente) Skript-ID interpretiert,
         // daher "Skript #<InstanceID> existiert nicht".
+        //
+        // Vorführmodus: 1 (deaktivieren) statt 0 — die Variable bleibt
+        // sichtbar (Ist-Wert lesbar), aber ohne Schalter/Schieberegler in der
+        // Konsole/WebFront. Läuft über BEIDE Var-Quellen (Basis- UND
+        // optionale Gruppen), da RegisterVar() die Aktion für Basis-Idents
+        // nur EINMALIG bei Neuanlage bindet (siehe dort) — ein späteres
+        // Umschalten von DemoMode träfe Basis-Idents sonst nie.
+        $demo = $this->ReadPropertyBoolean('DemoMode');
+        $action = $demo ? 1 : 0;
+        foreach ($driver->getBaseVars() as $v) {
+            if ($v[5] === 'control') {
+                $vid = $this->FindVarByIdent($v[0]);
+                if ($vid) {
+                    IPS_SetVariableCustomAction($vid, $action);
+                }
+            }
+        }
         foreach ($driver->getOptionalGroups() as $group) {
             foreach ($group['vars'] as $v) {
                 if ($v[5] === 'control') {
                     $vid = $this->FindVarByIdent($v[0]);
                     if ($vid) {
-                        IPS_SetVariableCustomAction($vid, 0);
+                        IPS_SetVariableCustomAction($vid, $action);
                     }
                 }
             }
@@ -1977,6 +2001,15 @@ class ChargerHub extends IPSModule
     public function RequestAction($Ident, $Value)
     {
         if (!$this->ReadPropertyBoolean('Active')) {
+            return;
+        }
+        // Zweite Verteidigungslinie zum Vorführmodus (siehe SetControlActions/
+        // DemoMode-Property): die deaktivierte Aktionsbindung verhindert
+        // Schalter/Schieberegler in der Konsole/WebFront, aber ein direkter
+        // RequestAction()-Aufruf (Skript, fremdes Modul, API) würde das
+        // umgehen — hier zusätzlich serverseitig zurückweisen.
+        if ($this->ReadPropertyBoolean('DemoMode')) {
+            IPS_LogMessage('ChargerHub-Vorführmodus', "Instanz {$this->InstanceID}: Steuerbefehl '$Ident' im Vorführmodus zurückgewiesen.");
             return;
         }
         $mb = $this->GetModbusClient();
@@ -2367,7 +2400,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.56-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.57-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2415,6 +2448,8 @@ class ChargerHub extends IPSModule
                     'expanded' => true,
                     'items'    => [
                         ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Wer regelt diesen Ladepunkt?', 'options' => $managedByOptions],
+                        ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Vorführmodus (Steuerung deaktiviert, nur Anzeige)'],
+                        ['type' => 'Label', 'caption' => 'Für öffentlich zugängliche Vorführ-/Demo-Instanzen (z. B. eine Modulvorstellung mit eigenem Login): deaktiviert Schalter/Schieberegler für Ladefreigabe, Stromlimit usw. in Konsole/WebFront UND weist Steuerbefehle zusätzlich serverseitig zurück — Messwerte bleiben normal sichtbar. Nicht aktivieren für den echten Betrieb.'],
                         ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards, eine §14a-Steuerung ODER OCPPHub/ein anderes OCPP-Backend an DERSELBEN physischen Wallbox —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Beim go-eCharger besonders wichtig: unsere Ladefreigabe „Aus" setzt geräteseitig FORCE_STATE=1 (erzwungen aus) — das blockiert dann JEDEN anderen Kanal (App, OCPP-Backend) hart, bis hier wieder freigegeben wird. Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit; ChargerHub gibt beim Wechsel von „Niemand" auf einen anderen Wert eine zuvor gesetzte Zwangs-Aus-Sperre automatisch wieder frei.'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
