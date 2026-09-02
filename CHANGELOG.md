@@ -3,6 +3,21 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.57-beta.1] - 2026-09-02
+
+### Added
+- Neuer **Vorführmodus** (`DemoMode`-Property): Anlass war eine Anfrage der Dashboard-
+  Sitzung wegen einer geplanten öffentlichen Modulvorstellungs-Instanz mit eigenem
+  WebFront-Login — ChargerHubs Steuervariablen (`ctl_enable`, `ctl_curr_limit`, …) sind
+  live über `EnableAction()` gebunden, ein Besucher hätte damit unkontrolliert echte
+  Wallboxen schalten können. Zwei Verteidigungslinien: (1) `SetControlActions()`
+  deaktiviert bei aktivem Vorführmodus die Aktionsbindung für ALLE Steuer-Idents (Basis-
+  UND optionale Gruppen — Basis-Idents banden ihre Aktion bisher nur einmalig bei
+  Neuanlage, ein späteres Umschalten von `DemoMode` hätte sie sonst nie erreicht), (2)
+  `RequestAction()` weist Steuerbefehle zusätzlich serverseitig zurück, falls die
+  Aktionsbindung doch umgangen wird (Skript, fremdes Modul, API). Messwerte bleiben im
+  Vorführmodus normal sichtbar, nur die Steuerung ist deaktiviert.
+
 ## [0.9.56-beta.1] - 2026-09-01
 
 ### Added
