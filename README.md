@@ -121,6 +121,15 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 
 Vertragsversion (`contractVersion`): aktuell **`1.5`** (1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer`; 1.5: `duplicateOf` — beide MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen, harter Weg `CHUB_SetActive()` plus weicher Marker `duplicateOf`).
 
+**Sicherheitsnetz zu `duplicateOf`** (EMS-Auftrag, 13.09.2026): Da `duplicateOf` bewusst nicht
+übers Schreibrecht entscheidet, kann eine als Dublette markierte Instanz gleichzeitig aktiver
+Regler sein — was aber auch bedeutet, dass eine versehentliche Markierung unbemerkt zu zwei
+gleichzeitigen Reglern führen könnte. Ist `duplicateOf` gesetzt, prüft die Instanz bei jedem
+Poll den `managedBy`-Wert der Zielinstanz (per `CHUB_GetFunctions`/`OHUB_GetFunctions`,
+Letzteres `function_exists`-abgesichert). Haben beide Seiten `managedBy` `none`/`ems`, zeigt
+die Instanz einen Warnstatus (Instanzstatus 206, Variable „Dubletten-Warnung") — rein
+sichtbar, keine automatische Sperre. Die Entscheidung bleibt beim Nutzer.
+
 Für dieselbe Dubletten-Situation gibt es außerdem die öffentliche Methode `CHUB_SetActive($id, bool): string` — deaktiviert (oder reaktiviert) Messung UND Steuerung einer Instanz vollständig, mit sichtbarer Rückmeldung. Beim Deaktivieren wird zusätzlich automatisch eine zuvor gesetzte go-e-Zwangs-Aus-Sperre freigegeben und, sofern „Wer regelt?" noch auf dem Default „Niemand" steht, auf „Anderer" umgestellt (ein bewusst gesetzter anderer Wert bleibt unangetastet). Eine laufende Ladung wird dadurch NICHT unterbrochen — nur die eigene Beobachtung/Steuerung endet.
 
 Siehe [CLAUDE.md](CLAUDE.md) für die Konventionen des Verbunds.
