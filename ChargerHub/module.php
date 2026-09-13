@@ -1689,6 +1689,39 @@ class ChargerHub extends IPSModule
         return (bool)@$this->GetModbusClient()->writeMultiple(GoeChargerDriver::REG_FORCE_STATE, [0]);
     }
 
+    // Öffentlich, für Module wie MeterHubVirtual, die eine doppelt angebundene
+    // Wallbox (dieselbe Hardware gleichzeitig als ChargerHub-Instanz UND z. B.
+    // als OCPPHub-Ladepunkt) erkennen und den Nutzer fragen, welcher Kanal
+    // aktiv bleiben soll (Anfrage MeterHub, 13.09.2026). Deaktivieren stoppt
+    // Messung UND Steuerung vollständig — `Update()`/`RequestAction()` prüfen
+    // beide `Active` bereits als erste Zeile. Eine laufende Ladung wird davon
+    // NICHT unterbrochen (das reine Aufhören zu pollen/schreiben ändert am
+    // physischen Ladezustand nichts) — nur unsere eigene Beobachtung/Steuerung
+    // endet. Beim Deaktivieren zusätzlich: (1) ein zuvor von uns gesetzter
+    // go-e-FORCE_STATE-Hardlock wird freigegeben (sonst genau der WB2-Vorfall
+    // vom 01.09.2026 — der andere Kanal bliebe sonst stumm blockiert), (2)
+    // steht „Wer regelt?" noch auf dem Default „Niemand", wird es auf
+    // „Anderer" gestellt, damit EMS/Dashboard sofort korrekt sehen, dass hier
+    // jemand anderes zuständig ist, statt dass das vergessen wird (siehe der
+    // separat gefundene, zeitweise unbemerkte WB1-Konflikt). Ein bewusst
+    // gesetzter anderer Wert (ems/tibber/…) wird NICHT überschrieben.
+    // Aktivieren setzt NUR Active zurück — „Wer regelt?" bleibt unangetastet,
+    // das Zurückholen der Kontrolle ist eine bewusste Nutzerentscheidung.
+    public function SetActive(bool $Active): string
+    {
+        IPS_SetProperty($this->InstanceID, 'Active', $Active);
+        if (!$Active) {
+            $this->ClearForceLock();
+            if ($this->GetManagedBy() === 'none') {
+                IPS_SetProperty($this->InstanceID, 'ManagedBy', 'other');
+            }
+        }
+        IPS_ApplyChanges($this->InstanceID);
+        return $Active
+            ? '✅ Aktiviert — Kommunikation läuft wieder.'
+            : '✅ Deaktiviert — keine Messung/Steuerung mehr, eine etwaige go-e-Zwangs-Aus-Sperre wurde freigegeben.';
+    }
+
     // Wird 200 ms nach ApplyChanges einmalig aufgerufen (Muster wie
     // InverterHub) — setzt die Custom Action, die Ladefreigabe/Stromlimit
     // etc. in der Konsole bedienbar macht.
@@ -2329,8 +2362,9 @@ class ChargerHub extends IPSModule
             // Vertragsversion Major.Minor (Verbund-Konvention, siehe SUITE.md
             // im EMS-Repo). Konsumenten prüfen die Major; additive Felder
             // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
-            // 1.1: managedBy ergänzt. 1.3: lastSeenAt ergänzt.
-            'contractVersion'    => '1.3',
+            // 1.1: managedBy ergänzt. 1.3: lastSeenAt ergänzt. 1.4: deviceSerial/
+            // deviceHost/manufacturer ergänzt.
+            'contractVersion'    => '1.4',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -2370,6 +2404,17 @@ class ChargerHub extends IPSModule
             // (EMS nutzt 10 Minuten), gilt die Leistung als unbekannt statt
             // als 0 W.
             'lastSeenAt'         => $this->ReadAttributeInteger('LastSeenAt'),
+            // 1.4: Geräteidentität für Dubletten-Erkennung (MeterHub-Anfrage,
+            // 13.09.2026: dieselbe physische Wallbox kann gleichzeitig als
+            // ChargerHub-Instanz UND als OCPPHub-Ladepunkt angelegt sein —
+            // MeterHubVirtual will das erkennen und den Nutzer fragen, welche
+            // aktiv bleibt). `deviceSerial` ist nur bei go-e/KEBA gefüllt
+            // (Alfen/Heidelberg liefern keine Seriennummer) — `deviceHost`
+            // (IP/Hostname) ist bei JEDEM Treiber vorhanden und daher der
+            // zuverlässigere Abgleichspunkt.
+            'deviceSerial'       => trim((string)$this->GetVarValue('dev_serial')),
+            'deviceHost'         => $this->ReadPropertyString('Host'),
+            'manufacturer'       => $this->ReadPropertyString('Manufacturer'),
         ]];
     }
 
@@ -2435,7 +2480,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.61-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.62-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

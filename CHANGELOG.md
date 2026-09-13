@@ -3,6 +3,26 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.62-beta.1] - 2026-09-13
+
+### Added
+- `CHUB_GetFunctions()`: neue Felder `deviceSerial`, `deviceHost`, `manufacturer`
+  (`contractVersion` 1.3→1.4, additiv). Anlass: MeterHub-Anfrage — bei Dietmar hängt jede
+  Wallbox doppelt (ChargerHub UND OCPPHub am selben physischen Gerät), MeterHubVirtual
+  soll das erkennen und den Nutzer fragen, welcher Kanal aktiv bleibt. `deviceHost`
+  (IP/Hostname) ist bei jedem Hersteller vorhanden und damit der zuverlässigere
+  Abgleichspunkt als `deviceSerial` (fehlt bei Alfen/Heidelberg).
+- Neue öffentliche Methode `CHUB_SetActive($InstanceID, bool): string` — deaktiviert
+  (oder reaktiviert) Messung UND Steuerung einer Instanz vollständig, mit sichtbarer
+  Rückmeldung, zum gezielten Abschalten der überflüssigen Anbindung nach der
+  Dubletten-Erkennung. Beim Deaktivieren zusätzlich: eine zuvor gesetzte
+  go-e-Zwangs-Aus-Sperre wird automatisch freigegeben (sonst der WB2-Vorfall vom
+  01.09.2026 erneut), und steht „Wer regelt?" noch auf dem Default „Niemand", wird es
+  automatisch auf „Anderer" gestellt (ein bewusst gesetzter anderer Wert bleibt
+  unangetastet) — schließt damit auch die Lücke, die beim separat gefundenen, zeitweise
+  unbemerkten WB1-Konflikt sichtbar wurde. Eine laufende Ladung wird nicht unterbrochen,
+  nur die eigene Beobachtung/Steuerung endet.
+
 ## [0.9.61-beta.1] - 2026-09-13
 
 ### Fixed

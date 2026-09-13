@@ -99,7 +99,7 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.3'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
+| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.4'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
 | `function` | string | `'charger'` |
 | `label` | string | Instanzname |
 | `powerID` | int | Variablen-ID Ladeleistung (W); 0 falls nicht verfügbar |
@@ -114,8 +114,13 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 | `externallyManaged` | bool | Abgeleitet aus `managedBy` (`true`, sobald ein anderer Regler als `none`/`ems` die Hoheit hat). Bleibt aus Kompatibilität zu Vertrag 1.0 erhalten |
 | `vehicleNameID` | int | Variablen-ID „Zugeordnetes Fahrzeug" (String, leer wenn keins zugeordnet) — wird ausschließlich von außen per `CHUB_SetVehicleName()` gesetzt, ChargerHub rät selbst nie |
 | `lastSeenAt` | int | Unix-Timestamp des letzten erfolgreichen Lesezyklus (0 = noch nie). Additiv seit 1.3: unterscheidet „gerade 0 W" von „liefert seit Langem keine frische Messung mehr" — eine deaktivierte oder hängende Instanz reicht sonst unbemerkt ihren letzten bekannten Wert weiter. Fehlt das Feld (Vertrag < 1.3), unverändertes Verhalten |
+| `deviceSerial` | string | Seriennummer des Geräts, leer wenn der Hersteller keine liefert (Alfen/Heidelberg) — für Dubletten-Erkennung, wenn dieselbe Wallbox mehrfach angebunden ist (z. B. gleichzeitig ChargerHub UND OCPPHub) |
+| `deviceHost` | string | IP-Adresse/Hostname (Property „Host") — bei JEDEM Hersteller vorhanden, daher der zuverlässigere Abgleichspunkt als `deviceSerial` |
+| `manufacturer` | string | Interner Hersteller-Schlüssel (`goe`/`keba`/`alfen`/`heidelberg`) |
 
-Vertragsversion (`contractVersion`): aktuell **`1.3`** (1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer).
+Vertragsversion (`contractVersion`): aktuell **`1.4`** (1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer` — MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen).
+
+Für dieselbe Dubletten-Situation gibt es außerdem die öffentliche Methode `CHUB_SetActive($id, bool): string` — deaktiviert (oder reaktiviert) Messung UND Steuerung einer Instanz vollständig, mit sichtbarer Rückmeldung. Beim Deaktivieren wird zusätzlich automatisch eine zuvor gesetzte go-e-Zwangs-Aus-Sperre freigegeben und, sofern „Wer regelt?" noch auf dem Default „Niemand" steht, auf „Anderer" umgestellt (ein bewusst gesetzter anderer Wert bleibt unangetastet). Eine laufende Ladung wird dadurch NICHT unterbrochen — nur die eigene Beobachtung/Steuerung endet.
 
 Siehe [CLAUDE.md](CLAUDE.md) für die Konventionen des Verbunds.
 
