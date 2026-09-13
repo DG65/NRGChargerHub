@@ -95,7 +95,7 @@ class ChargerHubDiscovery extends IPSModule
 
     public function GetConfigurationForm()
     {
-        $results = json_decode($this->ReadAttributeString('ResultsJSON'), true);
+        $results = json_decode((string)$this->ReadAttributeString('ResultsJSON'), true);
         if (!is_array($results)) {
             $results = [];
         }
@@ -340,7 +340,7 @@ class ChargerHubDiscovery extends IPSModule
         if ($ts === 0) {
             return 'ℹ️ Noch nicht gesucht — Button oben drücken.';
         }
-        $results = json_decode($this->ReadAttributeString('ResultsJSON'), true);
+        $results = json_decode((string)$this->ReadAttributeString('ResultsJSON'), true);
         $count = is_array($results) ? count($results) : 0;
         $icon = $count > 0 ? '✅' : '⚠️';
         return sprintf('%s %d Wallbox(en) gefunden (zuletzt %s Uhr).', $icon, $count, date('H:i:s', $ts));
@@ -453,7 +453,7 @@ class ChargerHubDiscovery extends IPSModule
             return;
         }
 
-        $results = json_decode($this->ReadAttributeString('ResultsJSON'), true);
+        $results = json_decode((string)$this->ReadAttributeString('ResultsJSON'), true);
         $results = is_array($results) ? $results : [];
         $existing = $this->findExistingInstances();
         // Ohne Merker verarbeitete jeder Klick immer wieder die ERSTE passende
@@ -461,7 +461,7 @@ class ChargerHubDiscovery extends IPSModule
         // man so nie über die erste Zeile hinaus. Bereits vorbereitete
         // Ziel-Instanzen daher überspringen, damit der nächste Klick
         // automatisch zur nächsten offenen Zeile weitergeht.
-        $prepared = json_decode($this->ReadAttributeString('PreparedTargets'), true);
+        $prepared = json_decode((string)$this->ReadAttributeString('PreparedTargets'), true);
         $prepared = is_array($prepared) ? $prepared : [];
 
         foreach ($results as $r) {

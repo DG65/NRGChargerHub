@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.61-beta.1] - 2026-09-13
+
+### Fixed
+- Store-Review-Checkliste durchgegangen (Punkte 9b/9c/9d, siehe SUITE.md, auf Anstoß der
+  InverterHub-Sitzung im Rahmen der Store-Vorbereitung). 9b (deutsches Datumsformat, echte
+  Umlaute): bereits konform, keine Änderung nötig. 9d (keine "vorbereitet, aber inaktiv"
+  geparkten Instanzen mit Status > 200): bereits konform, wir nutzen nur 102/104. 9c
+  (`ReadAttributeXXX()` ungecastet an `json_decode()` — liefert `false` statt String,
+  solange die Instanz lädt/Kernel nicht `KR_READY` ist, dreimal unabhängig bei
+  Tibber/OCPPHub/Dashboard aufgetreten): vier Stellen in ChargerHubDiscovery gefunden
+  (`json_decode($this->ReadAttributeString(...))` für `ResultsJSON`/`PreparedTargets`),
+  jetzt mit `(string)`-Cast abgesichert.
+
 ## [0.9.60-beta.1] - 2026-09-12
 
 ### Added
