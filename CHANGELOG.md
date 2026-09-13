@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.63-beta.1] - 2026-09-13
+
+### Added
+- Weicher Dubletten-Marker `duplicateOf` in `CHUB_GetFunctions()` (`contractVersion`
+  1.4→1.5, additiv) — Ergänzung zum harten `CHUB_SetActive()` aus 0.9.62 (EMS/MeterHub-
+  Abstimmung, 13.09.2026, auf Dietmars Entscheidung: beide Wege kommen). Neue Property
+  `DuplicateOfKey`, per Auswahlfeld im Formular gesetzt (Liste aus anderen
+  ChargerHub-Instanzen und OCPPHub-Ladepunkten) — ausschließlich Nutzerentscheidung, nie
+  automatisch geraten. Gesetzt heißt: diese Instanz schreibt nicht mehr — sowohl
+  `RequestAction()` (externe Schreibversuche, z. B. vom EMS) als auch
+  `SurplusChargeControl()` (unsere eigene Regelung) weisen sich selbst zurück, dieselbe
+  FORCE_STATE-Hardlock-Lehre wie am 01.09.2026. Messen bleibt für die Fehlersuche aktiv.
+  Aktionsbindung in Konsole/WebFront wird wie beim Vorführmodus deaktiviert (Ist-Werte
+  bleiben sichtbar, keine Schalter/Schieberegler mehr). Konsumenten (EMS, Dashboard,
+  MeterHub) überspringen markierte Einträge beim Messen/Summieren/Schalten.
+
 ## [0.9.62-beta.1] - 2026-09-13
 
 ### Added
