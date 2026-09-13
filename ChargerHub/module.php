@@ -1853,6 +1853,55 @@ class ChargerHub extends IPSModule
             $this->SetVarStr('vehicle_name', '');
         }
         $this->SurplusChargeControl();
+        $this->CheckDuplicateManagedByConflict();
+    }
+
+    // Sicherheitsnetz zum weichen Dubletten-Marker (EMS-Auftrag, 13.09.2026,
+    // Regel 9f): duplicateOf entscheidet bewusst NICHT über das Schreibrecht
+    // (siehe RequestAction()/SurplusChargeControl()) — dadurch KANN eine als
+    // Dublette markierte Instanz gleichzeitig aktiver Regler sein (Dietmars
+    // WB1: zählt über OCPPHub, geregelt von uns). Das kann aber auch
+    // schiefgehen: markiert der Nutzer versehentlich eine Instanz als
+    // Dublette, deren Ziel GAR NICHT regelt, haben am Ende BEIDE Seiten
+    // managedBy none/ems — genau der Zwei-Regler-Fall vom 01.09.2026, nur
+    // ohne dass es jemand bemerkt. Diese Prüfung macht das nur SICHTBAR
+    // (Statusvariable + Instanzstatus 206), sperrt aber nichts automatisch —
+    // die Entscheidung bleibt beim Nutzer ("Wer regelt?" auf "Anderer"
+    // stellen).
+    private function CheckDuplicateManagedByConflict(): void
+    {
+        $dupID = $this->FindVarByIdent('dup_warning');
+        $dup = $this->GetDuplicateOf();
+        if ($dup === null) {
+            // Kein Marker gesetzt -> kein Warnstatus möglich, ggf. einen
+            // vorherigen wieder aufräumen (Instanz war z. B. mal markiert).
+            if ((int)(@IPS_GetInstance($this->InstanceID)['InstanceStatus'] ?? 0) === 206) {
+                $this->SetStatus(102);
+            }
+            return;
+        }
+        $ownManaged = $this->GetManagedBy();
+        $targetManaged = null;
+        if ($dup['source'] === 'chargerhub') {
+            $fns = @CHUB_GetFunctions($dup['instanceID']);
+            $targetManaged = $fns[0]['managedBy'] ?? null;
+        } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
+            $fns = @OHUB_GetFunctions($dup['instanceID']);
+            $targetManaged = $fns[0]['managedBy'] ?? null;
+        }
+        $conflict = in_array($ownManaged, ['none', 'ems'], true)
+            && in_array($targetManaged, ['none', 'ems'], true);
+        if ($conflict) {
+            $this->SetStatus(206);
+            if ($dupID) {
+                $this->SetVarStr('dup_warning', '⚠️ Zwei Regler an einer Wallbox — bei einer Anbindung „Wer regelt?" auf „Anderer" stellen.');
+            }
+        } else {
+            $this->SetStatus(102);
+            if ($dupID) {
+                $this->SetVarStr('dup_warning', '');
+            }
+        }
     }
 
     // Eigenständiges Überschussladen — NUR Fallback, wenn EMS nicht regelt
@@ -2576,7 +2625,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.64-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.65-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2794,6 +2843,9 @@ class ChargerHub extends IPSModule
         $this->RegisterVar(['vehicle_name', 'Zugeordnetes Fahrzeug', 'S', '', true, 'device', ''], $pos++);
         if ($surplusActive) {
             $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);
+        }
+        if ($this->ReadPropertyString('DuplicateOfKey') !== '') {
+            $this->RegisterVar(['dup_warning', 'Dubletten-Warnung', 'S', '', false, 'errors', ''], $pos++);
         }
 
         // Migration abgeschlossen — ab hier nie wieder Steuervariablen

@@ -3,6 +3,20 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.65-beta.1] - 2026-09-13
+
+### Added
+- Sicherheitsnetz zu `duplicateOf` (EMS-Auftrag, Regel 9f): Da `duplicateOf` bewusst nicht
+  übers Schreibrecht entscheidet (siehe 0.9.64), kann eine als Dublette markierte Instanz
+  gleichzeitig aktiver Regler sein — eine versehentliche Markierung könnte aber unbemerkt zu
+  zwei gleichzeitigen Reglern an derselben Wallbox führen. Neue Prüfung `CheckDuplicateManagedByConflict()`,
+  läuft bei jedem Poll: ist `duplicateOf` gesetzt, wird der `managedBy`-Wert der Zielinstanz
+  abgefragt (`CHUB_GetFunctions`/`OHUB_GetFunctions`, Letzteres `function_exists`-abgesichert).
+  Haben beide Seiten `managedBy` `none`/`ems`, zeigt die Instanz Instanzstatus 206 plus eine
+  neue Variable „Dubletten-Warnung" („⚠️ Zwei Regler an einer Wallbox — bei einer Anbindung
+  „Wer regelt?" auf „Anderer" stellen."). Rein sichtbar, keine automatische Sperre — die
+  Entscheidung bleibt beim Nutzer.
+
 ## [0.9.64-beta.1] - 2026-09-13
 
 ### Fixed
