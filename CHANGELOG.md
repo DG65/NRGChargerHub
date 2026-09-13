@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.64-beta.1] - 2026-09-13
+
+### Fixed
+- **Korrektur zu `duplicateOf` (0.9.63):** Die Schreibsperre bei gesetztem Dubletten-Marker
+  wurde zurückgebaut — EMS-Korrektur nach einem Einwand von OCPPHub: Zählen und Steuern sind
+  zwei verschiedene Fragen. `duplicateOf` betrifft NUR die Zählung (Summen/Sitzungen/
+  Leistung); wer ans Gerät schreiben darf, entscheidet weiterhin ausschließlich `managedBy`,
+  unverändert wie vor 0.9.63. Grund: bei Dietmar zählt WB1 künftig über OCPPHub (dort als
+  Dublette markiert), geregelt wird sie aber weiterhin von ChargerHub (`managedBy` hier
+  „none") — mit der ursprünglichen Fassung hätte `duplicateOf` WB1 ihren einzigen Regler
+  genommen. `RequestAction()`/`SurplusChargeControl()` weisen Schreibversuche bei gesetztem
+  `duplicateOf` also NICHT mehr zurück, die Aktionsbindung in Konsole/WebFront bleibt davon
+  unberührt (nur noch vom Vorführmodus abhängig). Das Vertragsfeld selbst, die Property und
+  das Formular-Auswahlfeld bleiben unverändert bestehen — nur die Bedeutung ist jetzt korrekt
+  auf „zählt nicht" statt „schreibt nicht" begrenzt.
+
 ## [0.9.63-beta.1] - 2026-09-13
 
 ### Added

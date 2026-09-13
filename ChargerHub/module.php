@@ -1546,11 +1546,14 @@ class ChargerHub extends IPSModule
         // Weicher Dubletten-Marker (EMS/MeterHub-Abstimmung, 13.09.2026,
         // Ergänzung zum harten CHUB_SetActive()): '' = keine Dublette, sonst
         // "chargerhub:<InstanceID>" oder "ocpphub:<InstanceID>" — zeigt auf die
-        // Instanz, die für dasselbe physische Gerät zählt. Ausschließlich vom
-        // Nutzer im Formular gesetzt, NIE automatisch geraten. Gesetzt heißt:
-        // nur noch lesen, unsere eigene Regelung (Überschussladen, Steuerung)
-        // schreibt nicht mehr — dieselbe FORCE_STATE-Hardlock-Lehre wie am
-        // 01.09.2026. Messen bleibt für die Fehlersuche aktiv.
+        // Instanz, die für dasselbe physische Gerät ZÄHLT (Summen/Sitzungen/
+        // Leistung). Ausschließlich vom Nutzer im Formular gesetzt, NIE
+        // automatisch geraten. WICHTIG (EMS-Korrektur, 13.09.2026, nach
+        // OCPPHub-Einwand): betrifft NUR die Zählung, NICHT das Schreibrecht
+        // — wer ans Gerät schreibt, entscheidet weiterhin ausschließlich
+        // ManagedBy. Eine Instanz kann also gleichzeitig Dublette (fürs
+        // Zählen) UND aktiver Regler sein (Beispiel Dietmar: WB1 zählt
+        // künftig über OCPPHub, geregelt wird sie aber weiter von uns).
         $this->RegisterPropertyString('DuplicateOfKey', '');
         $this->RegisterPropertyString('Manufacturer', 'keba');
         $this->RegisterPropertyString('Host', '');
@@ -1756,16 +1759,24 @@ class ChargerHub extends IPSModule
         // Instanz-ID wurde als (nicht existente) Skript-ID interpretiert,
         // daher "Skript #<InstanceID> existiert nicht".
         //
-        // Vorführmodus ODER gesetzter Dubletten-Marker: 1 (deaktivieren) statt
-        // 0 — die Variable bleibt sichtbar (Ist-Wert lesbar), aber ohne
-        // Schalter/Schieberegler in der Konsole/WebFront. „duplicateOf"
-        // gesetzt heißt „nur noch lesen" (EMS/MeterHub-Abstimmung,
-        // 13.09.2026) — dieselbe Konsequenz wie der Vorführmodus, nur anderer
-        // Auslöser. Läuft über BEIDE Var-Quellen (Basis- UND optionale
-        // Gruppen), da RegisterVar() die Aktion für Basis-Idents nur EINMALIG
-        // bei Neuanlage bindet (siehe dort) — ein späteres Umschalten träfe
-        // Basis-Idents sonst nie.
-        $demo = $this->ReadPropertyBoolean('DemoMode') || $this->GetDuplicateOf() !== null;
+        // Vorführmodus: 1 (deaktivieren) statt 0 — die Variable bleibt
+        // sichtbar (Ist-Wert lesbar), aber ohne Schalter/Schieberegler in der
+        // Konsole/WebFront. Läuft über BEIDE Var-Quellen (Basis- UND
+        // optionale Gruppen), da RegisterVar() die Aktion für Basis-Idents
+        // nur EINMALIG bei Neuanlage bindet (siehe dort) — ein späteres
+        // Umschalten von DemoMode träfe Basis-Idents sonst nie.
+        //
+        // WICHTIG (EMS-Korrektur, 13.09.2026): `duplicateOf` betrifft NUR die
+        // Zählung (Summen/Sitzungen/Leistung), nicht das Schreibrecht — wer
+        // ans Gerät schreiben darf, entscheidet weiterhin ausschließlich
+        // `managedBy`. Ein Ladepunkt kann also gleichzeitig als Dublette
+        // markiert UND der aktive Regler sein (Beispiel Dietmar: WB1 zählt
+        // künftig über OCPPHub, geregelt wird sie aber weiter von uns,
+        // managedBy hier „none"). `duplicateOf` daher bewusst NICHT in diese
+        // Aktionsbindung einbezogen — ursprünglich hier verdrahtet, dann
+        // zurückgebaut, als klar wurde, dass das WB1 ihren einzigen Regler
+        // genommen hätte.
+        $demo = $this->ReadPropertyBoolean('DemoMode');
         $action = $demo ? 1 : 0;
         foreach ($driver->getBaseVars() as $v) {
             if ($v[5] === 'control') {
@@ -1872,10 +1883,6 @@ class ChargerHub extends IPSModule
     private function SurplusChargeControl(): void
     {
         if (!$this->ReadPropertyBoolean('EnableSurplusCharging')) {
-            return;
-        }
-        if ($this->GetDuplicateOf() !== null) {
-            $this->SetSurplusStatus('⏸️ Inaktiv — als Dublette markiert, zählt nicht mehr für die Steuerung.');
             return;
         }
         if ($this->GetManagedBy() !== 'none') {
@@ -2091,15 +2098,14 @@ class ChargerHub extends IPSModule
             IPS_LogMessage('ChargerHub-Vorführmodus', "Instanz {$this->InstanceID}: Steuerbefehl '$Ident' im Vorführmodus zurückgewiesen.");
             return;
         }
-        // Weicher Dubletten-Marker (EMS/MeterHub-Abstimmung, 13.09.2026):
-        // gesetzt heißt „nur noch lesen" — dieselbe Verteidigungslinie wie
-        // beim Vorführmodus, nur anderer Auslöser. Konsumenten (EMS/
-        // Dashboard/MeterHub) sollen laut Absprache ohnehin nicht mehr
-        // schreiben, das hier ist die serverseitige Absicherung dagegen.
-        if ($this->GetDuplicateOf() !== null) {
-            IPS_LogMessage('ChargerHub-Dublette', "Instanz {$this->InstanceID}: Steuerbefehl '$Ident' zurückgewiesen — als Dublette markiert, zählt nicht mehr für die Steuerung.");
-            return;
-        }
+        // `duplicateOf` betrifft NUR die Zählung, NICHT das Schreibrecht
+        // (EMS-Korrektur, 13.09.2026, nach OCPPHub-Einwand) — wer ans Gerät
+        // schreiben darf, entscheidet ausschließlich `managedBy`. Ein
+        // ursprünglich hier verdrahteter Reject wurde deshalb zurückgebaut:
+        // Dietmars WB1 zählt künftig über OCPPHub (dort als Dublette
+        // markiert), wird aber weiterhin von UNS geregelt (managedBy hier
+        // „none") — eine Schreibsperre an `duplicateOf` hätte WB1 ihren
+        // einzigen Regler genommen.
         $mb = $this->GetModbusClient();
         $this->GetDriver()->writeControl($mb, $this, $Ident, $Value);
         // writeControl setzt den Variablenwert nur bei erfolgreichem Schreiben
@@ -2473,11 +2479,13 @@ class ChargerHub extends IPSModule
             // 13.09.2026, Ergänzung zum harten CHUB_SetActive()): null = zählt
             // normal, sonst zeigt er auf den Eintrag, der für dasselbe
             // physische Gerät zählt. Ausschließlich vom Nutzer im Formular
-            // gesetzt, nie automatisch geraten. Gesetzt heißt bei uns: nur
-            // noch lesen — SurplusChargeControl()/RequestAction() weisen
-            // Steuerbefehle dann selbst zurück (siehe dort), Messen bleibt
-            // für die Fehlersuche aktiv. Konsumenten überspringen solche
-            // Einträge beim Messen/Summieren/Schalten.
+            // gesetzt, nie automatisch geraten. Betrifft NUR die Zählung
+            // (Summen/Sitzungen/Leistung) — wer ans Gerät schreibt,
+            // entscheidet weiterhin ausschließlich `managedBy` (EMS-
+            // Korrektur 13.09.2026: eine Instanz kann gleichzeitig Dublette
+            // fürs Zählen UND der aktive Regler sein). Konsumenten
+            // überspringen als Dublette markierte Einträge beim Messen/
+            // Summieren/Sitzungen.
             'duplicateOf'        => $this->GetDuplicateOf(),
         ]];
     }
@@ -2568,7 +2576,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.63-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.64-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2617,7 +2625,7 @@ class ChargerHub extends IPSModule
                     'items'    => [
                         ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Wer regelt diesen Ladepunkt?', 'options' => $managedByOptions],
                         ['type' => 'Select', 'name' => 'DuplicateOfKey', 'caption' => '🆕 Diese Wallbox ist dasselbe Gerät wie …', 'options' => $duplicateOfOptions],
-                        ['type' => 'Label', 'caption' => 'Nur setzen, wenn dieselbe physische Wallbox bereits über eine andere Instanz (ChargerHub oder OCPPHub) läuft. Diese Instanz misst dann zur Fehlersuche weiter, schreibt aber nicht mehr (Ladefreigabe/Stromlimit/Überschussladen) — EMS/Dashboard/MeterHub überspringen sie beim Summieren. Für den vollständigen Stopp inkl. Deaktivierung gibt es zusätzlich CHUB_SetActive().'],
+                        ['type' => 'Label', 'caption' => 'Nur setzen, wenn dieselbe physische Wallbox bereits über eine andere Instanz (ChargerHub oder OCPPHub) läuft. Betrifft NUR die Zählung — EMS/Dashboard/MeterHub überspringen diese Instanz dann bei Summen/Sitzungen/Leistung zugunsten der ausgewählten. Wer die Wallbox tatsächlich STEUERT, entscheidet weiterhin allein „Wer regelt diesen Ladepunkt?" oben — eine Instanz kann also gleichzeitig als Dublette markiert UND der aktive Regler sein. Für den vollständigen Stopp (Messen UND Steuern) gibt es zusätzlich CHUB_SetActive().'],
                         ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Vorführmodus (Steuerung deaktiviert, nur Anzeige)'],
                         ['type' => 'Label', 'caption' => 'Für öffentlich zugängliche Vorführ-/Demo-Instanzen (z. B. eine Modulvorstellung mit eigenem Login): deaktiviert Schalter/Schieberegler für Ladefreigabe, Stromlimit usw. in Konsole/WebFront UND weist Steuerbefehle zusätzlich serverseitig zurück — Messwerte bleiben normal sichtbar. Nicht aktivieren für den echten Betrieb.'],
                         ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards, eine §14a-Steuerung ODER OCPPHub/ein anderes OCPP-Backend an DERSELBEN physischen Wallbox —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Beim go-eCharger besonders wichtig: unsere Ladefreigabe „Aus" setzt geräteseitig FORCE_STATE=1 (erzwungen aus) — das blockiert dann JEDEN anderen Kanal (App, OCPP-Backend) hart, bis hier wieder freigegeben wird. Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit; ChargerHub gibt beim Wechsel von „Niemand" auf einen anderen Wert eine zuvor gesetzte Zwangs-Aus-Sperre automatisch wieder frei.'],
