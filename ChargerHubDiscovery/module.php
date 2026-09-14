@@ -19,6 +19,10 @@ class ChargerHubDiscovery extends IPSModule
 {
     private const CHARGERHUB_GUID = '{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}';
     private const MIGRATIONSHUB_GUID = '{330717BB-E309-41A2-90A8-FDA3179ED948}';
+    // Eigene Modul-GUID (module.json 'id') — für das instanzübergreifende
+    // Ausblenden des "Wozu dieses Modul?"-Panels unter mehreren
+    // ChargerHubDiscovery-Instanzen, siehe PropagateDismiss().
+    private const DISCOVERY_GUID = '{613D9807-B975-91B2-C6BD-FDD3654EF87E}';
 
     // Kandidaten je Hersteller: Unit-IDs, die typischerweise/dokumentiert
     // Standard sind (kleine Liste statt vollem 1-247-Bereich).
@@ -49,6 +53,92 @@ class ChargerHubDiscovery extends IPSModule
         $this->RegisterAttributeString('ResultsJSON', '[]');
         $this->RegisterAttributeInteger('LastDiscoveryTs', 0);
         $this->RegisterAttributeString('PreparedTargets', '[]');
+        // "Wozu dieses Modul?"-Panel (EMS-Auftrag, 14.09.2026, SUITE.md
+        // Formular-Konvention Punkt 0, Referenzimplementierung MeterHubDiscovery)
+        // — beim ersten Rollout am Hauptmodul ChargerHub übersehen, jetzt
+        // auch hier am Suche-Modul nachgezogen.
+        $this->RegisterAttributeBoolean('PurposeIntroGone', false);
+    }
+
+    /** Siehe ChargerHub::PurposeIntro() für die volle Herleitung — steht ganz vorn im Formular. */
+    private function PurposeIntro(): ?array
+    {
+        if ($this->ReadAttributeBoolean('PurposeIntroGone')) {
+            return null;
+        }
+        return [
+            'type' => 'ExpansionPanel', 'name' => 'PurposeIntroPanel', 'expanded' => true,
+            'caption' => '👋  Wozu dieses Modul?',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'ChargerHub Suche durchsucht das lokale Netz nach Wallboxen (KEBA, Alfen, Heidelberg, go-eCharger) auf Modbus TCP und legt auf Klick passende ChargerHub-Instanzen mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
+                ['type' => 'Label', 'caption' => 'Der Nutzen: Wallboxen von Hand einrichten heißt, IP-Adresse und Unit-ID selbst herauszufinden — hier reicht ein Klick, gerade praktisch bei mehreren Ladepunkten auf einmal.'],
+                ['type' => 'Label', 'caption' => 'Läuft bereits eine andere Anbindung derselben Wallbox (anderes Modul, gleiche IP/Unit-ID)? Dann erkennt die Suche das über MigrationsHub und bietet eine Migration der bestehenden Historie an, statt doppelt zu zählen.'],
+                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUBD_AckPurposeIntro($id);'],
+            ],
+        ];
+    }
+
+    public function AckPurposeIntro()
+    {
+        $this->WriteAttributeBoolean('PurposeIntroGone', true);
+        $this->UpdateFormField('PurposeIntroPanel', 'visible', false);
+        $this->PropagateDismiss();
+    }
+
+    /**
+     * Ausblenden über alle ChargerHubDiscovery-Geschwister-Instanzen teilen
+     * (Verbund-Muster, siehe ChargerHub::PropagateDismiss()) — hier nur ein
+     * einziger dismissibler Hinweis, daher ohne das $what/$value-Umschalten
+     * der größeren Referenzimplementierungen.
+     */
+    private function PropagateDismiss(): void
+    {
+        foreach (@IPS_GetInstanceListByModuleID(self::DISCOVERY_GUID) ?: [] as $sib) {
+            if ($sib === $this->InstanceID) {
+                continue;
+            }
+            try {
+                CHUBD_AdoptDismissState($sib);
+            } catch (\Throwable $e) {
+                // Geschwister-Instanz mitten im Reload/Löschen darf das
+                // Ausblenden der aufrufenden Instanz nicht mitreißen.
+            }
+        }
+    }
+
+    /** Reiner Übernahme-Schritt für eine Geschwister-Instanz — siehe PropagateDismiss(). */
+    public function AdoptDismissState()
+    {
+        $this->WriteAttributeBoolean('PurposeIntroGone', true);
+        $this->UpdateFormField('PurposeIntroPanel', 'visible', false);
+    }
+
+    /** Für Geschwister-Instanzen, die beim erstmaligen Kontakt den Ausblenden-Stand übernehmen wollen — siehe AdoptDismissFromSibling(). */
+    public function GetDismissState(): array
+    {
+        return ['purposeIntroGone' => $this->ReadAttributeBoolean('PurposeIntroGone')];
+    }
+
+    /** Gegenrichtung zu PropagateDismiss() — siehe ChargerHub::AdoptDismissFromSibling(). */
+    private function AdoptDismissFromSibling(): void
+    {
+        if ($this->ReadAttributeBoolean('PurposeIntroGone')) {
+            return;
+        }
+        foreach (@IPS_GetInstanceListByModuleID(self::DISCOVERY_GUID) ?: [] as $sib) {
+            if ($sib === $this->InstanceID) {
+                continue;
+            }
+            try {
+                $state = CHUBD_GetDismissState($sib);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if (is_array($state) && !empty($state['purposeIntroGone'])) {
+                $this->WriteAttributeBoolean('PurposeIntroGone', true);
+                break;
+            }
+        }
     }
 
     // Ermittelt heuristisch die ersten drei Oktette des lokalen Subnetzes
@@ -77,6 +167,7 @@ class ChargerHubDiscovery extends IPSModule
         parent::ApplyChanges();
         $this->RegisterVariableBoolean('ScanAbort', 'Suche abbrechen (intern)', '', 100);
         IPS_SetHidden($this->GetIDForIdent('ScanAbort'), true);
+        $this->AdoptDismissFromSibling();
     }
 
     private function scanAborted(): bool
@@ -251,6 +342,12 @@ class ChargerHubDiscovery extends IPSModule
                 ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Such-IP-Bereich eintragen.'],
             ],
         ];
+
+        // "Wozu dieses Modul?" ganz vorn (Verbund-Formular-Konvention Punkt 0).
+        $intro = $this->PurposeIntro();
+        if ($intro !== null) {
+            array_unshift($form['elements'], $intro);
+        }
 
         return json_encode($form);
     }

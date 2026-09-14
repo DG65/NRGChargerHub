@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.69-beta.1] - 2026-09-14
+
+### Added
+- Panel „👋 Wozu dieses Modul?" jetzt auch in ChargerHubDiscovery (EMS-Nachprüfung: beim
+  0.9.68-Rollout am Hauptmodul übersehen — gleicher Fehlertyp wie bei Tessie/
+  TessieConfigurator, Search-/Discovery-Zweitmodule werden leicht vergessen). Gleiches
+  Muster wie im Hauptmodul, hier vereinfacht (nur ein dismissibler Hinweis statt mehrerer,
+  daher `PropagateDismiss()`/`AdoptDismissState()` ohne `$what`/`$value`-Umschalten).
+
 ## [0.9.68-beta.1] - 2026-09-14
 
 ### Added
