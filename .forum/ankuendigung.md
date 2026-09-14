@@ -126,12 +126,11 @@ Alle Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Man
 
 ## Installation
 
-Über die **Modulverwaltung** → Modul hinzufügen → GitHub-Repository:
-
-`https://github.com/DG65/NRGChargerHub` (Zweig **beta**)
-
-Im Symcon Module Store ist das Modul noch nicht — der Beta-Zweig ist der schnellere Weg zu
-Korrekturen.
+Über den **Module Store** installierbar — Kanal **Beta** auswählen (Modulverwaltung → Modul
+hinzufügen → Store, „ChargerHub" suchen, Kanal auf Beta stellen). Alternativ weiterhin über die
+Modulverwaltung → Modul hinzufügen → GitHub-Repository: `https://github.com/DG65/NRGChargerHub`
+(Zweig **beta**) — praktisch, wer schneller an Korrekturen als am Store-Update-Rhythmus sein
+möchte.
 
 ## Status und was ich brauche
 
