@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.67-beta.1] - 2026-09-14
+
+### Added
+- Ausblenden von „Was ist neu?"/„Wozu dieses Modul" (Review-Hinweis) wirkt jetzt über alle
+  ChargerHub-Instanzen desselben Systems hinweg (Auftrag Dietmar über EMS, Verbund-Muster
+  „Ausblenden über mehrere Instanzen desselben Moduls teilen", SUITE.md): `AckNews()`/
+  `DismissReviewHint()` reichen den Stand an alle Geschwister-Instanzen weiter (direkter
+  Aufruf der öffentlichen Funktion, kein `RequestAction`-Umweg nötig, da keine `SetValue`-
+  Aktion dahintersteckt; ein statischer Prozessmerker verhindert Ping-Pong zwischen den
+  Instanzen). Neu angelegte Instanzen übernehmen zusätzlich den Stand einer bereits
+  vorhandenen Geschwister-Instanz beim Anlegen (neue interne Funktion `GetDismissState()`).
+  Wer bei WB 1 schon weggeklickt hat, sieht den Hinweis bei WB 2 nicht erneut.
+
 ## [0.9.66-beta.1] - 2026-09-14
 
 ### Changed
