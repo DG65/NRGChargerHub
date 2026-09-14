@@ -50,11 +50,24 @@ Alle greifen auf dieselbe Stellgröße zu. Setzen zwei davon gleichzeitig das St
 den Wert geändert hat. Bei Tibber kann das sogar Geld kosten, weil eine zugesagte Regelenergie-
 Erbringung gestört wird.
 
-Deshalb gibt es in jeder Instanz die Kennzeichnung **„Ladepunkt wird bereits extern geregelt"**.
-Ist sie gesetzt, meldet das Modul über seine Schnittstelle: *Finger weg, hier regelt schon jemand* —
-ein Energiemanagement liest den Ladepunkt dann nur noch mit. Bewusst **von Hand** gesetzt: Ob ein
-go-e Controller oder Tibber gerade mitregelt, steht in keinem Modbus-Register; das Modul könnte es
-allenfalls raten, und Raten ist hier die schlechteste Option.
+Deshalb hat jede Instanz das Feld **„Wer regelt diesen Ladepunkt?"** — Niemand, Energiemanagement,
+go-e Controller, Tibber (Regelenergie), §14a-Steuerung, Direktvermarkter oder Sonstiges. Steht dort
+etwas anderes als „Niemand"/„Energiemanagement", meldet das Modul über seine Schnittstelle: *Finger
+weg, hier regelt schon jemand* — ein Energiemanagement liest den Ladepunkt dann nur noch mit.
+Bewusst **von Hand** gesetzt: Ob ein go-e Controller oder Tibber gerade mitregelt, steht in keinem
+Modbus-Register; das Modul könnte es allenfalls raten, und Raten ist hier die schlechteste Option.
+
+Zwei weitere Bausteine für den Fall, dass dieselbe physische Wallbox über **zwei** Module
+gleichzeitig läuft (z. B. beim Umstieg auf OCPPHub, oder wenn eine Übergangszeit lang beide
+parallel angebunden sind): Ein Feld **„Diese Wallbox ist dasselbe Gerät wie …"** markiert eine
+Instanz als technische Dublette — das betrifft **nur die Zählung** (Summen/Sitzungen/Leistung
+überspringen sie zugunsten der ausgewählten), nicht die Steuerungshoheit, die weiterhin allein über
+„Wer regelt?" läuft. Eine Instanz kann also gleichzeitig als Dublette markiert UND der aktive Regler
+sein. Für den kompletten Stopp (Messen UND Steuern, z. B. eine endgültig abgelöste Alt-Instanz) gibt
+es zusätzlich `CHUB_SetActive($id, bool)` als Skript-Funktion. Und weil beim go-eCharger eine
+Ladefreigabe „Aus" geräteseitig eine harte Zwangs-Sperre setzt, die JEDEN Kanal (App, OCPP,
+Symcon) blockiert, bis sie wieder aufgehoben wird: `CHUB_ClearForceLock($id)` löst genau das,
+falls die Wallbox mal auf gar nichts mehr reagiert.
 
 Darunter liegt eine zweite Grenze, die **unabhängig von allem** gilt: der **maximale
 Anschlussstrom** je Instanz. Was ein übergeordneter Regler anfordert, ist ein Wunsch — der Treiber
@@ -84,10 +97,16 @@ Alle Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Man
   Energiemanagement; beim go-eCharger zusätzlich die Phasenumschaltung, der wichtigste Hebel beim
   Überschussladen (einphasig ab ~1,4 kW, dreiphasig ab ~4,2 kW).
 - 🛡️ **Maximaler Anschlussstrom** je Instanz — harte Grenze bei *jedem* Schreibvorgang.
-- 🚦 **Regler-Kennzeichnung** für Ladepunkte, die schon jemand anderes regelt (siehe oben).
+- 🚦 **Regler-Kennzeichnung** für Ladepunkte, die schon jemand anderes regelt (siehe oben), plus
+  Dubletten-Markierung für dieselbe Wallbox über zwei Module.
+- 🧪 **Vorführmodus** für öffentliche Demo-Instanzen — Steuerung serverseitig gesperrt,
+  Messwerte bleiben normal sichtbar.
+- 📇 **RFID-Kartenzähler** beim go-eCharger (Name + Energie je Karte) — kommt nur über MQTT, kein
+  Modbus-Register dafür vorhanden.
 - 🔗 **`CHUB_GetFunctions($id)`** — dieselbe Schnittstellenidee wie `MHUB_GetFunctions`: Leistungs-
-  und Energievariablen, Steuer-IDs, Fahrzeugerkennung, Mindest-/Höchststrom und die
-  Regler-Kennzeichnung als JSON.
+  und Energievariablen, Steuer-IDs, Fahrzeugerkennung, Geräteidentität (Seriennummer/Host/
+  Hersteller, fürs Erkennen derselben Wallbox über mehrere Module) und die Regler-/Dubletten-
+  Kennzeichnung als JSON.
 
 ## Anschluss-Besonderheiten (kurz)
 
@@ -141,9 +160,7 @@ schaltet, ist das keine akademische Frage.
 
 ChargerHub steht nicht allein. Über die Zeit ist ein ganzer Baukasten entstanden — der
 **NRG-Stack** —, dessen Teile zusammenarbeiten, aber **jedes Modul läuft auch für sich**. Es gibt
-keine Pflichtabhängigkeiten: Fehlt der Partner, fällt nur dessen Zusatzfunktion weg. Welche
-Modulstände zusammen getestet sind, listet
-[SUITE.md](https://github.com/DG65/NRGEMS/blob/main/SUITE.md).
+keine Pflichtabhängigkeiten: Fehlt der Partner, fällt nur dessen Zusatzfunktion weg.
 
 > **[hier `suite.png` einfügen]**
 

@@ -3,6 +3,21 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.70-beta.1] - 2026-09-14
+
+### Changed
+- Doku-Panel um einen Absatz zu `CHUB_SetActive()`/`CHUB_ClearForceLock()` ergänzt (Auftrag
+  Dietmar über EMS, Vollständigkeitsprüfung der Hilfe-Texte vor dem Store-Launch) — beide
+  Funktionen waren bisher nur in einem Feldhinweis erwähnt bzw. gar nicht im Formular
+  auffindbar, obwohl `ClearForceLock()` genau die Funktion ist, die beim bekannten
+  go-e-FORCE_STATE-Hänger weiterhilft.
+- Forum-Ankündigungsentwurf (`.forum/ankuendigung.md`) aktualisiert: die Regler-Kennzeichnung
+  war dort noch als einfache Checkbox beschrieben, ist inzwischen aber das mehrwertige
+  „Wer regelt?"-Auswahlfeld; `duplicateOf`/`CHUB_SetActive()`/`CHUB_ClearForceLock()`,
+  Vorführmodus und RFID-Kartenzähler fehlten komplett. Veralteten Verweis auf
+  `github.com/DG65/NRGEMS/blob/main/SUITE.md` entfernt (dieser Pfad existiert seit der
+  SUITE.md-Bereinigung vom 31.08.2026 nicht mehr öffentlich).
+
 ## [0.9.69-beta.1] - 2026-09-14
 
 ### Added
