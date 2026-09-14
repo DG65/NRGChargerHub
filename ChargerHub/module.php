@@ -1516,6 +1516,24 @@ class ChargerHub extends IPSModule
 
         $this->RegisterAttributeString('SeenNews', '');
         $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
+        // Neue Instanz übernimmt den Ausblenden-Stand einer bestehenden
+        // Geschwister-Instanz (Dietmar über EMS, 14.09.2026) — wer bei WB 1
+        // schon "Was ist neu?" weggeklickt hat, soll es bei WB 2 nicht
+        // erneut sehen. Nur einmalig bei der Neuanlage, keine laufende
+        // Synchronisation (die läuft über AckNews()/DismissReviewHint()).
+        foreach ($this->SiblingInstanceIDs() as $sibling) {
+            $state = @CHUB_GetDismissState($sibling);
+            if (!is_array($state)) {
+                continue;
+            }
+            if (($state['seenNews'] ?? '') !== '') {
+                $this->WriteAttributeString('SeenNews', $state['seenNews']);
+            }
+            if ($state['reviewHintGone'] ?? false) {
+                $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
+            }
+            break;
+        }
         // Einmal-Marker für die 0.9.14-Migration (control-Variablen ohne
         // Kernel-Standardaktion neu anlegen, siehe RegisterVar()). Ein
         // Attribut statt einer Live-Zustandsprüfung, weil sich Letzteres live
@@ -2630,7 +2648,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.66-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.67-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2770,16 +2788,63 @@ class ChargerHub extends IPSModule
         return ['type' => 'ExpansionPanel', 'name' => 'NewsPanel', 'caption' => '🆕 Neu in Version ' . self::NEWS_VERSION, 'expanded' => true, 'items' => $items];
     }
 
+    // Verbund-Konvention "Ausblenden über mehrere Instanzen desselben Moduls
+    // teilen" (Dietmar über EMS, 14.09.2026, SUITE.md): bei mehreren
+    // ChargerHub-Instanzen (WB 1, WB 2 …) soll ein einmal weggeklickter
+    // Hinweis nicht pro Instanz einzeln wieder auftauchen. Da unsere
+    // Dismiss-Aktionen einfache öffentliche Funktionen ohne SetValue/
+    // RequestAction-Umweg sind, reicht der direkte Aufruf der Geschwister-
+    // Funktion — kein EnableAction()/RequestAction()-Ident nötig. Die
+    // Attribut-Prüfung VOR jedem Weiterreichen verhindert endlose
+    // Rückrufe zwischen den Instanzen.
+    private function SiblingInstanceIDs(): array
+    {
+        $siblings = @IPS_GetInstanceListByModuleID(self::CHARGERHUB_GUID) ?: [];
+        return array_values(array_filter($siblings, fn ($iid) => $iid !== $this->InstanceID));
+    }
+
+    // Prozessweiter Merker, welche Instanzen gerade schon dabei sind, einen
+    // Dismiss weiterzureichen — verhindert Ping-Pong, wenn Geschwister-
+    // Instanzen sich gegenseitig zurückrufen (statisch, weil jede Instanz
+    // ihr eigenes Objekt ist und sich ein Instanz-Attribut dafür nicht eignet).
+    private static array $dismissPropagating = [];
+
+    // Für die Übernahme des Ausblenden-Stands durch neu angelegte
+    // Geschwister-Instanzen, siehe Create().
+    public function GetDismissState(): array
+    {
+        return [
+            'seenNews'       => $this->ReadAttributeString('SeenNews'),
+            'reviewHintGone' => $this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE),
+        ];
+    }
+
     public function AckNews()
     {
         $this->WriteAttributeString('SeenNews', self::NEWS_VERSION);
         $this->UpdateFormField('NewsPanel', 'visible', false);
+        if (isset(self::$dismissPropagating[$this->InstanceID])) {
+            return;
+        }
+        self::$dismissPropagating[$this->InstanceID] = true;
+        foreach ($this->SiblingInstanceIDs() as $sibling) {
+            @CHUB_AckNews($sibling);
+        }
+        unset(self::$dismissPropagating[$this->InstanceID]);
     }
 
     public function DismissReviewHint()
     {
         $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
         $this->UpdateFormField('ReviewHint', 'visible', false);
+        if (isset(self::$dismissPropagating[$this->InstanceID])) {
+            return;
+        }
+        self::$dismissPropagating[$this->InstanceID] = true;
+        foreach ($this->SiblingInstanceIDs() as $sibling) {
+            @CHUB_DismissReviewHint($sibling);
+        }
+        unset(self::$dismissPropagating[$this->InstanceID]);
     }
 
     // -----------------------------------------------------------------------
