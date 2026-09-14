@@ -3,6 +3,23 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.68-beta.1] - 2026-09-14
+
+### Added
+- Panel „👋 Wozu dieses Modul?" ganz oben im Formular, noch vor dem News-Banner — fehlte bei
+  der Store-Konventionsprüfung (Auftrag Dietmar über EMS, SUITE.md Formular-Konvention
+  Punkt 0, Referenzimplementierung MeterHub). Aufgeklappt, einmalig ausblendbar, erklärt
+  WOFÜR/WARUM (nicht WIE) inkl. Verweis auf ChargerHubDiscovery für die Ersteinrichtung.
+
+### Changed
+- Das instanzübergreifende Ausblenden aus 0.9.67 auf das MeterHub-Referenzmuster
+  umgestellt: statt gegenseitiger Aufrufe der vollen `AckNews()`/`DismissReviewHint()` mit
+  Prozessmerker gegen Ping-Pong gibt es jetzt einen reinen Übernahme-Schritt
+  `AdoptDismissState()`, der selbst nie weiterpropagiert — einfacher und ganz ohne
+  Prozesszustand. Die Übernahme durch neu hinzukommende Instanzen läuft jetzt bei jedem
+  `ApplyChanges()` (`AdoptDismissFromSibling()`, günstiger Früh-Ausstieg für längst
+  abgeglichene Instanzen) statt nur einmalig bei `Create()`.
+
 ## [0.9.67-beta.1] - 2026-09-14
 
 ### Added
