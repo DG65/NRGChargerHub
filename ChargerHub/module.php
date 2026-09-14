@@ -1516,24 +1516,10 @@ class ChargerHub extends IPSModule
 
         $this->RegisterAttributeString('SeenNews', '');
         $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
-        // Neue Instanz übernimmt den Ausblenden-Stand einer bestehenden
-        // Geschwister-Instanz (Dietmar über EMS, 14.09.2026) — wer bei WB 1
-        // schon "Was ist neu?" weggeklickt hat, soll es bei WB 2 nicht
-        // erneut sehen. Nur einmalig bei der Neuanlage, keine laufende
-        // Synchronisation (die läuft über AckNews()/DismissReviewHint()).
-        foreach ($this->SiblingInstanceIDs() as $sibling) {
-            $state = @CHUB_GetDismissState($sibling);
-            if (!is_array($state)) {
-                continue;
-            }
-            if (($state['seenNews'] ?? '') !== '') {
-                $this->WriteAttributeString('SeenNews', $state['seenNews']);
-            }
-            if ($state['reviewHintGone'] ?? false) {
-                $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
-            }
-            break;
-        }
+        // "Wozu dieses Modul?"-Panel (EMS-Auftrag, 14.09.2026, SUITE.md
+        // Formular-Konvention Punkt 0, Referenzimplementierung MeterHub) —
+        // ganz oben, noch vor dem News-Panel, einmalig dismissible.
+        $this->RegisterAttributeBoolean('PurposeIntroGone', false);
         // Einmal-Marker für die 0.9.14-Migration (control-Variablen ohne
         // Kernel-Standardaktion neu anlegen, siehe RegisterVar()). Ein
         // Attribut statt einer Live-Zustandsprüfung, weil sich Letzteres live
@@ -1662,6 +1648,9 @@ class ChargerHub extends IPSModule
 
         $this->CreateProfiles();
         $this->RegisterVariables();
+        // Vor der Bereitschaftsprüfung (die bei inaktiven/unkonfigurierten
+        // Instanzen früh zurückkehrt) — das Ausblenden gilt unabhängig davon.
+        $this->AdoptDismissFromSibling();
 
         if (!$this->ReadPropertyBoolean('Active') || $this->ReadPropertyString('Host') === '' || $this->ReadPropertyString('Manufacturer') === '') {
             $this->SetTimerInterval('FastTimer', 0);
@@ -2648,7 +2637,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.67-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.68-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2769,6 +2758,13 @@ class ChargerHub extends IPSModule
             array_unshift($form['elements'], $banner);
         }
 
+        // "Wozu dieses Modul?" ganz vorn, noch vor dem News-Banner (Verbund-
+        // Formular-Konvention Punkt 0).
+        $intro = $this->PurposeIntro();
+        if ($intro !== null) {
+            array_unshift($form['elements'], $intro);
+        }
+
         return json_encode($form);
     }
 
@@ -2788,63 +2784,138 @@ class ChargerHub extends IPSModule
         return ['type' => 'ExpansionPanel', 'name' => 'NewsPanel', 'caption' => '🆕 Neu in Version ' . self::NEWS_VERSION, 'expanded' => true, 'items' => $items];
     }
 
-    // Verbund-Konvention "Ausblenden über mehrere Instanzen desselben Moduls
-    // teilen" (Dietmar über EMS, 14.09.2026, SUITE.md): bei mehreren
-    // ChargerHub-Instanzen (WB 1, WB 2 …) soll ein einmal weggeklickter
-    // Hinweis nicht pro Instanz einzeln wieder auftauchen. Da unsere
-    // Dismiss-Aktionen einfache öffentliche Funktionen ohne SetValue/
-    // RequestAction-Umweg sind, reicht der direkte Aufruf der Geschwister-
-    // Funktion — kein EnableAction()/RequestAction()-Ident nötig. Die
-    // Attribut-Prüfung VOR jedem Weiterreichen verhindert endlose
-    // Rückrufe zwischen den Instanzen.
-    private function SiblingInstanceIDs(): array
+    /** Siehe MeterHub::PurposeIntro() für die volle Herleitung — steht ganz vorn, noch vor dem News-Panel. */
+    private function PurposeIntro(): ?array
     {
-        $siblings = @IPS_GetInstanceListByModuleID(self::CHARGERHUB_GUID) ?: [];
-        return array_values(array_filter($siblings, fn ($iid) => $iid !== $this->InstanceID));
+        if ($this->ReadAttributeBoolean('PurposeIntroGone')) {
+            return null;
+        }
+        return [
+            'type' => 'ExpansionPanel', 'name' => 'PurposeIntroPanel', 'expanded' => true,
+            'caption' => '👋  Wozu dieses Modul?',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller (KEBA, Alfen, Heidelberg, go-eCharger) direkt per Modbus TCP — als normale IP-Symcon-Variablen und -Aktionen, ohne Umweg über eine Herstellercloud.'],
+                ['type' => 'Label', 'caption' => 'Der Nutzen: Ladestand, Leistung und Steckerstatus in eigenen Dashboards, Ladefreigabe/Stromlimit aus eigenen Skripten oder einem Energiemanagement (EMS) heraus setzen, statt auf die App des Herstellers angewiesen zu sein.'],
+                ['type' => 'Label', 'caption' => 'Kennst du die IP-Adresse deiner Wallbox noch nicht, oder willst du gleich mehrere einrichten? Das Modul „ChargerHub Suche" durchsucht dafür das lokale Netz und legt passende Instanzen automatisch an.'],
+                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUB_AckPurposeIntro($id);'],
+            ],
+        ];
     }
 
-    // Prozessweiter Merker, welche Instanzen gerade schon dabei sind, einen
-    // Dismiss weiterzureichen — verhindert Ping-Pong, wenn Geschwister-
-    // Instanzen sich gegenseitig zurückrufen (statisch, weil jede Instanz
-    // ihr eigenes Objekt ist und sich ein Instanz-Attribut dafür nicht eignet).
-    private static array $dismissPropagating = [];
-
-    // Für die Übernahme des Ausblenden-Stands durch neu angelegte
-    // Geschwister-Instanzen, siehe Create().
-    public function GetDismissState(): array
+    public function AckPurposeIntro()
     {
-        return [
-            'seenNews'       => $this->ReadAttributeString('SeenNews'),
-            'reviewHintGone' => $this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE),
-        ];
+        $this->WriteAttributeBoolean('PurposeIntroGone', true);
+        $this->UpdateFormField('PurposeIntroPanel', 'visible', false);
+        $this->PropagateDismiss('PurposeIntro');
     }
 
     public function AckNews()
     {
         $this->WriteAttributeString('SeenNews', self::NEWS_VERSION);
         $this->UpdateFormField('NewsPanel', 'visible', false);
-        if (isset(self::$dismissPropagating[$this->InstanceID])) {
-            return;
-        }
-        self::$dismissPropagating[$this->InstanceID] = true;
-        foreach ($this->SiblingInstanceIDs() as $sibling) {
-            @CHUB_AckNews($sibling);
-        }
-        unset(self::$dismissPropagating[$this->InstanceID]);
+        $this->PropagateDismiss('News', self::NEWS_VERSION);
     }
 
     public function DismissReviewHint()
     {
         $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
         $this->UpdateFormField('ReviewHint', 'visible', false);
-        if (isset(self::$dismissPropagating[$this->InstanceID])) {
+        $this->PropagateDismiss('ReviewHint');
+    }
+
+    /**
+     * Ausblenden von "Wozu dieses Modul?"/"Was ist Neu?"/Rückmeldungs-Hinweis
+     * über alle Geschwister-Instanzen dieses Moduls teilen (Dietmar über EMS,
+     * 14.09.2026, SUITE.md "Ausblenden über mehrere Instanzen desselben
+     * Moduls teilen", Referenzimplementierung MeterHub). Ruft bei jeder
+     * Geschwister-Instanz NUR den reinen Übernahme-Schritt auf
+     * (AdoptDismissState), nicht erneut die volle Ack-Methode — dadurch
+     * kein Ping-Pong möglich, ganz ohne Prozessmerker: AdoptDismissState()
+     * propagiert selbst nie weiter.
+     */
+    private function PropagateDismiss(string $what, string $value = ''): void
+    {
+        foreach (@IPS_GetInstanceListByModuleID(self::CHARGERHUB_GUID) ?: [] as $sib) {
+            if ($sib === $this->InstanceID) {
+                continue;
+            }
+            try {
+                CHUB_AdoptDismissState($sib, $what, $value);
+            } catch (\Throwable $e) {
+                // Eine Geschwister-Instanz mitten im Reload/Löschen darf das
+                // Ausblenden der aufrufenden Instanz nicht mitreißen.
+            }
+        }
+    }
+
+    /** Reiner Übernahme-Schritt für eine Geschwister-Instanz — siehe PropagateDismiss(). */
+    public function AdoptDismissState(string $what, string $value)
+    {
+        switch ($what) {
+            case 'PurposeIntro':
+                $this->WriteAttributeBoolean('PurposeIntroGone', true);
+                $this->UpdateFormField('PurposeIntroPanel', 'visible', false);
+                break;
+            case 'ReviewHint':
+                $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
+                $this->UpdateFormField('ReviewHint', 'visible', false);
+                break;
+            case 'News':
+                $this->WriteAttributeString('SeenNews', $value);
+                $this->UpdateFormField('NewsPanel', 'visible', false);
+                break;
+        }
+    }
+
+    /** Für Geschwister-Instanzen, die beim erstmaligen Kontakt den Ausblenden-Stand übernehmen wollen — siehe AdoptDismissFromSibling(). */
+    public function GetDismissState(): array
+    {
+        return [
+            'purposeIntroGone' => $this->ReadAttributeBoolean('PurposeIntroGone'),
+            'reviewHintGone'   => $this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE),
+            'seenNews'         => $this->ReadAttributeString('SeenNews'),
+        ];
+    }
+
+    /**
+     * Gegenrichtung zu PropagateDismiss(): eine Instanz sieht bei jedem
+     * ApplyChanges() bei einer beliebigen Geschwister-Instanz nach und
+     * übernimmt deren Stand, statt "Wozu dieses Modul?"/"Was ist Neu?"/den
+     * Rückmeldungs-Hinweis erneut zu zeigen, obwohl der Nutzer sie an
+     * anderer Stelle schon bestätigt hat. Zieht nur vor (false→true, ältere→
+     * neuere News-Version), überschreibt nie einen schon weiter
+     * fortgeschrittenen eigenen Stand — der frühe Ausstieg macht das für
+     * längst abgeglichene Instanzen billig.
+     */
+    private function AdoptDismissFromSibling(): void
+    {
+        if ($this->ReadAttributeBoolean('PurposeIntroGone') && $this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE)
+            && $this->ReadAttributeString('SeenNews') === self::NEWS_VERSION) {
             return;
         }
-        self::$dismissPropagating[$this->InstanceID] = true;
-        foreach ($this->SiblingInstanceIDs() as $sibling) {
-            @CHUB_DismissReviewHint($sibling);
+        foreach (@IPS_GetInstanceListByModuleID(self::CHARGERHUB_GUID) ?: [] as $sib) {
+            if ($sib === $this->InstanceID) {
+                continue;
+            }
+            try {
+                $state = CHUB_GetDismissState($sib);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if (!is_array($state)) {
+                continue;
+            }
+            if (!$this->ReadAttributeBoolean('PurposeIntroGone') && !empty($state['purposeIntroGone'])) {
+                $this->WriteAttributeBoolean('PurposeIntroGone', true);
+            }
+            if (!$this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE) && !empty($state['reviewHintGone'])) {
+                $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
+            }
+            if ($this->ReadAttributeString('SeenNews') !== self::NEWS_VERSION && ($state['seenNews'] ?? '') === self::NEWS_VERSION) {
+                $this->WriteAttributeString('SeenNews', self::NEWS_VERSION);
+            }
+            break;
         }
-        unset(self::$dismissPropagating[$this->InstanceID]);
     }
 
     // -----------------------------------------------------------------------
