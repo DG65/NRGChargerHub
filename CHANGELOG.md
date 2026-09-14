@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.66-beta.1] - 2026-09-14
+
+### Changed
+- `Manufacturer` hat keinen vorbelegten Hersteller mehr (Fund der InverterHub-Sitzung im
+  Rahmen der Store-Review-Selbstprüfung, Punkt 12 „Neuinstallations-Simulation"): der
+  bisherige Default `keba` war ein reiner Listen-Platzhalter, keine bewusste Wahl — wer
+  nur den Host einträgt und den Hersteller-Select übersieht, hätte scheinbar eine
+  funktionierende Verbindung (Modbus TCP antwortet meist geräteunabhängig), aber
+  Register/Werte des falschen Fabrikats gelesen bzw. geschrieben. Neuer Default `''` mit
+  Options-Eintrag „— bitte wählen —"; die Instanz bleibt bis zur expliziten Auswahl in
+  Status 104 (Text jetzt „Bitte Wallbox-Hersteller wählen und IP-Adresse oder Hostname
+  eintragen.").
+
 ## [0.9.65-beta.1] - 2026-09-13
 
 ### Added

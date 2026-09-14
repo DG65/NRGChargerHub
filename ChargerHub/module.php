@@ -1555,7 +1555,12 @@ class ChargerHub extends IPSModule
         // Zählen) UND aktiver Regler sein (Beispiel Dietmar: WB1 zählt
         // künftig über OCPPHub, geregelt wird sie aber weiter von uns).
         $this->RegisterPropertyString('DuplicateOfKey', '');
-        $this->RegisterPropertyString('Manufacturer', 'keba');
+        // Kein Hersteller-Default (Fund der InverterHub-Sitzung, 14.09.2026):
+        // ein vorbelegter Wert wie 'keba' wird beim Ausfüllen leicht
+        // übersehen und führt dann zu falschen Registeradressen/Werten
+        // gegen ein fremdes Fabrikat, obwohl die Verbindung selbst noch
+        // erfolgreich erscheint. Leerer Default erzwingt eine bewusste Wahl.
+        $this->RegisterPropertyString('Manufacturer', '');
         $this->RegisterPropertyString('Host', '');
         $this->RegisterPropertyInteger('Port', 502);
         $this->RegisterPropertyInteger('UnitId', 255);
@@ -1640,7 +1645,7 @@ class ChargerHub extends IPSModule
         $this->CreateProfiles();
         $this->RegisterVariables();
 
-        if (!$this->ReadPropertyBoolean('Active') || $this->ReadPropertyString('Host') === '') {
+        if (!$this->ReadPropertyBoolean('Active') || $this->ReadPropertyString('Host') === '' || $this->ReadPropertyString('Manufacturer') === '') {
             $this->SetTimerInterval('FastTimer', 0);
             $this->SetTimerInterval('EnableActionsTimer', 0);
             $this->SetStatus(104);
@@ -2625,7 +2630,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.65-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.66-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2642,6 +2647,7 @@ class ChargerHub extends IPSModule
                     'name'    => 'Manufacturer',
                     'caption' => 'Wallbox-Hersteller',
                     'options' => [
+                        ['label' => '— bitte wählen —',                'value' => ''],
                         ['label' => 'KEBA (KeContact P30/P40)',        'value' => 'keba'],
                         ['label' => 'Alfen (Eve Single/Double Pro-line)', 'value' => 'alfen'],
                         ['label' => 'Heidelberg Energy Control',       'value' => 'heidelberg'],
@@ -2719,7 +2725,7 @@ class ChargerHub extends IPSModule
                 ['type' => 'Button', 'caption' => '🔄 Übernehmen erzwingen (ohne Formularänderung)', 'onClick' => "IPS_ApplyChanges(\$id); echo '✅ ApplyChanges() ausgeführt.';"],
             ],
             'status' => [
-                ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte IP-Adresse oder Hostname eintragen.'],
+                ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Wallbox-Hersteller wählen und IP-Adresse oder Hostname eintragen.'],
                 ['code' => 102, 'icon' => 'active',   'caption' => 'Verbindung aktiv.'],
                 ['code' => 201, 'icon' => 'error',    'caption' => 'Verbindungsfehler – Wallbox nicht erreichbar.'],
             ],
