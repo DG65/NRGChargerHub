@@ -23,6 +23,8 @@ class ChargerHubDiscovery extends IPSModule
     // Ausblenden des "Wozu dieses Modul?"-Panels unter mehreren
     // ChargerHubDiscovery-Instanzen, siehe PropagateDismiss().
     private const DISCOVERY_GUID = '{613D9807-B975-91B2-C6BD-FDD3654EF87E}';
+    private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
+    private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
 
     // Kandidaten je Hersteller: Unit-IDs, die typischerweise/dokumentiert
     // Standard sind (kleine Liste statt vollem 1-247-Bereich).
@@ -58,6 +60,10 @@ class ChargerHubDiscovery extends IPSModule
         // — beim ersten Rollout am Hauptmodul ChargerHub übersehen, jetzt
         // auch hier am Suche-Modul nachgezogen.
         $this->RegisterAttributeBoolean('PurposeIntroGone', false);
+        // Symcon-Forum-Hinweis (EMS-Nachprüfung 14.09.2026: fehlte hier
+        // komplett, obwohl ChargerHub selbst ihn schon hatte) — einmalig
+        // ausblendbar, kein Versionsbezug.
+        $this->RegisterAttributeBoolean('ForumHintGone', false);
     }
 
     /** Siehe ChargerHub::PurposeIntro() für die volle Herleitung — steht ganz vorn im Formular. */
@@ -82,23 +88,86 @@ class ChargerHubDiscovery extends IPSModule
     {
         $this->WriteAttributeBoolean('PurposeIntroGone', true);
         $this->UpdateFormField('PurposeIntroPanel', 'visible', false);
-        $this->PropagateDismiss();
+        $this->PropagateDismiss('PurposeIntro');
+    }
+
+    // Hinweis zur Funktionsaufteilung: AdoptDismissState() (0.9.69, schon auf
+    // beta veröffentlicht) behält bewusst ihre Arität ohne $what-Parameter —
+    // eine Änderung wäre ein BRUCH (migrationsvergleich.php). Für den neuen
+    // ForumHint-Fall gibt es stattdessen eine eigene, gleich benannte
+    // Geschwisterfunktion statt den bestehenden Vertrag zu ändern.
+
+    /** Symcon-Forum-Hinweis — einmalig dismissible, kein Versionsbezug, siehe ChargerHub::ForumHint(). */
+    private function ForumHint(): ?array
+    {
+        if ($this->ReadAttributeBoolean('ForumHintGone')) {
+            return null;
+        }
+        return [
+            'type' => 'ExpansionPanel', 'name' => 'ForumHintPanel', 'expanded' => true,
+            'caption' => '💬  Feedback im Symcon-Forum',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'ChargerHub Suche ist Beta — Rückmeldungen sind willkommen, gerade zu nicht erkannten Wallboxen.'],
+                ['type' => 'Label', 'caption' => '⚠️ Eigener Symcon-Forum-Thread ist noch nicht veröffentlicht — bis dahin bitte über die GitHub-Seite melden.'],
+                ['type' => 'Button', 'caption' => 'Zur GitHub-Seite', 'onClick' => "echo 'https://github.com/DG65/NRGChargerHub';", 'link' => true],
+                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUBD_AckForumHint($id);'],
+            ],
+        ];
+    }
+
+    public function AckForumHint()
+    {
+        $this->WriteAttributeBoolean('ForumHintGone', true);
+        $this->UpdateFormField('ForumHintPanel', 'visible', false);
+        $this->PropagateDismiss('ForumHint');
+    }
+
+    /** Reiner Übernahme-Schritt für den ForumHint bei einer Geschwister-Instanz — siehe PropagateDismiss(). */
+    public function AdoptForumHintDismissed()
+    {
+        $this->WriteAttributeBoolean('ForumHintGone', true);
+        $this->UpdateFormField('ForumHintPanel', 'visible', false);
+    }
+
+    /**
+     * Lizenz-/Unterstützungs-Hinweis — Wortlaut verbundweit identisch (siehe
+     * ChargerHub::LicenseHint()), bewusst NICHT wegklickbar.
+     */
+    private function LicenseHint(): array
+    {
+        return [
+            'type' => 'ExpansionPanel', 'expanded' => false,
+            'caption' => '🧡  Über dieses Modul',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'Entstanden aus echter Begeisterung für die eigene Anlage — und ein paar durchgetippten Abenden. Trotzdem: Software-Hobby hin oder her, das hier ist geistiges Eigentum und echte Arbeit steckt drin.'],
+                ['type' => 'Label', 'caption' => 'Lizenz: PolyForm Noncommercial 1.0.0 — privat und nicht-kommerziell frei nutzbar, für den gewerblichen Einsatz braucht es eine gesonderte Lizenz vom Rechteinhaber.'],
+                ['type' => 'Button', 'caption' => 'Lizenztext ansehen', 'onClick' => "echo '" . self::LICENSE_URL . "';", 'link' => true],
+                ['type' => 'Label', 'caption' => 'Gewerbliche Nutzung oder Fragen zur Lizenz? Einfach melden: dietmar@gureth.eu'],
+                ['type' => 'Label', 'caption' => 'Gefällt dir das Modul und du möchtest trotzdem etwas dalassen? Über eine kleine Spende freue ich mich — völlig freiwillig, keine Gegenleistung nötig.'],
+                ['type' => 'Button', 'caption' => '☕  Spenden via PayPal', 'onClick' => "echo '" . self::PAYPAL_URL . "';", 'link' => true],
+            ],
+        ];
     }
 
     /**
      * Ausblenden über alle ChargerHubDiscovery-Geschwister-Instanzen teilen
-     * (Verbund-Muster, siehe ChargerHub::PropagateDismiss()) — hier nur ein
-     * einziger dismissibler Hinweis, daher ohne das $what/$value-Umschalten
-     * der größeren Referenzimplementierungen.
+     * (Verbund-Muster, siehe ChargerHub::PropagateDismiss()). Ruft bei jeder
+     * Geschwister-Instanz nur den reinen Übernahme-Schritt auf — kein
+     * Ping-Pong möglich, da AdoptDismissState() selbst nie weiterpropagiert.
      */
-    private function PropagateDismiss(): void
+    private function PropagateDismiss(string $what): void
     {
+        // $function bewusst je $what unterschiedlich benannt statt eines
+        // gemeinsamen Funktionsnamens mit $what-Parameter — AdoptDismissState()
+        // ist seit 0.9.69 mit fester 0-Parameter-Arität veröffentlicht, eine
+        // nachträgliche Änderung wäre ein BRUCH (migrationsvergleich.php).
+        $function = $what === 'ForumHint' ? 'CHUBD_AdoptForumHintDismissed' : 'CHUBD_AdoptDismissState';
         foreach (@IPS_GetInstanceListByModuleID(self::DISCOVERY_GUID) ?: [] as $sib) {
             if ($sib === $this->InstanceID) {
                 continue;
             }
             try {
-                CHUBD_AdoptDismissState($sib);
+                $function($sib);
             } catch (\Throwable $e) {
                 // Geschwister-Instanz mitten im Reload/Löschen darf das
                 // Ausblenden der aufrufenden Instanz nicht mitreißen.
@@ -106,7 +175,7 @@ class ChargerHubDiscovery extends IPSModule
         }
     }
 
-    /** Reiner Übernahme-Schritt für eine Geschwister-Instanz — siehe PropagateDismiss(). */
+    /** Reiner Übernahme-Schritt für PurposeIntro bei einer Geschwister-Instanz — siehe PropagateDismiss(). */
     public function AdoptDismissState()
     {
         $this->WriteAttributeBoolean('PurposeIntroGone', true);
@@ -116,13 +185,16 @@ class ChargerHubDiscovery extends IPSModule
     /** Für Geschwister-Instanzen, die beim erstmaligen Kontakt den Ausblenden-Stand übernehmen wollen — siehe AdoptDismissFromSibling(). */
     public function GetDismissState(): array
     {
-        return ['purposeIntroGone' => $this->ReadAttributeBoolean('PurposeIntroGone')];
+        return [
+            'purposeIntroGone' => $this->ReadAttributeBoolean('PurposeIntroGone'),
+            'forumHintGone'    => $this->ReadAttributeBoolean('ForumHintGone'),
+        ];
     }
 
     /** Gegenrichtung zu PropagateDismiss() — siehe ChargerHub::AdoptDismissFromSibling(). */
     private function AdoptDismissFromSibling(): void
     {
-        if ($this->ReadAttributeBoolean('PurposeIntroGone')) {
+        if ($this->ReadAttributeBoolean('PurposeIntroGone') && $this->ReadAttributeBoolean('ForumHintGone')) {
             return;
         }
         foreach (@IPS_GetInstanceListByModuleID(self::DISCOVERY_GUID) ?: [] as $sib) {
@@ -134,10 +206,16 @@ class ChargerHubDiscovery extends IPSModule
             } catch (\Throwable $e) {
                 continue;
             }
-            if (is_array($state) && !empty($state['purposeIntroGone'])) {
-                $this->WriteAttributeBoolean('PurposeIntroGone', true);
-                break;
+            if (!is_array($state)) {
+                continue;
             }
+            if (!$this->ReadAttributeBoolean('PurposeIntroGone') && !empty($state['purposeIntroGone'])) {
+                $this->WriteAttributeBoolean('PurposeIntroGone', true);
+            }
+            if (!$this->ReadAttributeBoolean('ForumHintGone') && !empty($state['forumHintGone'])) {
+                $this->WriteAttributeBoolean('ForumHintGone', true);
+            }
+            break;
         }
     }
 
@@ -342,6 +420,14 @@ class ChargerHubDiscovery extends IPSModule
                 ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Such-IP-Bereich eintragen.'],
             ],
         ];
+
+        // Symcon-Forum-Hinweis nach den Haupteinstellungen, "Über dieses
+        // Modul" ganz unten (immer sichtbar, siehe LicenseHint()).
+        $forumHint = $this->ForumHint();
+        if ($forumHint !== null) {
+            $form['elements'][] = $forumHint;
+        }
+        $form['elements'][] = $this->LicenseHint();
 
         // "Wozu dieses Modul?" ganz vorn (Verbund-Formular-Konvention Punkt 0).
         $intro = $this->PurposeIntro();
