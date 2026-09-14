@@ -1452,6 +1452,8 @@ class ChargerHub extends IPSModule
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
     private const NEWS_VERSION = '0.9.41';
+    private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
+    private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
     private const NEWS_ITEMS = [
         'Neu: „Überschussladen selbst regeln" (Panel „Steuerungshoheit & Sicherheit") — ChargerHub kann jetzt eigenständig per PV-Überschuss laden, aber NUR als Fallback ohne EMS (EMS hat immer Vorrang, sobald es läuft). Voraussetzung: genau eine aktive ChargerHub-Instanz, ein MeterHub-Zähler am Netzanschlusspunkt mit Echtzeit-Wert. Standardmäßig aus.',
     ];
@@ -2637,7 +2639,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.70-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.71-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2740,18 +2742,22 @@ class ChargerHub extends IPSModule
         ];
 
         // Symcon-Forum-Hinweis nach den Haupteinstellungen, einmalig
-        // ausblendbar (nicht versionsscharf) — noch kein Beitrag online,
-        // daher vorerst Verweis auf die GitHub-Rückmeldungen statt Link.
-        if (!$this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE)) {
-            $form['elements'][] = [
-                'type' => 'RowLayout',
-                'name' => 'ReviewHint',
-                'items' => [
-                    ['type' => 'Label', 'caption' => '🧪 ChargerHub ist Beta — Rückmeldungen sind willkommen, bitte über die GitHub-Seite (github.com/DG65/NRGChargerHub) oder demnächst im Symcon-Forum:'],
-                    ['type' => 'Button', 'caption' => 'Nicht mehr anzeigen', 'onClick' => 'CHUB_DismissReviewHint($id);'],
-                ],
-            ];
+        // ausblendbar (nicht versionsscharf) — Muster wie MeterHub
+        // (EMS-Nachprüfung 14.09.2026: unser bisheriges RowLayout mit
+        // GitHub-Verweis war noch alter Stil). Eigener Forum-Thread ist noch
+        // nicht veröffentlicht (Entwurf in .forum/), daher vorerst weiter
+        // Verweis auf GitHub — sobald der Thread steht, hier den echten Link
+        // eintragen.
+        $forumHint = $this->ForumHint();
+        if ($forumHint !== null) {
+            $form['elements'][] = $forumHint;
         }
+
+        // "Über dieses Modul" (Lizenz/Spenden) ganz unten, immer sichtbar,
+        // bewusst NICHT wegklickbar — eine Lizenz ist kein einmaliger
+        // Hinweis (SUITE.md, Dietmars Auftrag 01.09.2026, Wortlaut
+        // verbundweit identisch).
+        $form['elements'][] = $this->LicenseHint();
 
         // „Was ist neu"-Banner nach einem Update ganz oben.
         $banner = $this->newsBanner();
@@ -2822,6 +2828,47 @@ class ChargerHub extends IPSModule
         $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
         $this->UpdateFormField('ReviewHint', 'visible', false);
         $this->PropagateDismiss('ReviewHint');
+    }
+
+    /** Symcon-Forum-Hinweis — einmalig dismissible, kein Versionsbezug, siehe MeterHub::ForumHint(). */
+    private function ForumHint(): ?array
+    {
+        if ($this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE)) {
+            return null;
+        }
+        return [
+            'type' => 'ExpansionPanel', 'name' => 'ReviewHint', 'expanded' => true,
+            'caption' => '💬  Feedback im Symcon-Forum',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'ChargerHub ist Beta — Rückmeldungen sind ausdrücklich willkommen, bitte mit Hersteller, Modell und betroffenem Register/Wert.'],
+                ['type' => 'Label', 'caption' => '⚠️ Eigener Symcon-Forum-Thread ist noch nicht veröffentlicht — bis dahin bitte über die GitHub-Seite melden.'],
+                ['type' => 'Button', 'caption' => 'Zur GitHub-Seite', 'onClick' => "echo 'https://github.com/DG65/NRGChargerHub';", 'link' => true],
+                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUB_DismissReviewHint($id);'],
+            ],
+        ];
+    }
+
+    /**
+     * Lizenz-/Unterstützungs-Hinweis — Dietmars Auftrag 01.09.2026, Wortlaut
+     * ("Variante A") verbundweit als SUITE.md-Konvention festgehalten, damit
+     * alle NRG-Stack-Module denselben Text verwenden. Anders als der
+     * Forum-Hinweis bewusst NICHT wegklickbar — eine Lizenz ist kein
+     * einmaliger Hinweis, der nach dem ersten Lesen verschwinden sollte.
+     */
+    private function LicenseHint(): array
+    {
+        return [
+            'type' => 'ExpansionPanel', 'expanded' => false,
+            'caption' => '🧡  Über dieses Modul',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'Entstanden aus echter Begeisterung für die eigene Anlage — und ein paar durchgetippten Abenden. Trotzdem: Software-Hobby hin oder her, das hier ist geistiges Eigentum und echte Arbeit steckt drin.'],
+                ['type' => 'Label', 'caption' => 'Lizenz: PolyForm Noncommercial 1.0.0 — privat und nicht-kommerziell frei nutzbar, für den gewerblichen Einsatz braucht es eine gesonderte Lizenz vom Rechteinhaber.'],
+                ['type' => 'Button', 'caption' => 'Lizenztext ansehen', 'onClick' => "echo '" . self::LICENSE_URL . "';", 'link' => true],
+                ['type' => 'Label', 'caption' => 'Gewerbliche Nutzung oder Fragen zur Lizenz? Einfach melden: dietmar@gureth.eu'],
+                ['type' => 'Label', 'caption' => 'Gefällt dir das Modul und du möchtest trotzdem etwas dalassen? Über eine kleine Spende freue ich mich — völlig freiwillig, keine Gegenleistung nötig.'],
+                ['type' => 'Button', 'caption' => '☕  Spenden via PayPal', 'onClick' => "echo '" . self::PAYPAL_URL . "';", 'link' => true],
+            ],
+        ];
     }
 
     /**

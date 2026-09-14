@@ -3,6 +3,20 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.71-beta.1] - 2026-09-14
+
+### Added
+- Panel „🧡 Über dieses Modul" (Lizenz-/Spenden-Hinweis, SUITE.md-Wortlaut, Dietmars Auftrag
+  01.09.2026) fehlte bisher in ChargerHub UND ChargerHubDiscovery komplett — EMS-Nachprüfung.
+  Ganz unten im Formular, immer sichtbar, nicht wegklickbar.
+- Forum-Hinweis in ChargerHubDiscovery nachgezogen — fehlte dort bisher ganz.
+
+### Changed
+- ChargerHubs Forum-Hinweis auf das aktuelle Verbund-Muster umgestellt (MeterHub-Referenz):
+  eigenes dismissibles ExpansionPanel „💬 Feedback im Symcon-Forum" statt des alten RowLayout
+  mit reinem GitHub-Verweis. Eigener Forum-Thread ist noch nicht veröffentlicht — Panel
+  verweist bis dahin weiter auf GitHub, mit explizitem Platzhalter-Hinweis.
+
 ## [0.9.70-beta.1] - 2026-09-14
 
 ### Changed
