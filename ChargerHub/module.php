@@ -1984,6 +1984,174 @@ class DaheimLaderDriver implements ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// FoxEssDriver — Fox ESS EV Charger (Modelle A/L/C, laut Forum-Anfrage),
+// binäres Modbus TCP, Registeradressen aus dem öffentlichen Hersteller-PDF
+// "Fox ESS EV Charger Modbus TCP Protocol 1.6" (12.08.2024) — UNGETESTET an
+// echter Hardware. Alle gelesenen Register (0x1000..0x1031) liegen laut PDF
+// lückenlos hintereinander — ein einziger Lesezugriff deckt alles ab, wie
+// beim DaheimLader-Treiber.
+//
+// Fund beim Umsetzen: Das PDF widerspricht sich bei 0x1010 "Current Phase
+// Sequence" selbst — der Fließtext (Abschnitt 2.17) nennt Type "UINT32",
+// die Registerliste (Abschnitt 2, mit Reg Num/Len-Spalte) weist ihr aber
+// nur 1 Register/2 Byte zu, UND das nächste Register (0x1011 Max Supported
+// Power) folgt exakt eine Adresse später — bei echtem UINT32 gäbe es dort
+// eine Kollision. Der Registerliste (in sich widerspruchsfrei) gefolgt,
+// nicht dem vermutlich fehlerhaften Fließtext — bitte bei Gelegenheit an
+// echter Hardware verifizieren.
+// ---------------------------------------------------------------------------
+
+class FoxEssDriver implements ChargerDriverInterface
+{
+    const REG_BLOCK_START = 0x1000;
+    const REG_BLOCK_COUNT = 50; // deckt 0x1000..0x1031 ab (siehe Klassenkommentar)
+
+    const REG_MAX_CURR_LIMIT = 0x3001; // W/R, 0,1 A
+    const REG_CHARGE_CMD     = 0x4001; // W — 0=keine Aktion, 1=Start, 2=Stopp
+    const REG_PHASE_CMD      = 0x4002; // W, nur wenn an Phasenumschalt-Box angeschlossen
+
+    const STATES = [
+        0 => 'Bereit (kein Fahrzeug)', 1 => 'Verbunden', 2 => 'Startet',
+        3 => 'Lädt', 4 => 'Pausiert', 5 => 'Beendet', 6 => 'Fehler',
+        7 => 'Reserviert', 8 => 'Gesperrt',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',         'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',           'Ladestatus',         'I', 'CHB.FoxEssState', true, 'device', 'Holding 0x1003'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', 'CHB.Connected',   true, 'device', 'Holding 0x1005 (CC Status)'],
+            ['power',           'Ladeleistung',       'F', 'NRG.Watt',       true, 'device', 'Holding 0x100E (0,1 kW)'],
+            ['energy_total',    'Energie gesamt',     'F', 'NRG.kWh',        true, 'device', 'Holding 0x1016-0x1017 (U32, 0,1 kWh)'],
+            ['energy_session',  'Energie akt. Sitzung', 'F', 'CHB.kWhSession', true, 'device', 'Holding 0x1018-0x1019 (U32, 0,1 kWh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 0x1008 (0,1 V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 0x1009 (0,1 V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 0x100A (0,1 V)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 0x100B (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 0x100C (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 0x100D (0,1 A)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',     'Seriennummer',        'S', '', false, 'device', 'Holding 0x1022 ff. (ASCII)'],
+                ['dev_model',      'Modellcode',          'S', '', false, 'device', 'Holding 0x101E ff. (ASCII)'],
+                ['dev_firmware',   'Firmware-Version',    'S', '', false, 'device', 'Holding 0x1001'],
+                ['error_code',     'Systemfehler (Bits)', 'I', '', true,  'errors', 'Holding 0x101A-0x101B (U32-Bitmaske, siehe PDF Appendix 2)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'WO Holding 0x4001 (1=Start, 2=Stopp)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 0x3001 (0,1 A)'],
+            ]],
+            // Nur wirksam, wenn die Wallbox an eine externe Phasenumschalt-Box
+            // angeschlossen ist (laut PDF-Hinweis zu 0x1010/0x4002).
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (nur mit Phasenumschalt-Box)', 'vars' => [
+                ['phase_status',   'Aktive Phasen',     'I', 'CHB.FoxEssPhaseStatus', true, 'device', 'Holding 0x1010'],
+                ['ctl_phase_mode', 'Phasenmodus',       'I', 'CHB.FoxEssPhaseCmd',    true, 'control', 'WO Holding 0x4002'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = ($k === 3) ? 0x27D07F : (in_array($k, [6], true) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        $phaseLabels = [0 => ['Dreiphasig', 0x27D07F], 1 => ['L2', 0x7A8A99], 2 => ['L3', 0x7A8A99]];
+        return [
+            'CHB.FoxEssState'       => $states,
+            'CHB.FoxEssPhaseStatus' => $phaseLabels,
+            'CHB.FoxEssPhaseCmd'    => $phaseLabels,
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $r  = $mb->readHolding(self::REG_BLOCK_START, self::REG_BLOCK_COUNT);
+        $ok = ($r !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $hub->SetVarInt('state', $mb->u16($r, 3));
+        $hub->SetVarBool('vehicle_plugged', $mb->u16($r, 5) === 1);
+        $hub->SetVarFloat('power', $mb->u16($r, 14) * 100.0); // 0,1 kW -> W
+        $hub->SetVarFloat('energy_total', $mb->u32($r, 22) / 10.0);
+        $hub->SetVarFloat('energy_session', $mb->u32($r, 24) / 10.0);
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $hub->SetVarFloat('voltage_l1', $mb->u16($r, 8) / 10.0);
+            $hub->SetVarFloat('voltage_l2', $mb->u16($r, 9) / 10.0);
+            $hub->SetVarFloat('voltage_l3', $mb->u16($r, 10) / 10.0);
+            $hub->SetVarFloat('current_l1', $mb->u16($r, 11) / 10.0);
+            $hub->SetVarFloat('current_l2', $mb->u16($r, 12) / 10.0);
+            $hub->SetVarFloat('current_l3', $mb->u16($r, 13) / 10.0);
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $hub->SetVarStr('dev_serial', $mb->readStr($r, 34, 16));
+            $hub->SetVarStr('dev_model', $mb->readStr($r, 30, 4));
+            $sw = $mb->u16($r, 1);
+            $hub->SetVarStr('dev_firmware', (($sw >> 8) & 0xFF) . '.' . ($sw & 0xFF));
+            $hub->SetVarInt('error_code', $mb->u32($r, 26));
+        }
+
+        if ($hub->GroupActive('GroupPhaseSwitch')) {
+            $hub->SetVarInt('phase_status', $mb->u16($r, 16));
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                $cmd = (bool)$value ? 1 : 2; // 1=Start, 2=Stopp
+                if ($mb->writeMultiple(self::REG_CHARGE_CMD, [$cmd])) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                if ($mb->writeMultiple(self::REG_MAX_CURR_LIMIT, [$amp * 10])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $mode = max(0, min(2, (int)$value));
+                if ($mb->writeMultiple(self::REG_PHASE_CMD, [$mode])) {
+                    $hub->SetVarInt('ctl_phase_mode', $mode);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChargerHub — Hauptmodul
 // ---------------------------------------------------------------------------
 
@@ -2012,6 +2180,7 @@ class ChargerHub extends IPSModule
         'goe'        => 'GoeChargerDriver',
         'abl'        => 'AblDriver',
         'daheimlader' => 'DaheimLaderDriver',
+        'foxess'      => 'FoxEssDriver',
     ];
 
     // Hersteller, die Modbus ASCII statt binäres Modbus TCP sprechen (siehe
@@ -2030,6 +2199,7 @@ class ChargerHub extends IPSModule
         'goe'        => 32,
         'abl'        => 32,
         'daheimlader' => 32,
+        'foxess'      => 32,
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
     // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
@@ -3229,7 +3399,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.77-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.78-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3240,6 +3410,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
                         ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, „Energie gesamt" eine daraus aufintegrierte Software-Zählung, keine echte Messung (kann von einem echten Zähler abweichen). Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
                         ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer.'],
+                        ['type' => 'Label', 'caption' => '• 🆕 Fox ESS EV Charger (Modelle A/L/C): Standard-Unit-ID 1, Port 502. Phasenumschaltung nur wirksam, wenn eine externe Phasenumschalt-Box angeschlossen ist.'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
                     ],
                 ],
@@ -3256,6 +3427,7 @@ class ChargerHub extends IPSModule
                         ['label' => 'go-eCharger (Gemini/HOME+)',      'value' => 'goe'],
                         ['label' => '🆕 ABL (eMH1/eMH2/eMH3, Modbus ASCII)', 'value' => 'abl'],
                         ['label' => '🆕 DaheimLader (Smart/Touch/PRO-Serie)', 'value' => 'daheimlader'],
+                        ['label' => '🆕 Fox ESS EV Charger (A/L/C)', 'value' => 'foxess'],
                     ],
                 ],
                 [

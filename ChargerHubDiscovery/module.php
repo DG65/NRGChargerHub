@@ -40,6 +40,7 @@ class ChargerHubDiscovery extends IPSModule
         // ABL-eigenen Adressbereich 0x01..0x10 (Broadcast 0x00 ausgenommen,
         // siehe ABL-PDF "Common settings"), 1 ist der praktische Standard.
         'abl'         => [1],
+        'foxess'      => [1],
     ];
 
     private const VENDOR_LABELS = [
@@ -49,6 +50,7 @@ class ChargerHubDiscovery extends IPSModule
         'goe'         => 'go-eCharger Gemini/HOME+',
         'daheimlader' => 'DaheimLader (Smart/Touch/PRO-Serie)',
         'abl'         => 'ABL eMH1/eMH2/eMH3',
+        'foxess'      => 'Fox ESS EV Charger (A/L/C)',
     ];
 
     public function Create()
@@ -345,7 +347,7 @@ class ChargerHubDiscovery extends IPSModule
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wallboxen auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs.'],
                         ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen, dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten — Klick auf „Erstellen" legt eine ChargerHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
-                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3. Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
+                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3, Fox ESS EV Charger (A/L/C). Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
                         ['type' => 'Label', 'caption' => '🆕 ABL spricht Modbus ASCII statt binärem Modbus TCP — die Suche prüft das automatisch mit, ein zusätzlicher Schritt ist nicht nötig.'],
                         ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP durchsuchen — das nutzt eine langsamere, aber zuverlässigere Port-Prüfung.'],
                         ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für die Suche unsichtbar. In der Praxis beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — zum Prüfen im Browser aufrufen: http://<wallbox-ip>/api/status?filter=men'],
@@ -911,6 +913,16 @@ class ChargerHubDiscovery extends IPSModule
                 }
                 $r2 = $this->asciiReadHolding($ip, $port, $unitId, 0x0033, 3, 1.5);
                 return ($r2 !== null && (($r2[0] >> 8) & 0xFF) === 0x33);
+
+            case 'foxess':
+                // Holding 0x1003: EVC Status, plausibel 0..8.
+                $state = $this->readHolding($ip, $port, $unitId, 0x1003, 1, 1.0);
+                if ($state === null || $state[0] > 8) {
+                    return false;
+                }
+                // Holding 0x1013: Max Supported Current, 0,1 A, plausibel 6..100 A.
+                $maxA = $this->readHolding($ip, $port, $unitId, 0x1013, 1, 1.0);
+                return ($maxA !== null && $maxA[0] >= 60 && $maxA[0] <= 1000);
         }
         return false;
     }

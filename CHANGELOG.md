@@ -3,6 +3,25 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.78-beta.1] - 2026-09-15
+
+### Added
+- Neuer Hersteller: **Fox ESS EV Charger** (Modelle A/L/C), aus einer weiteren Forum-Anfrage
+  entstanden (15.09.2026, strigi). Ganz normales binäres Modbus TCP (Standard-MBAP, FC
+  0x03/0x06/0x10), läuft über den bestehenden `CHUB_ModbusTcpClient`. Registeradressen aus
+  dem öffentlichen Hersteller-PDF „Fox ESS EV Charger Modbus TCP Protocol 1.6"
+  (12.08.2024): Ladestatus, Spannung/Strom je Phase, Leistung, Energie (gesamt +
+  aktuelle Sitzung), Systemfehler-Bitmaske, Geräteinfo (Modell/Seriennummer/Firmware),
+  Steuerung (Ladefreigabe, Stromlimit), optionale Phasenumschaltung (nur mit externer
+  Phasenumschalt-Box). Fund beim Umsetzen: Das PDF widerspricht sich selbst beim Register
+  „Current Phase Sequence" (Fließtext nennt UINT32, die in sich widerspruchsfreie
+  Registerliste weist ihm nur 1 Register zu) — der Registerliste gefolgt, nicht dem
+  vermutlich fehlerhaften Fließtext. Register-Offset-Berechnung mit einem Fake-Client
+  gegen ein 16A/11kW/230V-Szenario durchgetestet, alle Werte korrekt. Ungetestet an
+  echter Hardware.
+- ChargerHubDiscovery (Netzwerksuche) erkennt jetzt auch Fox ESS (EVC Status + Max
+  Supported Current plausibel).
+
 ## [0.9.77-beta.1] - 2026-09-15
 
 ### Added
