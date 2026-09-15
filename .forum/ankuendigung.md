@@ -86,6 +86,7 @@ Referenzumsetzung abgeglichen · 🧪 aus Herstellerdoku umgesetzt (Feldrückmel
 | **Alfen** (Eve Single/Double Pro-line, NG9xx) | 🧪 | Sockelstatus, Leistung, angewandtes Limit, Spannung/Strom je Phase, Steuerung. Alfen verlangt eine **Gültigkeitsdauer** für jeden Sollwert - das Modul erneuert sie mit. Derzeit nur Sockel 1 |
 | **Heidelberg Energy Control** | 🧪 | Ladestatus, Leistung, Strom/Spannung je Phase, Platinentemperatur, Steuerung bis 16 A (mehr kann das Gerät nicht) |
 | **ABL** (eMH1/eMH2/eMH3) | 🧪 | Aus einer konkreten Forum-Anfrage entstanden - spricht als einziger Hersteller hier kein binäres Modbus TCP, sondern Modbus ASCII über einen reinen RS485-zu-Ethernet-Wandler, dafür ein eigener Transport-Client. Ladestatus, Strom je Phase, geschätzte Ladeleistung (kein Leistungsregister in diesem API-Auszug), Steuerung bis 32 A über das dokumentierte Icmax-Register. Die interne Zustandsmaschine (Registerwechsel zwischen Betriebszuständen) wird bewusst NICHT angefasst - ohne Testhardware zu riskant |
+| **DaheimLader** (Smart V1/V2, Touch, Smart/Touch/Business PRO) | 🧪 | Ebenfalls aus einer Forum-Anfrage entstanden. Ganz normales binäres Modbus TCP, deutlich vollständigeres Protokoll als bei den anderen: Ladestatus, Kabelstatus, Fehlercode, Strom/Leistung/Spannung je Phase, Zählerstand, Sitzungsenergie, Ladezeit, Steuerung bis 32 A. Bei den PRO-Modellen zusätzlich Phasenumschaltung |
 
 Alle Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Manager, Spalte
 „Beschreibung") - praktisch für den Abgleich mit dem Handbuch.

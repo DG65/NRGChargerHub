@@ -3,6 +3,21 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.74-beta.1] - 2026-09-15
+
+### Added
+- Neuer Hersteller: **DaheimLader** (Smart V1/V2, Touch, Smart PRO, Touch PRO, Business PRO),
+  aus einer weiteren Forum-Anfrage entstanden (15.09.2026, sieckendieck). Ganz normales
+  binäres Modbus TCP (Standard-MBAP, FC 0x03/0x10) — läuft über den bestehenden
+  `CHUB_ModbusTcpClient`, kein neuer Transport nötig. Registeradressen aus dem öffentlichen
+  Hersteller-PDF „DaheimLader Modbus/TCP-Spezifikation" (28.07.2026): Ladestatus,
+  Kabelstatus, Fehlercode, Strom/Leistung/Spannung je Phase, Zählerstand, Sitzungsenergie,
+  Ladezeit, Steuerung (Ladefreigabe über Start/Stopp-Befehl, Stromlimit). Phasenumschaltung
+  und RFID-Kartenauslesung sind laut Doku PRO-exklusiv, entsprechend als eigene optionale
+  Gruppe abgebildet. Ungetestet an echter Hardware, aber ein deutlich saubereres/
+  vollständigeres Protokoll als bei den anderen aus Doku abgeleiteten Treibern — mit
+  synthetischen Registerwerten gegen die Offset-Berechnung durchgetestet.
+
 ## [0.9.73-beta.1] - 2026-09-15
 
 ### Added
