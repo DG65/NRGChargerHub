@@ -1774,6 +1774,199 @@ class AblDriver implements ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// DaheimLaderDriver — DaheimLader Smart/Touch/Smart PRO/Touch PRO/Business PRO
+// (Hersteller DaheimLaden GmbH), aus einer Forum-Anfrage entstanden
+// (15.09.2026, sieckendieck). Anders als ABL ganz normales binäres Modbus TCP
+// (Standard-MBAP, FC 0x03/0x10) — läuft über den gemeinsamen
+// CHUB_ModbusTcpClient wie KEBA/Alfen/Heidelberg. Registeradressen aus dem
+// öffentlichen Hersteller-PDF "DaheimLader Modbus/TCP-Spezifikation"
+// (28.07.2026) — UNGETESTET an echter Hardware.
+//
+// Ladezustand/Kabelstatus/Fehlercode/Ströme/Leistungen/Zählerstand/Spannungen
+// liegen als ein zusammenhängender Registerblock 0..113 — ein einziger
+// Lesezugriff deckt fast alles ab. Nur die Phasenumschaltung (184..188, laut
+// Doku PRO-exklusiv) braucht einen zweiten, optionalen Lesezugriff.
+// ---------------------------------------------------------------------------
+
+class DaheimLaderDriver implements ChargerDriverInterface
+{
+    const REG_BLOCK_START = 0;
+    const REG_BLOCK_COUNT = 114; // deckt Register 0..113 ab
+
+    const REG_SERIAL       = 38; // Länge lt. Doku 16 Byte, Registerlücke bis 54 legt aber 16 Register nahe
+    const REG_CARD_ID      = 54;
+    const REG_SAFE_CURRENT = 87; // WR, 0,1 A — nicht bei PRO
+    const REG_TIMEOUT      = 89; // WR, Sekunden — nicht bei PRO
+    const REG_CURR_LIMIT   = 91; // WR, 0,1 A
+    const REG_CHARGE_MODE  = 93; // WR — 0=Plug&Charge, 1=Authentifizierung
+    const REG_CHARGE_CMD   = 95; // WO — 1=Start, 2=Stopp
+
+    const REG_PHASE_STATUS = 184; // RO, nur PRO
+    const REG_PHASE_CMD    = 186; // WR, nur PRO
+    const REG_PHASE_RESULT = 188; // RO, nur PRO
+
+    const STATES = [
+        1 => 'Standby', 2 => 'Verbunden', 3 => 'Startbereit', 4 => 'Laden',
+        5 => 'Startfehler', 6 => 'Ladeende', 7 => 'Systemfehler',
+        8 => 'Terminladung', 9 => 'Firmware-Upgrade', 10 => 'Einschalten',
+    ];
+
+    const ERRORS = [
+        0 => 'Kein Fehler', 11 => 'CP-Spannungsfehler', 12 => 'Not-Aus gedrückt',
+        13 => 'Unterspannung', 14 => 'Überspannung', 15 => 'Übertemperatur',
+        16 => 'Zählerfehler', 17 => 'Fehlerhafte Erdung/Leckage',
+        18 => 'Ausgangskurzschluss', 19 => 'Überstrom', 21 => 'Fahrzeug lädt nicht',
+        22 => 'Fahrzeug nicht erkannt', 23 => 'Relais klebt',
+        24 => 'Leckageprüfgerät defekt', 25 => 'PE-Fehler', 26 => 'Start fehlgeschlagen',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',          'B', '~Alert.Reversed',   true,  'errors', ''],
+            ['state',           'Ladestatus',          'I', 'CHB.DaheimState',   true,  'device', 'Holding 0'],
+            ['vehicle_plugged', 'Fahrzeug verbunden',  'B', 'CHB.Connected',     true,  'device', 'Holding 2 (Kabelstatus)'],
+            ['error_code',      'Fehlercode',          'I', 'CHB.DaheimError',   true,  'errors', 'Holding 4'],
+            ['power',           'Ladeleistung',        'F', 'NRG.Watt',          true,  'device', 'Holding 12-13 (U32, W)'],
+            ['energy_total',    'Energie gesamt',      'F', 'NRG.kWh',           true,  'device', 'Holding 28-29 (U32, 0,1 kWh)'],
+            ['energy_session',  'Energie akt. Sitzung','F', 'CHB.kWhSession',    true,  'device', 'Holding 72 (0,1 kWh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Strom/Spannung/Leistung je Phase', 'vars' => [
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 6 (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 8 (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 10 (0,1 A)'],
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Holding 16-17 (U32, W)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Holding 20-21 (U32, W)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Holding 24-25 (U32, W)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 109 (0,1 V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 111 (0,1 V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 113 (0,1 V)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',   'Seriennummer',     'S', '', false, 'device', 'Holding 38 ff. (String)'],
+                ['ladezeit_sek', 'Ladezeit (Sek.)',  'I', '', true,  'device', 'Holding 78-79 (U32, Sekunden)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'WO Holding 95 (1=Start, 2=Stopp)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 91 (0,1 A)'],
+            ]],
+            // Nur Smart PRO/Touch PRO/Business PRO — auf Nicht-PRO-Geräten
+            // liefert der Lesezugriff schlicht keine gültigen Werte (Register
+            // existiert dort laut Doku nicht), Variablen bleiben dann leer.
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (nur PRO-Modelle)', 'vars' => [
+                ['phase_status', 'Aktive Phasen',       'I', 'CHB.DaheimPhaseStatus', true, 'phaseswitch', 'Holding 184 (nur PRO)'],
+                ['ctl_phase_mode', 'Phasenmodus (1/3)', 'I', 'CHB.DaheimPhaseCmd',    true, 'phaseswitch', 'WR Holding 186 (nur PRO)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = ($k === 4) ? 0x27D07F : (in_array($k, [5, 7], true) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        $errors = [];
+        foreach (self::ERRORS as $k => $label) {
+            $errors[$k] = [$label, ($k === 0) ? 0x7A8A99 : 0xE74C3C];
+        }
+        return [
+            'CHB.DaheimState'       => $states,
+            'CHB.DaheimError'       => $errors,
+            'CHB.DaheimPhaseStatus' => [1 => ['1-phasig', 0x7A8A99], 3 => ['3-phasig', 0x27D07F]],
+            'CHB.DaheimPhaseCmd'    => [1 => ['1-phasig', 0x7A8A99], 3 => ['3-phasig', 0x27D07F]],
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $r  = $mb->readHolding(self::REG_BLOCK_START, self::REG_BLOCK_COUNT);
+        $ok = ($r !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $hub->SetVarInt('state', $mb->u16($r, 0));
+        $hub->SetVarBool('vehicle_plugged', $mb->u16($r, 2) === 1);
+        $hub->SetVarInt('error_code', $mb->u16($r, 4));
+        $hub->SetVarFloat('power', (float)$mb->u32($r, 12));
+        $hub->SetVarFloat('energy_total', $mb->u32($r, 28) / 10.0);
+        $hub->SetVarFloat('energy_session', $mb->u16($r, 72) / 10.0);
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $hub->SetVarFloat('current_l1', $mb->u16($r, 6) / 10.0);
+            $hub->SetVarFloat('current_l2', $mb->u16($r, 8) / 10.0);
+            $hub->SetVarFloat('current_l3', $mb->u16($r, 10) / 10.0);
+            $hub->SetVarFloat('power_l1', (float)$mb->u32($r, 16));
+            $hub->SetVarFloat('power_l2', (float)$mb->u32($r, 20));
+            $hub->SetVarFloat('power_l3', (float)$mb->u32($r, 24));
+            $hub->SetVarFloat('voltage_l1', $mb->u16($r, 109) / 10.0);
+            $hub->SetVarFloat('voltage_l2', $mb->u16($r, 111) / 10.0);
+            $hub->SetVarFloat('voltage_l3', $mb->u16($r, 113) / 10.0);
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $hub->SetVarStr('dev_serial', $mb->readStr($r, self::REG_SERIAL, 16));
+            $hub->SetVarInt('ladezeit_sek', $mb->u32($r, 78));
+        }
+
+        if ($hub->GroupActive('GroupPhaseSwitch')) {
+            $ps = $mb->readHolding(self::REG_PHASE_STATUS, 1);
+            if ($ps !== null) {
+                $hub->SetVarInt('phase_status', $mb->u16($ps, 0));
+            }
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                $cmd = (bool)$value ? 1 : 2; // 1=Start, 2=Stopp
+                if ($mb->writeMultiple(self::REG_CHARGE_CMD, [$cmd])) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                if ($mb->writeMultiple(self::REG_CURR_LIMIT, [$amp * 10])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $mode = ((int)$value === 1) ? 1 : 3;
+                if ($mb->writeMultiple(self::REG_PHASE_CMD, [$mode])) {
+                    $hub->SetVarInt('ctl_phase_mode', $mode);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChargerHub — Hauptmodul
 // ---------------------------------------------------------------------------
 
@@ -1801,6 +1994,7 @@ class ChargerHub extends IPSModule
         'heidelberg' => 'HeidelbergDriver',
         'goe'        => 'GoeChargerDriver',
         'abl'        => 'AblDriver',
+        'daheimlader' => 'DaheimLaderDriver',
     ];
 
     // Hersteller, die Modbus ASCII statt binäres Modbus TCP sprechen (siehe
@@ -1818,6 +2012,7 @@ class ChargerHub extends IPSModule
         'heidelberg' => 16,
         'goe'        => 32,
         'abl'        => 32,
+        'daheimlader' => 32,
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
     // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
@@ -2988,7 +3183,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.73-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.74-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2998,6 +3193,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
                         ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
                         ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, keine echte Messung. Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
+                        ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer.'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
                     ],
                 ],
@@ -3013,6 +3209,7 @@ class ChargerHub extends IPSModule
                         ['label' => 'Heidelberg Energy Control',       'value' => 'heidelberg'],
                         ['label' => 'go-eCharger (Gemini/HOME+)',      'value' => 'goe'],
                         ['label' => '🆕 ABL (eMH1/eMH2/eMH3, Modbus ASCII)', 'value' => 'abl'],
+                        ['label' => '🆕 DaheimLader (Smart/Touch/PRO-Serie)', 'value' => 'daheimlader'],
                     ],
                 ],
                 [
