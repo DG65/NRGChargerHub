@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.76-beta.1] - 2026-09-15
+
+### Fixed
+- DaheimLader-Phasenumschaltung (`ctl_phase_mode`) hatte fälschlich die Gruppen-Kennung
+  `'phaseswitch'` statt `'control'` — dadurch band weder `RegisterVar()` noch
+  `SetControlActions()` eine Aktion an den Ident, der Schalter fehlte komplett in
+  Konsole/WebFront (per Skript wäre der Ident zwar schreibbar gewesen, aber ohne
+  Bedienelement). Fund aus dem Forum (sieckendieck/Mike, echte Touch-PRO-Hardware,
+  15.09.2026: „Phasenwechsel funktioniert nicht") — die Wallbox selbst war nicht die
+  Ursache. `phase_status` (reine Anzeige) läuft jetzt unter der bestehenden Kategorie
+  „Gerät" statt einer neuen, nie ins Deutsche übersetzten Kategorie „Phaseswitch".
+
 ## [0.9.75-beta.1] - 2026-09-15
 
 ### Added

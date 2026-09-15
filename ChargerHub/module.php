@@ -1869,8 +1869,15 @@ class DaheimLaderDriver implements ChargerDriverInterface
             // liefert der Lesezugriff schlicht keine gültigen Werte (Register
             // existiert dort laut Doku nicht), Variablen bleiben dann leer.
             'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (nur PRO-Modelle)', 'vars' => [
-                ['phase_status', 'Aktive Phasen',       'I', 'CHB.DaheimPhaseStatus', true, 'phaseswitch', 'Holding 184 (nur PRO)'],
-                ['ctl_phase_mode', 'Phasenmodus (1/3)', 'I', 'CHB.DaheimPhaseCmd',    true, 'phaseswitch', 'WR Holding 186 (nur PRO)'],
+                ['phase_status', 'Aktive Phasen',       'I', 'CHB.DaheimPhaseStatus', true, 'device',  'Holding 184 (nur PRO)'],
+                // Gruppe 'control' (nicht 'phaseswitch'!) ist Pflicht, sonst
+                // bindet weder RegisterVar() noch SetControlActions() eine
+                // Aktion — Symptom: Ident lässt sich zwar per Skript
+                // schreiben, in Konsole/WebFront fehlt aber jeder Schalter
+                // (Fund aus dem Forum, sieckendieck/Mike, 15.09.2026:
+                // "Phasenwechsel funktioniert nicht" — Ursache war NICHT die
+                // Wallbox, sondern diese falsche Gruppen-Zuordnung).
+                ['ctl_phase_mode', 'Phasenmodus (1/3)', 'I', 'CHB.DaheimPhaseCmd',    true, 'control', 'WR Holding 186 (nur PRO)'],
             ]],
         ];
     }
@@ -3222,7 +3229,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.75-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.76-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
