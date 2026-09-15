@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.75-beta.1] - 2026-09-15
+
+### Added
+- ABL bekommt jetzt einen geschätzten `energy_total` — Auftrag Dietmar direkt nach dem
+  ABL-Treiber, da das API-Subset kein Energiezählerregister kennt. Neue generische
+  Instanzfunktion `IntegrateEnergyWh()` (in ChargerHub, nicht nur AblDriver, damit künftige
+  Treiber ohne Zählerregister sie mitnutzen können): integriert die vom Treiber gelieferte
+  Momentanleistung über die seit dem letzten Poll vergangene Zeit auf, gedeckelt auf 1 h pro
+  Schritt (verhindert einen Sprung nach einer längeren Pause/einem Neustart). Bleibt
+  ausdrücklich eine Schätzung — sowohl die zugrunde liegende Leistung als auch die
+  Integration selbst sind keine Gerätemessung, entsprechend in Variable und Formular
+  gekennzeichnet.
+
 ## [0.9.74-beta.1] - 2026-09-15
 
 ### Added

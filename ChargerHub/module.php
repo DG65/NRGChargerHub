@@ -1663,6 +1663,7 @@ class AblDriver implements ChargerDriverInterface
             ['state',           'Ladestatus',        'I', 'CHB.AblState',    true, 'device', 'Holding 0x0033 (Byte 1)'],
             ['vehicle_plugged', 'Fahrzeug verbunden','B', 'CHB.Connected',   true, 'device', 'abgeleitet: Status B*/C*'],
             ['power',           'Ladeleistung (geschätzt)', 'F', 'NRG.Watt', true, 'device', 'geschätzt aus Ic1..Ic3 × 230 V (kein Leistungsregister in diesem API-Auszug)'],
+            ['energy_total',    'Energie gesamt (geschätzt/integriert)', 'F', 'NRG.kWh', true, 'device', 'aufintegriert aus der geschätzten Leistung (kein Energiezählerregister in diesem API-Auszug) — keine Gerätemessung'],
         ];
     }
 
@@ -1685,6 +1686,7 @@ class AblDriver implements ChargerDriverInterface
     {
         return [
             'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
             'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
             'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
         ];
@@ -1734,7 +1736,15 @@ class AblDriver implements ChargerDriverInterface
         }
 
         $sumA = ($i1 ?: 0) + ($i2 ?: 0) + ($i3 ?: 0);
-        $hub->SetVarFloat('power', $sumA * 230.0);
+        $powerW = $sumA * 230.0;
+        $hub->SetVarFloat('power', $powerW);
+
+        // Kein Energiezählerregister in diesem API-Auszug — Software-
+        // Energiezählung durch Aufintegrieren der (bereits geschätzten)
+        // Leistung, siehe ChargerHub::IntegrateEnergyWh(). Bleibt eine
+        // Schätzung, keine Gerätemessung.
+        $wh = $hub->IntegrateEnergyWh($powerW);
+        $hub->SetVarFloat('energy_total', $wh / 1000.0);
 
         return true;
     }
@@ -2081,6 +2091,12 @@ class ChargerHub extends IPSModule
         // Tendenz ausgelöst, nicht schon beim ersten (verhindert Pendeln).
         $this->RegisterAttributeInteger('PhaseSwitchStableCount', 0);
         $this->RegisterAttributeInteger('PhaseSwitchStableTarget', 0);
+        // Software-Energiezählung für Treiber ohne echtes Zählerregister
+        // (aktuell: ABL, siehe AblDriver/IntegrateEnergyWh()) — integriert die
+        // (bereits selbst geschätzte) Momentanleistung über die Zeit auf.
+        // Bleibt eine Schätzung, keine Gerätemessung.
+        $this->RegisterAttributeFloat('EnergyIntegralWh', 0.0);
+        $this->RegisterAttributeInteger('EnergyIntegralLastTs', 0);
 
         $this->RegisterPropertyBoolean('Active', true);
         // Vorführmodus (Dashboard-Anfrage, 02.09.2026: öffentliche
@@ -2891,6 +2907,29 @@ class ChargerHub extends IPSModule
         return ($cfg >= self::MIN_CURRENT) ? min($hw, $cfg) : $hw;
     }
 
+    // Software-Energiezählung für Treiber ohne echtes Zählerregister
+    // (aktuell: ABL) — integriert die übergebene Momentanleistung (W) über
+    // die seit dem letzten Poll vergangene Zeit auf und gibt den neuen
+    // Gesamtwert in Wh zurück. Bleibt eine Schätzung: fußt bereits auf einer
+    // geschätzten Leistung (siehe AblDriver), UND jede Integration über
+    // diskrete Poll-Intervalle verliert Genauigkeit gegenüber einem echten
+    // Zähler. Nach einer Pause (Instanz war aus, Neustart) wird die Lücke
+    // NICHT einfach mit der aktuellen Leistung hochgerechnet — das würde bei
+    // Wiederaufnahme einen Sprung erzeugen —, sondern auf 1 h gedeckelt.
+    public function IntegrateEnergyWh(float $watts): float
+    {
+        $now    = time();
+        $lastTs = $this->ReadAttributeInteger('EnergyIntegralLastTs');
+        $wh     = $this->ReadAttributeFloat('EnergyIntegralWh');
+        if ($lastTs > 0) {
+            $dt = max(0, min($now - $lastTs, 3600));
+            $wh += $watts * $dt / 3600.0;
+        }
+        $this->WriteAttributeFloat('EnergyIntegralWh', $wh);
+        $this->WriteAttributeInteger('EnergyIntegralLastTs', $now);
+        return $wh;
+    }
+
     // Für diesen Hersteller zulässige managedBy-Werte (Teilmenge des Gesamt-
     // Vokabulars): 'goe-controller' nur beim go-eCharger.
     private function ManagedByAllowed(): array
@@ -3183,7 +3222,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.74-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.75-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3192,7 +3231,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• Alfen Eve Single/Double Pro-line: Standard-Unit-ID 1, Port 502. Nur Sockel 1 wird bedient.'],
                         ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
                         ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
-                        ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, keine echte Messung. Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
+                        ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, „Energie gesamt" eine daraus aufintegrierte Software-Zählung, keine echte Messung (kann von einem echten Zähler abweichen). Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
                         ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer.'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
                     ],
