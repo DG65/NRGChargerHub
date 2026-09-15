@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.77-beta.1] - 2026-09-15
+
+### Added
+- ChargerHubDiscovery (Netzwerksuche) erkennt jetzt auch **DaheimLader** und **ABL**
+  (Nutzer-Nachfrage nach den beiden neuen Treibern). DaheimLader läuft über die
+  bestehende binäre Modbus-TCP-Prüfung (Ladezustand + Max. Strom EVSE plausibel).
+  ABL braucht eine eigene, unabhängige Modbus-ASCII-Hilfsfunktion (`asciiReadHolding()`,
+  bewusst keine gemeinsame Klasse mit ChargerHub — siehe Dateikopf) mit einem stärkeren
+  Erkennungskriterium als bei den binären Herstellern: beide geprüften ABL-Register
+  echoen laut PDF ihre eigene Nummer im High-Byte zurück, ein exakter Bit-Treffer statt
+  nur eines Wertebereichs.
+
 ## [0.9.76-beta.1] - 2026-09-15
 
 ### Fixed
