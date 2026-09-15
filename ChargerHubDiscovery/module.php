@@ -25,6 +25,7 @@ class ChargerHubDiscovery extends IPSModule
     private const DISCOVERY_GUID = '{613D9807-B975-91B2-C6BD-FDD3654EF87E}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
     private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
+    private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
 
     // Kandidaten je Hersteller: Unit-IDs, die typischerweise/dokumentiert
     // Standard sind (kleine Liste statt vollem 1-247-Bereich).
@@ -108,8 +109,7 @@ class ChargerHubDiscovery extends IPSModule
             'caption' => '💬  Feedback im Symcon-Forum',
             'items' => [
                 ['type' => 'Label', 'caption' => 'ChargerHub Suche ist Beta — Rückmeldungen sind willkommen, gerade zu nicht erkannten Wallboxen.'],
-                ['type' => 'Label', 'caption' => '⚠️ Eigener Symcon-Forum-Thread ist noch nicht veröffentlicht — bis dahin bitte über die GitHub-Seite melden.'],
-                ['type' => 'Button', 'caption' => 'Zur GitHub-Seite', 'onClick' => "echo 'https://github.com/DG65/NRGChargerHub';", 'link' => true],
+                ['type' => 'Button', 'caption' => 'Zum Forums-Thread', 'onClick' => "echo '" . self::FORUM_THREAD_URL . "';", 'link' => true],
                 ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUBD_AckForumHint($id);'],
             ],
         ];

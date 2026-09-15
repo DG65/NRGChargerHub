@@ -1454,6 +1454,7 @@ class ChargerHub extends IPSModule
     private const NEWS_VERSION = '0.9.41';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
     private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
+    private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
     private const NEWS_ITEMS = [
         'Neu: „Überschussladen selbst regeln" (Panel „Steuerungshoheit & Sicherheit") — ChargerHub kann jetzt eigenständig per PV-Überschuss laden, aber NUR als Fallback ohne EMS (EMS hat immer Vorrang, sobald es läuft). Voraussetzung: genau eine aktive ChargerHub-Instanz, ein MeterHub-Zähler am Netzanschlusspunkt mit Echtzeit-Wert. Standardmäßig aus.',
     ];
@@ -2639,7 +2640,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.71-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.72-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2841,8 +2842,7 @@ class ChargerHub extends IPSModule
             'caption' => '💬  Feedback im Symcon-Forum',
             'items' => [
                 ['type' => 'Label', 'caption' => 'ChargerHub ist Beta — Rückmeldungen sind ausdrücklich willkommen, bitte mit Hersteller, Modell und betroffenem Register/Wert.'],
-                ['type' => 'Label', 'caption' => '⚠️ Eigener Symcon-Forum-Thread ist noch nicht veröffentlicht — bis dahin bitte über die GitHub-Seite melden.'],
-                ['type' => 'Button', 'caption' => 'Zur GitHub-Seite', 'onClick' => "echo 'https://github.com/DG65/NRGChargerHub';", 'link' => true],
+                ['type' => 'Button', 'caption' => 'Zum Forums-Thread', 'onClick' => "echo '" . self::FORUM_THREAD_URL . "';", 'link' => true],
                 ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUB_DismissReviewHint($id);'],
             ],
         ];

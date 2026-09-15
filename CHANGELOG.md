@@ -3,6 +3,13 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.72-beta.1] - 2026-09-15
+
+### Changed
+- Echter Symcon-Forum-Thread ist jetzt veröffentlicht — Forum-Hinweis in ChargerHub UND
+  ChargerHubDiscovery verweist ab sofort direkt dorthin statt auf den bisherigen
+  GitHub-Platzhalter.
+
 ## [0.9.71-beta.1] - 2026-09-14
 
 ### Added
