@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.73-beta.1] - 2026-09-15
+
+### Added
+- Neuer Hersteller: **ABL** (eMH1/eMH2/eMH3), aus einer konkreten Forum-Anfrage entstanden
+  (15.09.2026, tissenm/Michael). Anders als alle bisherigen Treiber spricht ABL kein binäres
+  Modbus TCP, sondern **Modbus ASCII** über einen reinen RS485-zu-Ethernet-Wandler — dafür ein
+  komplett neuer Transport-Client `CHUB_ModbusAsciiClient` (Hex-Text-Framing mit LRC-Prüfsumme,
+  gegen die offiziellen PDF-Beispiele des Herstellers exakt nachgerechnet). Ladefreigabe läuft
+  über das dokumentierte Icmax-Register (100 % Duty-Cycle = „kein Strom erlaubt" laut
+  ABL-Doku) statt über das riskantere, nicht implementierte Zustandsmaschinen-Register
+  0x0005 — ein falscher Zustandswechsel ohne Testhardware wäre ein echtes Sicherheitsrisiko,
+  nicht nur ein falscher Messwert. Kein Energiezähler in diesem API-Auszug; „Ladeleistung"
+  ist daher eine Schätzung aus den drei Phasenströmen (230 V angenommen), keine echte Messung.
+  Ungetestet an echter Hardware — Zustandswerte stammen aus einem community-erstellten
+  Symcon-Template, nicht aus dem Hersteller-PDF selbst.
+
 ## [0.9.72-beta.1] - 2026-09-15
 
 ### Changed

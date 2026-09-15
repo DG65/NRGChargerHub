@@ -85,6 +85,7 @@ Referenzumsetzung abgeglichen · 🧪 aus Herstellerdoku umgesetzt (Feldrückmel
 | **KEBA KeContact** (P30, P40) | 🔧 | Registerkarte gegen die evcc-Umsetzung abgeglichen, die an realer Hardware erprobt ist. Ladestatus, Kabelstatus, Leistung, Energie gesamt + Ladevorgang, Strom/Spannung je Phase, Steuerung bis 63 A. **P40:** dort läuft die Ladefreigabe über das Stromlimit statt über ein eigenes Register - noch nicht gesondert behandelt |
 | **Alfen** (Eve Single/Double Pro-line, NG9xx) | 🧪 | Sockelstatus, Leistung, angewandtes Limit, Spannung/Strom je Phase, Steuerung. Alfen verlangt eine **Gültigkeitsdauer** für jeden Sollwert - das Modul erneuert sie mit. Derzeit nur Sockel 1 |
 | **Heidelberg Energy Control** | 🧪 | Ladestatus, Leistung, Strom/Spannung je Phase, Platinentemperatur, Steuerung bis 16 A (mehr kann das Gerät nicht) |
+| **ABL** (eMH1/eMH2/eMH3) | 🧪 | Aus einer konkreten Forum-Anfrage entstanden - spricht als einziger Hersteller hier kein binäres Modbus TCP, sondern Modbus ASCII über einen reinen RS485-zu-Ethernet-Wandler, dafür ein eigener Transport-Client. Ladestatus, Strom je Phase, geschätzte Ladeleistung (kein Leistungsregister in diesem API-Auszug), Steuerung bis 32 A über das dokumentierte Icmax-Register. Die interne Zustandsmaschine (Registerwechsel zwischen Betriebszuständen) wird bewusst NICHT angefasst - ohne Testhardware zu riskant |
 
 Alle Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Manager, Spalte
 „Beschreibung") - praktisch für den Abgleich mit dem Handbuch.

@@ -313,6 +313,165 @@ class CHUB_ModbusTcpClient
 }
 
 // ---------------------------------------------------------------------------
+// CHUB_ModbusAsciiClient — Modbus ASCII über einen rohen TCP-Socket, für ABL
+// eMH1/eMH2/eMH3 (Fund der Community, 15.09.2026, Forum-Thread ChargerHub):
+// ABL spricht KEIN binäres Modbus TCP, sondern Modbus ASCII über RS485 —
+// Nutzer binden das über einen reinen RS485-zu-Ethernet-Wandler ein, der die
+// seriellen ASCII-Bytes 1:1 durchreicht (kein Protokoll-Gateway). Frame:
+// ":" + Hex-Text-Payload + Hex-LRC + CRLF. Erbt von CHUB_ModbusTcpClient nur
+// wegen der gemeinsamen u16/u32/Konstruktor-Helfer — die eigentliche
+// Übertragung (readHolding/writeSingle/writeMultiple) ist komplett neu, da
+// das Byte-Format nichts mit MBAP/binärem Modbus zu tun hat.
+class CHUB_ModbusAsciiClient extends CHUB_ModbusTcpClient
+{
+    // Longitudinal Redundancy Check: Zweierkomplement der Bytesumme modulo
+    // 256 — Standard-Prüfsumme von Modbus ASCII (per Hand gegen das
+    // PDF-Beispiel „:010300030001F8" nachgerechnet: Summe 0x08, LRC 0xF8).
+    private function lrc(string $bytes): int
+    {
+        $sum = 0;
+        for ($i = 0; $i < strlen($bytes); $i++) {
+            $sum += ord($bytes[$i]);
+        }
+        return (0x100 - ($sum & 0xFF)) & 0xFF;
+    }
+
+    private function buildFrame(string $pdu): string
+    {
+        return ':' . strtoupper(bin2hex($pdu)) . strtoupper(sprintf('%02X', $this->lrc($pdu))) . "\r\n";
+    }
+
+    // Liest einen vollständigen Frame bis CRLF, entfernt das Start-Zeichen
+    // und prüft die LRC. Start-Zeichen laut Modbus-ASCII-Standard ist ":" für
+    // BEIDE Richtungen — manche ABL-Geräte weichen laut Community-Berichten
+    // vom Standard ab und senden in Antworten wohl ">" statt ":" (das
+    // ABL-eigene Protokoll-PDF selbst nutzt ">" nur als Lesehilfe für
+    // "Antwort", nicht zwangsläufig als echtes Wire-Byte — deshalb werden
+    // hier vorsichtshalber beide Zeichen akzeptiert statt nur eines).
+    private function readAsciiFrame($sock): ?string
+    {
+        $buf      = '';
+        $deadline = microtime(true) + 3.0;
+        while (microtime(true) < $deadline) {
+            $chunk = @fread($sock, 512);
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            $buf .= $chunk;
+            if (strpos($buf, "\r\n") !== false) {
+                break;
+            }
+        }
+        $pos = strpos($buf, "\r\n");
+        if ($pos === false) {
+            return null;
+        }
+        $line = ltrim(substr($buf, 0, $pos), ':>');
+        if (strlen($line) < 4 || strlen($line) % 2 !== 0) {
+            return null;
+        }
+        $bytes = @hex2bin($line);
+        if ($bytes === false || strlen($bytes) < 2) {
+            return null;
+        }
+        $lrcByte = ord(substr($bytes, -1));
+        $payload = substr($bytes, 0, -1);
+        if ($this->lrc($payload) !== $lrcByte) {
+            return null; // Prüfsumme falsch -> Frame verwerfen, nicht raten
+        }
+        return $payload;
+    }
+
+    public function readHolding($startReg, $count)
+    {
+        return $this->asciiRead(0x03, $startReg, $count);
+    }
+
+    public function readInput($startReg, $count)
+    {
+        return $this->asciiRead(0x04, $startReg, $count);
+    }
+
+    private function asciiRead($fc, $startReg, $count)
+    {
+        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($sock === false) {
+            return null;
+        }
+        stream_set_timeout($sock, 3);
+
+        $pdu = chr($this->unitId) . chr($fc) . pack('n', $startReg) . pack('n', $count);
+        @fwrite($sock, $this->buildFrame($pdu));
+        $response = $this->readAsciiFrame($sock);
+        fclose($sock);
+
+        if ($response === null || strlen($response) < 3) {
+            return null;
+        }
+        $rFc = ord($response[1]);
+        if ($rFc & 0x80 || $rFc !== $fc) {
+            return null;
+        }
+        $byteCount = ord($response[2]);
+        $data      = substr($response, 3, $byteCount);
+
+        $regs = [];
+        for ($i = 0; $i < $count && ($i * 2 + 1) < strlen($data); $i++) {
+            $regs[$i] = (ord($data[$i * 2]) << 8) | ord($data[$i * 2 + 1]);
+        }
+        return $regs;
+    }
+
+    // ABL unterstützt laut Protokoll-PDF nur FC 0x03 (read) und 0x10 (write
+    // multiple) — kein FC 0x06. Ein Einzelregister-Schreiben läuft deshalb
+    // (wie beim go-eCharger) über writeMultiple() mit einem Wert.
+    public function writeSingle($reg, $value)
+    {
+        return $this->writeMultiple($reg, [$value]);
+    }
+
+    public function writeMultiple($startReg, $values)
+    {
+        $this->lastWriteError = '';
+        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($sock === false) {
+            $this->lastWriteError = "Verbindung fehlgeschlagen: $errstr ($errno)";
+            return false;
+        }
+        stream_set_timeout($sock, 3);
+
+        $count    = count($values);
+        $dataPart = '';
+        foreach ($values as $v) {
+            $dataPart .= pack('n', $v & 0xFFFF);
+        }
+        $pdu = chr($this->unitId) . chr(0x10) . pack('n', $startReg) . pack('n', $count) . chr($count * 2) . $dataPart;
+        @fwrite($sock, $this->buildFrame($pdu));
+        $response = $this->readAsciiFrame($sock);
+        fclose($sock);
+
+        if ($response === null) {
+            $this->lastWriteError = 'Keine Antwort vom Gerät (Timeout oder Prüfsummenfehler)';
+            return false;
+        }
+        if (strlen($response) < 2) {
+            $this->lastWriteError = 'Antwort zu kurz';
+            return false;
+        }
+        $rFc = ord($response[1]);
+        if ($rFc === 0x10) {
+            return true;
+        }
+        if ($rFc === 0x90 && strlen($response) >= 3) {
+            $this->lastWriteError = 'Modbus-Exception Code ' . ord($response[2]);
+            return false;
+        }
+        $this->lastWriteError = 'Unerwarteter Function Code in Antwort: 0x' . dechex($rFc);
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChargerDriverInterface — Vertrag, den jeder Wallbox-Treiber erfüllt
 // ---------------------------------------------------------------------------
 
@@ -1438,6 +1597,183 @@ class GoeChargerDriver implements ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// AblDriver — ABL eMH1/eMH2/eMH3, Modbus ASCII (siehe CHUB_ModbusAsciiClient).
+// Registeradressen aus dem öffentlichen ABL-Dokument "EVCC2/3 API subset for
+// external applications" (05 0015 20 Rev. B) — UNGETESTET an echter Hardware,
+// entstanden aus einer konkreten Forum-Anfrage (15.09.2026, tissenm/Michael).
+//
+// Bewusste Auslassung: das Register 0x0005 "Modify state" (Sprung zwischen
+// internen Zuständen A1/E0/E2/F1) wird NICHT implementiert — ein falscher
+// Zustandswechsel ohne Testhardware wäre ein echtes Sicherheitsrisiko, nicht
+// nur ein falscher Messwert. Ladefreigabe läuft stattdessen ausschließlich
+// über das gut dokumentierte Icmax-Register (0x0014): laut ABL-Doku
+// "Definition of current" indiziert der Wert 100% (0x03E8) explizit "kein
+// Strom erlaubt" — ein sauberer, dokumentierter Weg zum Pausieren, ohne die
+// Zustandsmaschine anzufassen.
+//
+// Kein Energiezähler in diesem API-Auszug — 'power' wird daher aus den drei
+// Phasenströmen geschätzt (Annahme 230 V, keine echte Leistungsmessung).
+// Der Zustands-Byte-Wert (0xA0.."0xF0) stammt aus einem community-erstellten
+// Symcon-JSON-Template, NICHT aus Abschnitt 3.4 des ABL-PDFs (das eine
+// andere, nicht direkt passende Zustandsliste A1/B1/B2/C2.../F11 nennt) —
+// vor Produktiveinsatz gegen echte Hardware verifizieren.
+// ---------------------------------------------------------------------------
+
+class AblDriver implements ChargerDriverInterface
+{
+    // R2, Bits siehe PDF 0x0001 — hier nur für device_id/config ungenutzt,
+    // Haupt-Lesezugriff läuft über 0x0033 (State + Ströme, 1A-Auflösung).
+    const REG_READ_CURRENT_AMPS = 0x0033; // R3: State + Ic1/Ic2/Ic3 in A
+    const REG_SET_ICMAX         = 0x0014; // W1: Duty-Cycle Icmax in 0,1 %
+
+    // Register-Wert 0x03E8 (100,0 %) heißt laut ABL-Doku explizit "kein
+    // Strom erlaubt" — das ist unser "Ladefreigabe aus", kein Ladestrom-Wert.
+    const ICMAX_OFF = 0x03E8;
+
+    // Byte-Wert aus dem community-Template (siehe Klassenkommentar oben),
+    // nicht aus Abschnitt 3.4 des offiziellen PDFs.
+    const STATES = [
+        0x00 => 'Status unbekannt',
+        0xA0 => 'A0 – Outlet geblockt, EV wird erkannt',
+        0xA1 => 'A1 – Outlet wartet auf Fahrzeug',
+        0xA2 => 'A2 – Outlet reserviert',
+        0xB0 => 'B0 – Fahrzeug erkannt, Authentifizierung gescheitert',
+        0xB1 => 'B1 – Fahrzeug erkannt, Authentifizierung',
+        0xB2 => 'B2 – Outlet kann Energie bereitstellen',
+        0xB3 => 'B3 – Fahrzeug hat Ladung beendet/unterbrochen',
+        0xC2 => 'C2 – Outlet lädt',
+        0xE0 => 'E0 – Outlet geblockt, kein Fahrzeug erkannt',
+        0xE2 => 'E2 – Outlet im Bootvorgang',
+        0xF0 => 'F – Fehler',
+    ];
+
+    private function iCmaxRegisterFor(int $amps): int
+    {
+        // IEC 61851-1 Duty-Cycle-Tabelle (ABL-PDF Annex 3.2): zwei lineare
+        // Abschnitte, Register = Duty-Cycle-% * 10.
+        $duty = ($amps <= 51) ? ($amps / 0.6) : (($amps / 2.5) + 64);
+        $reg  = (int)round($duty * 10);
+        return max(0x0050, min(0x03E8, $reg));
+    }
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',        'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',           'Ladestatus',        'I', 'CHB.AblState',    true, 'device', 'Holding 0x0033 (Byte 1)'],
+            ['vehicle_plugged', 'Fahrzeug verbunden','B', 'CHB.Connected',   true, 'device', 'abgeleitet: Status B*/C*'],
+            ['power',           'Ladeleistung (geschätzt)', 'F', 'NRG.Watt', true, 'device', 'geschätzt aus Ic1..Ic3 × 230 V (kein Leistungsregister in diesem API-Auszug)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Strom je Phase', 'vars' => [
+                ['current_l1', 'Strom L1', 'F', 'NRG.Ampere', true, 'phases', 'Holding 0x0033 (Byte 3)'],
+                ['current_l2', 'Strom L2', 'F', 'NRG.Ampere', true, 'phases', 'Holding 0x0034 (Byte 0)'],
+                ['current_l3', 'Strom L3', 'F', 'NRG.Ampere', true, 'phases', 'Holding 0x0034 (Byte 1)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'RW Holding 0x0014 (100,0 % = kein Strom erlaubt)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 0x0014 (Duty-Cycle laut IEC 61851-1)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = ($k === 0xC2) ? 0x27D07F : (($k === 0xF0) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        return ['CHB.AblState' => $states];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $r = $mb->readHolding(self::REG_READ_CURRENT_AMPS, 3);
+        $ok = ($r !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $state = $mb->u16($r, 1) >> 8; // Register 1, oberes Byte
+        $hub->SetVarInt('state', $state);
+        $hub->SetVarBool('vehicle_plugged', ($state & 0xF0) === 0xB0 || ($state & 0xF0) === 0xC0);
+
+        // Ströme (0x50 = 80 dezimal = "Phasenstrommesser nicht verfügbar/State A", nicht als 80 A übernehmen).
+        $i1raw = $mb->u16($r, 1) & 0xFF;
+        $i2raw = $mb->u16($r, 2) >> 8;
+        $i3raw = $mb->u16($r, 2) & 0xFF;
+        $i1 = ($i1raw <= 0x50) ? $i1raw : null;
+        $i2 = ($i2raw <= 0x50) ? $i2raw : null;
+        $i3 = ($i3raw <= 0x50) ? $i3raw : null;
+
+        if ($hub->GroupActive('GroupPhases')) {
+            if ($i1 !== null) {
+                $hub->SetVarFloat('current_l1', (float)$i1);
+            }
+            if ($i2 !== null) {
+                $hub->SetVarFloat('current_l2', (float)$i2);
+            }
+            if ($i3 !== null) {
+                $hub->SetVarFloat('current_l3', (float)$i3);
+            }
+        }
+
+        $sumA = ($i1 ?: 0) + ($i2 ?: 0) + ($i3 ?: 0);
+        $hub->SetVarFloat('power', $sumA * 230.0);
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                if ((bool)$value) {
+                    // Zuletzt bekanntes Stromlimit (oder Minimum) wieder anfordern.
+                    $amp = max(6, (int)$hub->GetVarValue('ctl_curr_limit'));
+                    $ok  = $mb->writeMultiple(self::REG_SET_ICMAX, [$this->iCmaxRegisterFor($amp)]);
+                } else {
+                    $ok = $mb->writeMultiple(self::REG_SET_ICMAX, [self::ICMAX_OFF]);
+                }
+                if ($ok) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                // Solange die Ladefreigabe aus ist (Register steht auf "kein Strom
+                // erlaubt"), nur den gemerkten Wert aktualisieren, nicht ans Gerät
+                // schreiben — sonst würde das Setzen des Stromlimits versehentlich
+                // die Ladefreigabe wieder aktivieren (dasselbe Register regelt beides).
+                if (!$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
+                if ($mb->writeMultiple(self::REG_SET_ICMAX, [$this->iCmaxRegisterFor($amp)])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChargerHub — Hauptmodul
 // ---------------------------------------------------------------------------
 
@@ -1464,15 +1800,24 @@ class ChargerHub extends IPSModule
         'alfen'      => 'AlfenDriver',
         'heidelberg' => 'HeidelbergDriver',
         'goe'        => 'GoeChargerDriver',
+        'abl'        => 'AblDriver',
     ];
 
+    // Hersteller, die Modbus ASCII statt binäres Modbus TCP sprechen (siehe
+    // CHUB_ModbusAsciiClient) — GetModbusClient() wählt danach den Client.
+    private const ASCII_MANUFACTURERS = ['abl'];
+
     // Hardware-Obergrenze des Ladestroms je Hersteller (A) — der wirksame
-    // Clamp ist min(Hardware, Property MaxCurrent).
+    // Clamp ist min(Hardware, Property MaxCurrent). ABL-Wert ungetestet
+    // (eMH1 gibt es in mehreren Stromstärke-Varianten) — mit 32 A bewusst
+    // konservativ, die tatsächliche Grenze setzt ohnehin die Property
+    // MaxCurrent, die der Nutzer an sein reales Gerät anpassen muss.
     private const DRIVER_MAX_CURRENT = [
         'keba'       => 63,
         'alfen'      => 32,
         'heidelberg' => 16,
         'goe'        => 32,
+        'abl'        => 32,
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
     // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
@@ -2567,7 +2912,10 @@ class ChargerHub extends IPSModule
 
     private function GetModbusClient(): CHUB_ModbusTcpClient
     {
-        return new CHUB_ModbusTcpClient(
+        $class = in_array($this->ReadPropertyString('Manufacturer'), self::ASCII_MANUFACTURERS, true)
+            ? CHUB_ModbusAsciiClient::class
+            : CHUB_ModbusTcpClient::class;
+        return new $class(
             $this->ReadPropertyString('Host'),
             $this->ReadPropertyInteger('Port'),
             $this->ReadPropertyInteger('UnitId')
@@ -2640,7 +2988,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.72-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.73-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -2649,6 +2997,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• Alfen Eve Single/Double Pro-line: Standard-Unit-ID 1, Port 502. Nur Sockel 1 wird bedient.'],
                         ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
                         ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
+                        ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, keine echte Messung. Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
                     ],
                 ],
@@ -2663,6 +3012,7 @@ class ChargerHub extends IPSModule
                         ['label' => 'Alfen (Eve Single/Double Pro-line)', 'value' => 'alfen'],
                         ['label' => 'Heidelberg Energy Control',       'value' => 'heidelberg'],
                         ['label' => 'go-eCharger (Gemini/HOME+)',      'value' => 'goe'],
+                        ['label' => '🆕 ABL (eMH1/eMH2/eMH3, Modbus ASCII)', 'value' => 'abl'],
                     ],
                 ],
                 [
