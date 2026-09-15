@@ -3,6 +3,20 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.79-beta.1] - 2026-09-15
+
+### Added
+- DaheimLader: neue Steuerung „Automatische Phasenumschaltung" (Register 0x300A) —
+  Auftrag Dietmar über EMS nach einer Forum-Rückmeldung (sieckendieck/Mike, 15.09.2026):
+  manuelle Phasenumschaltung über ChargerHub zeigte keine Wirkung, obwohl derselbe
+  Befehl direkt per Modbus funktionierte. Register 0x300A ist laut Doku werkseitig
+  aktiviert und schaltet die Phasen selbstständig anhand der Ladeleistung um — Hypothese:
+  das überschreibt einen manuellen Befehl kurz danach wieder. Neuer Schalter erlaubt es,
+  diese Automatik gezielt abzuschalten, bevor man selbst manuell umschaltet. Anders als
+  die eigentliche Phasenumschaltung (Register 184/186/188) ist 0x300A laut Doku NICHT auf
+  die PRO-Serie beschränkt, daher im allgemeinen Steuerungs-Panel statt im
+  PRO-Phasenumschaltungs-Panel platziert.
+
 ## [0.9.78-beta.1] - 2026-09-15
 
 ### Added

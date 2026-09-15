@@ -1815,6 +1815,15 @@ class DaheimLaderDriver implements ChargerDriverInterface
     const REG_PHASE_CMD    = 186; // WR, nur PRO
     const REG_PHASE_RESULT = 188; // RO, nur PRO
 
+    // W/R, 0=aus/1=an, Standard AN laut Doku — NICHT auf PRO beschränkt
+    // (anders als 184/186/188, die explizit "nur PRO" gekennzeichnet sind).
+    // Fund aus dem Forum (sieckendieck/Mike, 15.09.2026): die Wallbox regelt
+    // die Phasenzahl werkseitig selbst nach der aktuellen Ladeleistung
+    // (>=4,2 kW dreiphasig, 1,4-4,2 kW einphasig, <1,4 kW Pause) — das
+    // könnte einen manuellen Umschaltbefehl über ctl_phase_mode kurz danach
+    // wieder überschreiben, wenn diese Automatik aktiv bleibt.
+    const REG_AUTO_PHASE_SWITCH = 0x300A;
+
     const STATES = [
         1 => 'Standby', 2 => 'Verbunden', 3 => 'Startbereit', 4 => 'Laden',
         5 => 'Startfehler', 6 => 'Ladeende', 7 => 'Systemfehler',
@@ -1862,8 +1871,9 @@ class DaheimLaderDriver implements ChargerDriverInterface
                 ['ladezeit_sek', 'Ladezeit (Sek.)',  'I', '', true,  'device', 'Holding 78-79 (U32, Sekunden)'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'WO Holding 95 (1=Start, 2=Stopp)'],
-                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 91 (0,1 A)'],
+                ['ctl_enable',            'Ladefreigabe',   'B', '~Switch', true, 'control', 'WO Holding 95 (1=Start, 2=Stopp)'],
+                ['ctl_curr_limit',        'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 91 (0,1 A)'],
+                ['ctl_auto_phase_switch', '🆕 Automatische Phasenumschaltung (werkseitig an)', 'B', '~Switch', true, 'control', 'RW Holding 0x300A (0=aus, 1=an) — bei aktiver manueller Phasenumschaltung ggf. ausschalten, sonst überschreibt die Wallbox einen manuellen Befehl anhand der Ladeleistung wieder'],
             ]],
             // Nur Smart PRO/Touch PRO/Business PRO — auf Nicht-PRO-Geräten
             // liefert der Lesezugriff schlicht keine gültigen Werte (Register
@@ -1953,6 +1963,14 @@ class DaheimLaderDriver implements ChargerDriverInterface
             }
         }
 
+        // Eigener Lesezugriff, da weit außerhalb des großen Blocks 0..113.
+        if ($hub->GroupActive('GroupControl')) {
+            $auto = $mb->readHolding(self::REG_AUTO_PHASE_SWITCH, 1);
+            if ($auto !== null) {
+                $hub->SetVarBool('ctl_auto_phase_switch', $mb->u16($auto, 0) === 1);
+            }
+        }
+
         return true;
     }
 
@@ -1977,6 +1995,13 @@ class DaheimLaderDriver implements ChargerDriverInterface
                 $mode = ((int)$value === 1) ? 1 : 3;
                 if ($mb->writeMultiple(self::REG_PHASE_CMD, [$mode])) {
                     $hub->SetVarInt('ctl_phase_mode', $mode);
+                }
+                break;
+
+            case 'ctl_auto_phase_switch':
+                $val = (bool)$value ? 1 : 0;
+                if ($mb->writeMultiple(self::REG_AUTO_PHASE_SWITCH, [$val])) {
+                    $hub->SetVarBool('ctl_auto_phase_switch', (bool)$value);
                 }
                 break;
         }
@@ -3399,7 +3424,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.78-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.79-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
