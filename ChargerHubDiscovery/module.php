@@ -30,17 +30,25 @@ class ChargerHubDiscovery extends IPSModule
     // Kandidaten je Hersteller: Unit-IDs, die typischerweise/dokumentiert
     // Standard sind (kleine Liste statt vollem 1-247-Bereich).
     private const VENDOR_UNIT_IDS = [
-        'keba'       => [255, 1],
-        'alfen'      => [1],
-        'heidelberg' => [1],
-        'goe'        => [1],
+        'keba'        => [255, 1],
+        'alfen'       => [1],
+        'heidelberg'  => [1],
+        'goe'         => [1],
+        'daheimlader' => [255],
+        // ABL läuft über einen seriellen RS485-zu-Ethernet-Wandler ohne
+        // eigene Modbus-Adresslogik am TCP-Port — Unit-ID kommt aus dem
+        // ABL-eigenen Adressbereich 0x01..0x10 (Broadcast 0x00 ausgenommen,
+        // siehe ABL-PDF "Common settings"), 1 ist der praktische Standard.
+        'abl'         => [1],
     ];
 
     private const VENDOR_LABELS = [
-        'keba'       => 'KEBA KeContact P30/P40',
-        'alfen'      => 'Alfen Eve Single/Double Pro-line',
-        'heidelberg' => 'Heidelberg Energy Control',
-        'goe'        => 'go-eCharger Gemini/HOME+',
+        'keba'        => 'KEBA KeContact P30/P40',
+        'alfen'       => 'Alfen Eve Single/Double Pro-line',
+        'heidelberg'  => 'Heidelberg Energy Control',
+        'goe'         => 'go-eCharger Gemini/HOME+',
+        'daheimlader' => 'DaheimLader (Smart/Touch/PRO-Serie)',
+        'abl'         => 'ABL eMH1/eMH2/eMH3',
     ];
 
     public function Create()
@@ -337,7 +345,8 @@ class ChargerHubDiscovery extends IPSModule
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wallboxen auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs.'],
                         ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen, dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten — Klick auf „Erstellen" legt eine ChargerHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
-                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+. Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
+                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3. Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
+                        ['type' => 'Label', 'caption' => '🆕 ABL spricht Modbus ASCII statt binärem Modbus TCP — die Suche prüft das automatisch mit, ein zusätzlicher Schritt ist nicht nötig.'],
                         ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP durchsuchen — das nutzt eine langsamere, aber zuverlässigere Port-Prüfung.'],
                         ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für die Suche unsichtbar. In der Praxis beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — zum Prüfen im Browser aufrufen: http://<wallbox-ip>/api/status?filter=men'],
                         ['type' => 'Label', 'caption' => '🔀 Neue Instanz kommt mit „Kommunikation aktiv" bereits eingeschaltet. Falls ein Umstieg von einem anderen Wallbox-/Hub-Modul mit Übernahme der Historie geplant ist: direkt nach dem Anlegen an der neuen ChargerHub-Instanz wieder ausschalten, bis MigrationsHub die alte Historie übernommen hat — sonst überlappen sich die neu geloggten Werte mit der übertragenen Alt-Historie.'],
@@ -879,6 +888,29 @@ class ChargerHubDiscovery extends IPSModule
                 $access = $this->readHolding($ip, $port, $unitId, 201, 1, 1.0);
                 return ($access !== null && $access[0] <= 3);
 
+            case 'daheimlader':
+                // Holding 0: Ladezustand, plausibel 1..10 (Standby..Einschalten).
+                $state = $this->readHolding($ip, $port, $unitId, 0, 1, 1.0);
+                if ($state === null || $state[0] < 1 || $state[0] > 10) {
+                    return false;
+                }
+                // Holding 32: Max. Strom EVSE, 0,1 A, plausibel 6..100 A.
+                $maxA = $this->readHolding($ip, $port, $unitId, 32, 1, 1.0);
+                return ($maxA !== null && $maxA[0] >= 60 && $maxA[0] <= 1000);
+
+            case 'abl':
+                // ABL spricht Modbus ASCII, nicht binäres Modbus TCP — eigene
+                // kompakte Hilfsfunktion, siehe asciiReadHolding() unten.
+                // Beide Register echoen laut PDF ihre eigene Nummer im
+                // High-Byte des ersten Datenbytes zurück — ein exakter
+                // Bit-Treffer statt nur eines Wertebereichs, also ein
+                // stärkeres Kriterium als bei den binären Herstellern.
+                $r1 = $this->asciiReadHolding($ip, $port, $unitId, 0x0001, 2, 1.5);
+                if ($r1 === null || (($r1[0] >> 8) & 0xFF) !== 0x01) {
+                    return false;
+                }
+                $r2 = $this->asciiReadHolding($ip, $port, $unitId, 0x0033, 3, 1.5);
+                return ($r2 !== null && (($r2[0] >> 8) & 0xFF) === 0x33);
         }
         return false;
     }
@@ -985,6 +1017,80 @@ class ChargerHubDiscovery extends IPSModule
 
         $byteCount = ord($response[8]);
         $data      = substr($response, 9, $byteCount);
+        $regs      = [];
+        for ($i = 0; $i < $count && ($i * 2 + 1) < strlen($data); $i++) {
+            $regs[$i] = (ord($data[$i * 2]) << 8) | ord($data[$i * 2 + 1]);
+        }
+        return $regs;
+    }
+
+    // Modbus ASCII über einen rohen TCP-Socket, nur für die ABL-Suche —
+    // eigenständig gehalten (siehe Dateikopf: kein Zugriff auf die Klassen
+    // aus dem ChargerHub-Modulordner), daher eine eigene, kompakte Kopie der
+    // Framing-Logik statt eines Verweises auf CHUB_ModbusAsciiClient. Gibt
+    // wie readHolding()/readInput() ein Array von 16-Bit-Registern zurück.
+    private function asciiLrc(string $bytes): int
+    {
+        $sum = 0;
+        for ($i = 0; $i < strlen($bytes); $i++) {
+            $sum += ord($bytes[$i]);
+        }
+        return (0x100 - ($sum & 0xFF)) & 0xFF;
+    }
+
+    private function asciiReadHolding($host, $port, $unitId, $startReg, $count, $timeout)
+    {
+        $sock = $this->probeSock ?: @fsockopen($host, $port, $errno, $errstr, $timeout);
+        if ($sock === false) {
+            return null;
+        }
+        if ($this->probeSock === null) {
+            stream_set_timeout($sock, $timeout);
+        }
+
+        $pdu   = chr($unitId) . chr(0x03) . pack('n', $startReg) . pack('n', $count);
+        $frame = ':' . strtoupper(bin2hex($pdu)) . strtoupper(sprintf('%02X', $this->asciiLrc($pdu))) . "\r\n";
+        @fwrite($sock, $frame);
+
+        $buf      = '';
+        $deadline = microtime(true) + $timeout;
+        while (microtime(true) < $deadline) {
+            $chunk = @fread($sock, 512);
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            $buf .= $chunk;
+            if (strpos($buf, "\r\n") !== false) {
+                break;
+            }
+        }
+        if ($this->probeSock === null) {
+            fclose($sock);
+            usleep(120000);
+        }
+
+        $pos = strpos($buf, "\r\n");
+        if ($pos === false) {
+            return null;
+        }
+        $line = ltrim(substr($buf, 0, $pos), ':>');
+        if (strlen($line) < 6 || strlen($line) % 2 !== 0) {
+            return null;
+        }
+        $bytes = @hex2bin($line);
+        if ($bytes === false || strlen($bytes) < 3) {
+            return null;
+        }
+        $lrcByte = ord(substr($bytes, -1));
+        $payload = substr($bytes, 0, -1);
+        if ($this->asciiLrc($payload) !== $lrcByte) {
+            return null; // Prüfsumme falsch -> nicht raten
+        }
+        if (ord($payload[1]) & 0x80 || ord($payload[1]) !== 0x03) {
+            return null;
+        }
+        $byteCount = ord($payload[2]);
+        $data      = substr($payload, 3, $byteCount);
         $regs      = [];
         for ($i = 0; $i < $count && ($i * 2 + 1) < strlen($data); $i++) {
             $regs[$i] = (ord($data[$i * 2]) << 8) | ord($data[$i * 2 + 1]);
