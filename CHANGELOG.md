@@ -3,6 +3,24 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.80-beta.1] - 2026-09-16
+
+### Added
+- Neue Option „Archivierung deaktivieren" (Forum-Wunsch sieckendieck/Mike, 16.09.2026):
+  Standardverhalten bleibt unverändert (Archivierung an, wie bei InverterHub/MeterHub) —
+  wer sie nicht möchte, kann sie jetzt gezielt für die ganze Instanz abschalten.
+  Nachträgliches Aktivieren schaltet auch schon aktiv archivierte Variablen wieder ab
+  (bisherige Historie bleibt im Archiv erhalten).
+
+### Fixed
+- Manuell in der Konsole geändertes Variablenprofil wurde bei jedem Übernehmen
+  stillschweigend wieder auf das Modul-Profil zurückgesetzt (0.9.11-Fix für Hersteller-/
+  Typwechsel war zu pauschal). Neuer Merker je Ident (`LastSetProfiles`) erkennt jetzt,
+  ob der Nutzer das Profil seit dem letzten Übernehmen selbst geändert hat, und lässt es
+  in dem Fall in Ruhe — außer ein echter Hersteller-/Typwechsel verlangt jetzt ein anderes
+  Profil als beim letzten Mal, dann hat die technische Notwendigkeit weiterhin Vorrang.
+  Mit einem Kurzsyntax-Harness gegen alle fünf relevanten Fallkombinationen geprüft.
+
 ## [0.9.79-beta.1] - 2026-09-15
 
 ### Added
