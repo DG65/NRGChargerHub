@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.81-beta.1] - 2026-09-16
+
+### Changed
+- Warnhinweise zu den beiden 0.9.80-Neuerungen direkt ins Formular ergänzt (Dietmars
+  Einwand: gehört nicht nur in die Forum-Antwort) — sowohl bei „Archivierung
+  deaktivieren" als auch im Doku-Panel zur Profil-Schutzlogik steht jetzt der Hinweis,
+  dass beides andere NRG-Stack-Module (MeterHub-Zählersuche, Dashboard-Verlaufsgrafiken,
+  EMS-Skalierungsannahmen) beeinträchtigen kann, wenn ChargerHub nicht eigenständig läuft.
+
 ## [0.9.80-beta.1] - 2026-09-16
 
 ### Added
