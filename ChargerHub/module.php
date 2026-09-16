@@ -2299,8 +2299,17 @@ class ChargerHub extends IPSModule
         // Bleibt eine Schätzung, keine Gerätemessung.
         $this->RegisterAttributeFloat('EnergyIntegralWh', 0.0);
         $this->RegisterAttributeInteger('EnergyIntegralLastTs', 0);
+        // Merker je Ident, welches Profil zuletzt VOM MODUL gesetzt wurde —
+        // siehe RegisterVar() (Forum-Wunsch sieckendieck/Mike, 16.09.2026):
+        // ein manuell in der Konsole geändertes Profil wird dadurch nicht
+        // mehr bei jedem Übernehmen stillschweigend zurücküberschrieben.
+        $this->RegisterAttributeString('LastSetProfiles', '{}');
 
         $this->RegisterPropertyBoolean('Active', true);
+        // Archivierung standardmäßig an (Verbund-Konvention wie InverterHub/
+        // MeterHub) — auf Wunsch abschaltbar (Forum, sieckendieck/Mike,
+        // 16.09.2026), betrifft dann ALLE Variablen dieser Instanz.
+        $this->RegisterPropertyBoolean('DisableArchiving', false);
         // Vorführmodus (Dashboard-Anfrage, 02.09.2026: öffentliche
         // Modulvorstellung des Verbunds mit eigenem WebFront-Login) —
         // deaktiviert die Steuer-Aktionsbindung in der Konsole/WebFront UND
@@ -3424,7 +3433,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.79-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.80-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3472,6 +3481,8 @@ class ChargerHub extends IPSModule
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'NumberSpinner', 'name' => 'IntervalFast', 'caption' => 'Lese-Intervall (Sekunden)', 'minimum' => 5, 'maximum' => 300, 'suffix' => 's'],
+                        ['type' => 'CheckBox', 'name' => 'DisableArchiving', 'caption' => '🆕 Archivierung deaktivieren'],
+                        ['type' => 'Label', 'caption' => 'Betrifft ALLE Variablen dieser Instanz. Nur nachträglich neu setzen wirkt sofort auf neue Variablen — bereits aktiv archivierte Werte werden beim nächsten Übernehmen automatisch abgeschaltet, ihre bisherige Historie bleibt aber im Archiv erhalten.'],
                     ],
                 ],
                 [
@@ -3985,20 +3996,32 @@ class ChargerHub extends IPSModule
         IPS_SetPosition($vid, $pos);
         IPS_SetName($vid, $caption);
 
-        // Profil bei jedem Übernehmen unconditional nachziehen (siehe oben,
-        // 0.9.11) — RegisterVariableX setzt es zwar schon bei Neuanlage, aber
-        // ein Hersteller-/Typwechsel kann ein anderes Profil erfordern.
+        // Profil grundsätzlich nachziehen (0.9.11-Fix: RegisterVariableX setzt
+        // es nur bei Neuanlage, ein Hersteller-/Typwechsel kann aber ein
+        // anderes Profil erfordern) — ABER seit 16.09.2026 (Forum-Wunsch
+        // sieckendieck/Mike) nicht mehr blind: ein Merker je Ident hält fest,
+        // welches Profil WIR zuletzt gesetzt haben. Weicht das tatsächliche
+        // Profil davon ab, hat der Nutzer es in der Konsole manuell geändert —
+        // dann respektieren wir das und fassen es nicht mehr an, außer ein
+        // echter Hersteller-/Typwechsel verlangt jetzt ein ANDERES Profil als
+        // beim letzten Mal (dann hat die technische Notwendigkeit Vorrang).
         if ($profile !== '') {
-            if (@IPS_GetVariable($vid)['VariableCustomProfile'] !== $profile) {
+            $lastSet = json_decode((string)$this->ReadAttributeString('LastSetProfiles'), true);
+            if (!is_array($lastSet)) {
+                $lastSet = [];
+            }
+            $actual = @IPS_GetVariable($vid)['VariableCustomProfile'];
+            $weChangedItSinceLastTime = ($lastSet[$ident] ?? null) !== $profile;
+            if ($actual !== $profile && ($weChangedItSinceLastTime || $actual === ($lastSet[$ident] ?? null))) {
                 IPS_SetVariableCustomProfile($vid, $profile);
             }
+            $lastSet[$ident] = $profile;
+            $this->WriteAttributeString('LastSetProfiles', json_encode($lastSet));
         }
         if ($reg !== '') {
             @IPS_SetInfo($vid, (string)$reg);
         }
-        if ($archive) {
-            $this->SetArchive($vid);
-        }
+        $this->SetArchive($vid, $archive && !$this->ReadPropertyBoolean('DisableArchiving'));
     }
 
     private function EnsureCategory($key)
@@ -4044,7 +4067,12 @@ class ChargerHub extends IPSModule
         return 0;
     }
 
-    private function SetArchive($vid)
+    // $enable=true (Standard): archivieren, wie bisher. $enable=false: aktive
+    // Archivierung wieder abschalten (siehe Property „Archivierung deaktivieren",
+    // Forum-Wunsch sieckendieck/Mike, 16.09.2026) — nicht nur das Einschalten
+    // überspringen, sonst bliebe eine schon aktive Archivierung nach dem
+    // nachträglichen Umschalten der Property unverändert aktiv.
+    private function SetArchive($vid, bool $enable = true)
     {
         // {43192F0B-...} ist die GUID des Kernel-Moduls "Archive Control" — live
         // verifiziert 29.08.2026. Vorher stand hier eine falsche GUID
@@ -4059,10 +4087,10 @@ class ChargerHub extends IPSModule
             return;
         }
         $archiveID = $archiveIDs[0];
-        // Nur anfassen, wenn noch nicht aktiv — spart das teure ApplyChanges am
-        // Archiv bei jedem Übernehmen (läuft pro archivierter Variable).
-        if (!@AC_GetLoggingStatus($archiveID, $vid)) {
-            AC_SetLoggingStatus($archiveID, $vid, true);
+        // Nur anfassen, wenn der Ist-Zustand vom Soll-Zustand abweicht — spart
+        // das teure ApplyChanges am Archiv bei jedem Übernehmen.
+        if ((bool)@AC_GetLoggingStatus($archiveID, $vid) !== $enable) {
+            AC_SetLoggingStatus($archiveID, $vid, $enable);
             IPS_ApplyChanges($archiveID);
         }
     }
