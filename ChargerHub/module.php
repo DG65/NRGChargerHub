@@ -3433,7 +3433,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.80-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.81-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3446,6 +3446,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer.'],
                         ['type' => 'Label', 'caption' => '• 🆕 Fox ESS EV Charger (Modelle A/L/C): Standard-Unit-ID 1, Port 502. Phasenumschaltung nur wirksam, wenn eine externe Phasenumschalt-Box angeschlossen ist.'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
+                        ['type' => 'Label', 'caption' => '🆕 Manuell in der Konsole geänderte Variablenprofile werden ab jetzt nicht mehr automatisch zurückgesetzt. ⚠️ Bei Variablen mit Verbund-Bedeutung (z. B. energy_total) kann eine Profiländerung andere Module beeinträchtigen — MeterHub sucht Zähler z. B. anhand des Profil-Suffixes, Dashboard/EMS verlassen sich teils auf die Standard-Skalierung. Nur ändern, wenn ChargerHub eigenständig läuft oder die Auswirkung bekannt ist.'],
                     ],
                 ],
                 ['type' => 'CheckBox', 'name' => 'Active', 'caption' => 'Kommunikation aktiv'],
@@ -3482,7 +3483,7 @@ class ChargerHub extends IPSModule
                     'items'    => [
                         ['type' => 'NumberSpinner', 'name' => 'IntervalFast', 'caption' => 'Lese-Intervall (Sekunden)', 'minimum' => 5, 'maximum' => 300, 'suffix' => 's'],
                         ['type' => 'CheckBox', 'name' => 'DisableArchiving', 'caption' => '🆕 Archivierung deaktivieren'],
-                        ['type' => 'Label', 'caption' => 'Betrifft ALLE Variablen dieser Instanz. Nur nachträglich neu setzen wirkt sofort auf neue Variablen — bereits aktiv archivierte Werte werden beim nächsten Übernehmen automatisch abgeschaltet, ihre bisherige Historie bleibt aber im Archiv erhalten.'],
+                        ['type' => 'Label', 'caption' => 'Betrifft ALLE Variablen dieser Instanz. Bereits aktiv archivierte Werte werden beim nächsten Übernehmen automatisch abgeschaltet, ihre bisherige Historie bleibt im Archiv erhalten. ⚠️ Nur aktivieren, wenn ChargerHub eigenständig läuft: andere NRG-Stack-Module (z. B. Dashboard-Verlaufsgrafiken, MigrationsHub bei einem späteren Wechsel) können archivierte Historie brauchen.'],
                     ],
                 ],
                 [
