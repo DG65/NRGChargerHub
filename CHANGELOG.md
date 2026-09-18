@@ -3,6 +3,31 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.83-beta.1] - 2026-09-18
+
+### Added
+- Lesezugriff über den Verbindungsweg „Symbox-Gateway" ist jetzt echt implementiert
+  (SUITE.md 9j) — Function 3/4 über `SendDataToParent`, gegen das offizielle
+  Symcon-Referenzmodul (github.com/symcon/SymconBC EM24-DIN) verifiziert und mit
+  MeterHub abgestimmt, die denselben Weg bereits live haben (0.29.8-beta.1). Parsing-
+  Logik mit einem Kurzsyntax-Harness gegen eine simulierte Antwort geprüft.
+  `CHUB_ModbusGatewayClient` bekommt dafür einen `SendDataToParent`-Callback vom
+  aufrufenden Modul übergeben, da die Client-Klasse selbst keine IPSModule-Instanz ist.
+
+### Changed
+- **Wichtige Architektur-Klarstellung** (live an echter Hardware von MeterHub bestätigt):
+  Die Unit-/Slave-ID steht NICHT im Anfrage-Buffer, sondern ist Property („DeviceID")
+  einer dazwischenliegenden nativen Gateway-Splitter-Instanz. Die eigene „Unit ID"-
+  Property greift im Symbox-Modus daher NICHT — die Instanz muss stattdessen im
+  Objektbaum unter die passende Splitter-Instanz gehängt werden. Formular-Hinweis
+  entsprechend präzisiert.
+
+### Known limitation
+- Schreibzugriffe (Ladefreigabe/Stromlimit) funktionieren über „Symbox-Gateway" weiterhin
+  NICHT — das Referenzmodul deckt nur Lesezugriffe ab, die „Data"-Kodierung für Function
+  16 ist nicht belegt. Bleibt Stub, bis MeterHub/InverterHub das anhand eines eigenen
+  Tests bestätigen.
+
 ## [0.9.82-beta.1] - 2026-09-18
 
 ### Added
