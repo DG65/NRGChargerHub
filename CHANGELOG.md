@@ -3,6 +3,20 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.85-beta.1] - 2026-09-18
+
+### Fixed
+- Symbox-Gateway-Modus konnte in der Konsole gar nicht erst mit einem nativen
+  Modbus-Gateway verknüpft werden — Fund MeterHub (18.09.2026, live gegen echte
+  Hardware verifiziert): `module.json` fehlte die parentRequirements-GUID
+  `{E310B701-4AE7-458E-B618-EC13A1A6F6A8}` (dieselbe Splitter-Schnittstelle, die
+  bereits als DataID in `SendDataToParent()` genutzt wird). Ohne diesen Eintrag zeigt
+  Symcons Konsole am 🔌-Symbol der Instanzkonfiguration gar keine passende
+  Gateway-Instanz an, unabhängig davon, ob eine existiert. Rein deklarativer Fix,
+  keine Laufzeitänderung, keine Auswirkung auf bestehende „Direkt"-Instanzen. Damit ist
+  auch geklärt, wie eine Instanz manuell an ein natives Gateway angebunden wird: über
+  das 🔌-Symbol am Kopf der Instanzkonfiguration, keine Sonderfunktion nötig.
+
 ## [0.9.84-beta.1] - 2026-09-18
 
 ### Changed
