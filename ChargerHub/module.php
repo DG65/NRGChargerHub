@@ -485,60 +485,112 @@ class CHUB_ModbusAsciiClient extends CHUB_ModbusTcpClient
 // außen vor: Symcons natives Modul kennt laut eigener Doku nur „RTU
 // (seriell binär) und TCP/IP", kein ASCII-Framing.
 //
-// STUB, ABSICHTLICH UNVOLLSTÄNDIG (18.09.2026): Das genaue Payload-Schema
-// des ForwardData-Buffers (Function Code/Adresse/Quantity/Unit-ID-Kodierung)
-// für die native Gateway-Instanz ({A5F663AB-C400-4FE5-B207-4D67CC030564})
-// ist NIRGENDS öffentlich dokumentiert — weder SDK-Doku noch Modulreferenz
-// noch ein einsehbares Beispiel in der Community (unabhängig von MeterHub
-// UND dieser Sitzung recherchiert, gleiches Ergebnis). Ohne echte
-// Symbox-Hardware zum Mitschneiden oder eine Entwickler-Antwort aus dem
-// Forum lässt sich das nicht seriös raten — ein geratener Function-Code an
-// echter Hardware könnte im schlimmsten Fall einen falschen Schreibzugriff
-// auslösen. Diese Klasse liefert daher kontrolliert null/false zurück und
-// schreibt eine klare Log-Meldung, bis das Schema geklärt ist. Fassade und
-// Property-Umschaltung sind davon unabhängig fertig nutzbar/testbar.
+// LESEZUGRIFF (18.09.2026): Schema für Function 3/4 verbundweit geklärt und
+// gegen das offizielle Symcon-Referenzmodul verifiziert (github.com/symcon/
+// SymconBC/blob/master/EM24-DIN/module.php) — MeterHub hat denselben Weg
+// bereits live (0.29.8-beta.1). WICHTIG, live an echter Hardware von
+// MeterHub bestätigt: die Unit-/Slave-ID steht NICHT im Anfrage-Buffer,
+// sondern ist Property ("DeviceID") einer dazwischenliegenden nativen
+// Gateway-Splitter-Instanz — unsere eigene "UnitId"-Property greift im
+// Symbox-Modus NICHT, der Nutzer muss die ChargerHub-Instanz stattdessen im
+// Objektbaum unter die passende Splitter-Instanz hängen (I/O-Auswahl oben
+// im Instanz-Formular). Wie diese Verknüpfung technisch hergestellt werden
+// soll (ConnectParent() ist laut InverterHub ungeeignet — legt ungefragt
+// eine neue Parent-Instanz an), ist noch offen.
+//
+// SCHREIBZUGRIFF weiterhin STUB: Das offizielle Referenzmodul deckt nur
+// lesende Zugriffe ab (reiner Zähler), keine Schreib-Beispiele — die
+// "Data"-Kodierung für Function 16 ist damit nicht belegt, nur eine
+// Vermutung. Wird erst übernommen, sobald MeterHub/InverterHub das anhand
+// eines eigenen Tests bestätigen — ein falsch kodierter Schreibzugriff wäre
+// an echter Hardware ein echtes Risiko.
 class CHUB_ModbusGatewayClient extends CHUB_ModbusTcpClient
 {
-    private static bool $loggedOnce = false;
+    // Vom aufrufenden Modul übergebener Aufruf von $this->SendDataToParent() —
+    // diese Client-Klasse ist bewusst kein IPSModule (siehe Konstruktor-
+    // Kompatibilität mit CHUB_ModbusTcpClient), kann die SDK-Methode also
+    // nicht selbst aufrufen. Siehe GetModbusClient().
+    private $sendDataToParent;
 
-    private function logStub(): void
+    private static bool $writeStubLoggedOnce = false;
+
+    public function __construct($host, $port, $unitId, ?callable $sendDataToParent = null)
     {
-        // Nur einmal je PHP-Prozess loggen, nicht bei jedem Poll erneut.
-        if (self::$loggedOnce) {
+        parent::__construct($host, $port, $unitId);
+        $this->sendDataToParent = $sendDataToParent;
+    }
+
+    private function logWriteStub(): void
+    {
+        if (self::$writeStubLoggedOnce) {
             return;
         }
-        self::$loggedOnce = true;
+        self::$writeStubLoggedOnce = true;
         IPS_LogMessage(
             'ChargerHub-Symbox-Gateway',
-            'Verbindungsweg "Symbox-Gateway" ist noch nicht fertig implementiert — das ' .
-            'Payload-Schema des nativen Symcon-Gateways ist nicht öffentlich dokumentiert ' .
-            '(siehe SUITE.md 9j). Bitte vorerst "Direkt" als Verbindungsweg nutzen.'
+            'Schreibzugriffe über "Symbox-Gateway" sind noch nicht implementiert — das ' .
+            'offizielle Symcon-Referenzmodul deckt nur Lesezugriffe ab (siehe SUITE.md 9j). ' .
+            'Ladefreigabe/Stromlimit funktionieren über diesen Verbindungsweg noch nicht.'
         );
+    }
+
+    private function gatewayRead(int $function, $startReg, int $count): ?array
+    {
+        if ($this->sendDataToParent === null) {
+            return null;
+        }
+        $payload = json_encode([
+            'DataID'   => '{E310B701-4AE7-458E-B618-EC13A1A6F6A8}',
+            'Function' => $function,
+            'Address'  => $startReg,
+            'Quantity' => $count,
+            'Data'     => '',
+        ]);
+        try {
+            $response = ($this->sendDataToParent)($payload);
+        } catch (\Throwable $e) {
+            // Kein Parent verknüpft, oder Parent nicht bereit — kein Fatal,
+            // wie bei den anderen Clients ein stiller null-Rückgabewert.
+            return null;
+        }
+        if ($response === false || $response === null || $response === '') {
+            return null;
+        }
+        // Laut Referenzmodul: rohe Binärdaten, die ersten 2 Byte übersprungen
+        // (vermutlich Byte-Count wie bei binärem Modbus), Rest als 16-Bit-
+        // Worte big-endian.
+        $words = @unpack('n*', substr((string)$response, 2));
+        if ($words === false) {
+            return null;
+        }
+        $regs = array_values($words); // unpack() liefert 1-indiziert
+        if (count($regs) < $count) {
+            return null;
+        }
+        return array_slice($regs, 0, $count);
     }
 
     public function readHolding($startReg, $count)
     {
-        $this->logStub();
-        return null;
+        return $this->gatewayRead(3, $startReg, $count);
     }
 
     public function readInput($startReg, $count)
     {
-        $this->logStub();
-        return null;
+        return $this->gatewayRead(4, $startReg, $count);
     }
 
     public function writeSingle($reg, $value)
     {
-        $this->logStub();
-        $this->lastWriteError = 'Verbindungsweg "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
+        $this->logWriteStub();
+        $this->lastWriteError = 'Schreibzugriffe über "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
         return false;
     }
 
     public function writeMultiple($startReg, $values)
     {
-        $this->logStub();
-        $this->lastWriteError = 'Verbindungsweg "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
+        $this->logWriteStub();
+        $this->lastWriteError = 'Schreibzugriffe über "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
         return false;
     }
 }
@@ -3441,13 +3493,24 @@ class ChargerHub extends IPSModule
         // CHUB_ModbusGatewayClient-Klassenkommentar), unabhängig vom
         // gewählten Verbindungsweg.
         if (in_array($this->ReadPropertyString('Manufacturer'), self::ASCII_MANUFACTURERS, true)) {
-            $class = CHUB_ModbusAsciiClient::class;
-        } elseif ($this->ReadPropertyString('ConnectionType') === 'gateway') {
-            $class = CHUB_ModbusGatewayClient::class;
-        } else {
-            $class = CHUB_ModbusTcpClient::class;
+            return new CHUB_ModbusAsciiClient(
+                $this->ReadPropertyString('Host'),
+                $this->ReadPropertyInteger('Port'),
+                $this->ReadPropertyInteger('UnitId')
+            );
         }
-        return new $class(
+        if ($this->ReadPropertyString('ConnectionType') === 'gateway') {
+            // CHUB_ModbusGatewayClient ist keine IPSModule-Instanz und kann
+            // SendDataToParent() daher nicht selbst aufrufen — Callback aus
+            // diesem (IPSModule-)Kontext übergeben.
+            return new CHUB_ModbusGatewayClient(
+                $this->ReadPropertyString('Host'),
+                $this->ReadPropertyInteger('Port'),
+                $this->ReadPropertyInteger('UnitId'),
+                fn ($payload) => $this->SendDataToParent($payload)
+            );
+        }
+        return new CHUB_ModbusTcpClient(
             $this->ReadPropertyString('Host'),
             $this->ReadPropertyInteger('Port'),
             $this->ReadPropertyInteger('UnitId')
@@ -3520,7 +3583,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.82-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.83-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3567,10 +3630,10 @@ class ChargerHub extends IPSModule
                             'caption' => '🆕 Verbindungsweg',
                             'options' => [
                                 ['caption' => 'Direkt (eigene TCP-Verbindung, Standard)', 'value' => 'direct'],
-                                ['caption' => 'Symbox-Gateway (eingebauter RS485-Port, noch nicht fertig)', 'value' => 'gateway'],
+                                ['caption' => 'Symbox-Gateway (eingebauter RS485-Port, nur Lesen)', 'value' => 'gateway'],
                             ],
                         ],
-                        ['type' => 'Label', 'caption' => '⚠️ „Symbox-Gateway" ist aktuell nur ein Platzhalter (SUITE.md 9j) — das Payload-Schema von Symcons nativem Gateway-Modul ist nicht öffentlich dokumentiert, es findet noch KEINE echte Kommunikation über diesen Weg statt (Instanz zeigt dann „Verbindungsfehler"). Bitte bis auf Weiteres bei „Direkt" bleiben, außer zum Testen.'],
+                        ['type' => 'Label', 'caption' => '⚠️ „Symbox-Gateway" (SUITE.md 9j): Lesen funktioniert bereits, SCHREIBEN (Ladefreigabe/Stromlimit) noch nicht — dafür fehlt weiterhin ein belegtes Payload-Schema. Außerdem greift „Host"/„Unit ID" oben in diesem Modus NICHT: die Instanz muss stattdessen im Objektbaum unter die passende Symcon-Gateway-Splitter-Instanz gehängt werden (I/O-Auswahl oben im Instanz-Formular, dort trägt die Splitter-Instanz die Unit-ID als eigene Einstellung „DeviceID"). Bitte bis auf Weiteres bei „Direkt" bleiben, außer zum Testen.'],
                     ],
                 ],
                 [
