@@ -3583,7 +3583,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.83-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.84-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3620,10 +3620,6 @@ class ChargerHub extends IPSModule
                     'caption'  => '🔌  Verbindung',
                     'expanded' => true,
                     'items'    => [
-                        ['type' => 'Label', 'caption' => 'ℹ️ Über die Suche (Modul „ChargerHub Suche") werden diese Felder beim Anlegen automatisch befüllt — von Hand eintragen ist nur nötig, wenn die Instanz manuell angelegt oder die IP-Adresse der Wallbox geändert wurde.'],
-                        ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
-                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535],
-                        ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247],
                         [
                             'type'    => 'Select',
                             'name'    => 'ConnectionType',
@@ -3633,7 +3629,16 @@ class ChargerHub extends IPSModule
                                 ['caption' => 'Symbox-Gateway (eingebauter RS485-Port, nur Lesen)', 'value' => 'gateway'],
                             ],
                         ],
-                        ['type' => 'Label', 'caption' => '⚠️ „Symbox-Gateway" (SUITE.md 9j): Lesen funktioniert bereits, SCHREIBEN (Ladefreigabe/Stromlimit) noch nicht — dafür fehlt weiterhin ein belegtes Payload-Schema. Außerdem greift „Host"/„Unit ID" oben in diesem Modus NICHT: die Instanz muss stattdessen im Objektbaum unter die passende Symcon-Gateway-Splitter-Instanz gehängt werden (I/O-Auswahl oben im Instanz-Formular, dort trägt die Splitter-Instanz die Unit-ID als eigene Einstellung „DeviceID"). Bitte bis auf Weiteres bei „Direkt" bleiben, außer zum Testen.'],
+                        ['type' => 'Label', 'caption' => 'ℹ️ Über die Suche (Modul „ChargerHub Suche") werden Host/Port/Unit ID beim Anlegen automatisch befüllt — von Hand eintragen ist nur nötig, wenn die Instanz manuell angelegt oder die IP-Adresse der Wallbox geändert wurde.', 'visible' => '$ConnectionType != "gateway"'],
+                        ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$', 'visible' => '$ConnectionType != "gateway"'],
+                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535, 'visible' => '$ConnectionType != "gateway"'],
+                        ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247, 'visible' => '$ConnectionType != "gateway"'],
+                        // Feld-Sichtbarkeit statt nur Warntext (Fund/Fix MeterHub, 18.09.2026):
+                        // Host/Port/Unit ID sehen sonst wie benutzbar aus, greifen im
+                        // Symbox-Modus aber gar nicht — die Unit-ID sitzt stattdessen an der
+                        // uebergeordneten Gateway-Splitter-Instanz (Property "DeviceID").
+                        ['type' => 'Label', 'caption' => '🔗 Diese Instanz muss im Objektbaum unter die passende Symcon-Gateway-Splitter-Instanz gehängt werden (I/O-Auswahl oben im Instanz-Formular) — dort steht die Unit-ID als deren eigene Einstellung „DeviceID", nicht hier.', 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'Label', 'caption' => '⚠️ „Symbox-Gateway" (SUITE.md 9j): Lesen funktioniert bereits, SCHREIBEN (Ladefreigabe/Stromlimit) noch nicht — dafür fehlt weiterhin ein belegtes Payload-Schema. Bitte bis auf Weiteres bei „Direkt" bleiben, außer zum Testen.', 'visible' => '$ConnectionType == "gateway"'],
                     ],
                 ],
                 [
