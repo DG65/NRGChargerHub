@@ -3,6 +3,27 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.82-beta.1] - 2026-09-18
+
+### Added
+- Neuer Verbindungsweg „Symbox-Gateway" (SUITE.md 9j, verbundweite Abstimmung mit
+  InverterHub/MeterHub) als ZUSÄTZLICHE Option neben dem bestehenden direkten
+  Socket-Weg — für Nutzer mit eingebautem Symbox-RS485-Port, die Symcons natives
+  Modbus-Gateway-Modul (`SendDataToParent`/`ForwardData`) statt einer eigenen
+  TCP-Verbindung nutzen möchten. Neue Property „Verbindungsweg" (Direkt/
+  Symbox-Gateway), `GetModbusClient()` wählt danach die passende Client-Klasse.
+  **Bewusst nur als Fassade/Stub**: Das Payload-Schema des nativen Gateway-Moduls ist
+  nirgends öffentlich dokumentiert (unabhängig von MeterHub und dieser Sitzung
+  recherchiert, gleiches Ergebnis) — `CHUB_ModbusGatewayClient` liefert daher
+  kontrolliert null/false zurück und loggt einen klaren Hinweis, bis das Schema
+  geklärt ist (echte Symbox-Hardware zum Mitschneiden oder eine Symcon-
+  Entwickler-Antwort). Formular warnt entsprechend deutlich. Interface
+  (`readHolding`/`readInput`/`writeSingle`/`writeMultiple`) ist mit InverterHub und
+  MeterHub abgestimmt und identisch — kein bestehender Treiber musste geändert
+  werden. Modbus ASCII (ABL) bleibt unabhängig vom gewählten Verbindungsweg immer
+  beim direkten Socket-Weg, da Symcons natives Modul laut eigener Doku kein
+  ASCII-Framing kennt.
+
 ## [0.9.81-beta.1] - 2026-09-16
 
 ### Changed

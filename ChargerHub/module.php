@@ -472,6 +472,78 @@ class CHUB_ModbusAsciiClient extends CHUB_ModbusTcpClient
 }
 
 // ---------------------------------------------------------------------------
+// CHUB_ModbusGatewayClient — Fassade für Symcons NATIVES Modbus-Gateway-Modul
+// (SendDataToParent/ForwardData) als ZUSÄTZLICHER Verbindungsweg für Nutzer
+// mit eingebautem Symbox-RS485-Port, siehe SUITE.md 9j — ERSETZT NICHT den
+// bestehenden direkten Socket-Weg (CHUB_ModbusTcpClient), nur eine Option
+// mehr (Property "ConnectionType").
+//
+// Verbund-Abstimmung mit InverterHub/MeterHub (17./18.09.2026): identisches
+// Interface wie CHUB_ModbusTcpClient (readHolding/readInput/writeSingle/
+// writeMultiple/Konstruktor), damit KEIN Treiber angepasst werden muss —
+// nur GetModbusClient() wählt die Klasse. Modbus ASCII (ABL) bleibt bewusst
+// außen vor: Symcons natives Modul kennt laut eigener Doku nur „RTU
+// (seriell binär) und TCP/IP", kein ASCII-Framing.
+//
+// STUB, ABSICHTLICH UNVOLLSTÄNDIG (18.09.2026): Das genaue Payload-Schema
+// des ForwardData-Buffers (Function Code/Adresse/Quantity/Unit-ID-Kodierung)
+// für die native Gateway-Instanz ({A5F663AB-C400-4FE5-B207-4D67CC030564})
+// ist NIRGENDS öffentlich dokumentiert — weder SDK-Doku noch Modulreferenz
+// noch ein einsehbares Beispiel in der Community (unabhängig von MeterHub
+// UND dieser Sitzung recherchiert, gleiches Ergebnis). Ohne echte
+// Symbox-Hardware zum Mitschneiden oder eine Entwickler-Antwort aus dem
+// Forum lässt sich das nicht seriös raten — ein geratener Function-Code an
+// echter Hardware könnte im schlimmsten Fall einen falschen Schreibzugriff
+// auslösen. Diese Klasse liefert daher kontrolliert null/false zurück und
+// schreibt eine klare Log-Meldung, bis das Schema geklärt ist. Fassade und
+// Property-Umschaltung sind davon unabhängig fertig nutzbar/testbar.
+class CHUB_ModbusGatewayClient extends CHUB_ModbusTcpClient
+{
+    private static bool $loggedOnce = false;
+
+    private function logStub(): void
+    {
+        // Nur einmal je PHP-Prozess loggen, nicht bei jedem Poll erneut.
+        if (self::$loggedOnce) {
+            return;
+        }
+        self::$loggedOnce = true;
+        IPS_LogMessage(
+            'ChargerHub-Symbox-Gateway',
+            'Verbindungsweg "Symbox-Gateway" ist noch nicht fertig implementiert — das ' .
+            'Payload-Schema des nativen Symcon-Gateways ist nicht öffentlich dokumentiert ' .
+            '(siehe SUITE.md 9j). Bitte vorerst "Direkt" als Verbindungsweg nutzen.'
+        );
+    }
+
+    public function readHolding($startReg, $count)
+    {
+        $this->logStub();
+        return null;
+    }
+
+    public function readInput($startReg, $count)
+    {
+        $this->logStub();
+        return null;
+    }
+
+    public function writeSingle($reg, $value)
+    {
+        $this->logStub();
+        $this->lastWriteError = 'Verbindungsweg "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
+        return false;
+    }
+
+    public function writeMultiple($startReg, $values)
+    {
+        $this->logStub();
+        $this->lastWriteError = 'Verbindungsweg "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChargerDriverInterface — Vertrag, den jeder Wallbox-Treiber erfüllt
 // ---------------------------------------------------------------------------
 
@@ -2310,6 +2382,13 @@ class ChargerHub extends IPSModule
         // MeterHub) — auf Wunsch abschaltbar (Forum, sieckendieck/Mike,
         // 16.09.2026), betrifft dann ALLE Variablen dieser Instanz.
         $this->RegisterPropertyBoolean('DisableArchiving', false);
+        // Verbindungsweg (SUITE.md 9j, Verbund-Abstimmung mit InverterHub/
+        // MeterHub, 17./18.09.2026): 'direct' = bisheriger eigener
+        // Socket-Client (Standard, unverändert), 'gateway' = Symcons
+        // natives Modbus-Gateway-Modul für einen eingebauten Symbox-
+        // RS485-Port — aktuell nur als Fassade/Stub, siehe
+        // CHUB_ModbusGatewayClient.
+        $this->RegisterPropertyString('ConnectionType', 'direct');
         // Vorführmodus (Dashboard-Anfrage, 02.09.2026: öffentliche
         // Modulvorstellung des Verbunds mit eigenem WebFront-Login) —
         // deaktiviert die Steuer-Aktionsbindung in der Konsole/WebFront UND
@@ -3357,9 +3436,17 @@ class ChargerHub extends IPSModule
 
     private function GetModbusClient(): CHUB_ModbusTcpClient
     {
-        $class = in_array($this->ReadPropertyString('Manufacturer'), self::ASCII_MANUFACTURERS, true)
-            ? CHUB_ModbusAsciiClient::class
-            : CHUB_ModbusTcpClient::class;
+        // ASCII (ABL) geht IMMER über den direkten Socket-Weg — das native
+        // Symcon-Gateway kennt laut eigener Doku kein ASCII-Framing (siehe
+        // CHUB_ModbusGatewayClient-Klassenkommentar), unabhängig vom
+        // gewählten Verbindungsweg.
+        if (in_array($this->ReadPropertyString('Manufacturer'), self::ASCII_MANUFACTURERS, true)) {
+            $class = CHUB_ModbusAsciiClient::class;
+        } elseif ($this->ReadPropertyString('ConnectionType') === 'gateway') {
+            $class = CHUB_ModbusGatewayClient::class;
+        } else {
+            $class = CHUB_ModbusTcpClient::class;
+        }
         return new $class(
             $this->ReadPropertyString('Host'),
             $this->ReadPropertyInteger('Port'),
@@ -3433,7 +3520,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.81-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.82-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3474,6 +3561,16 @@ class ChargerHub extends IPSModule
                         ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
                         ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535],
                         ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247],
+                        [
+                            'type'    => 'Select',
+                            'name'    => 'ConnectionType',
+                            'caption' => '🆕 Verbindungsweg',
+                            'options' => [
+                                ['caption' => 'Direkt (eigene TCP-Verbindung, Standard)', 'value' => 'direct'],
+                                ['caption' => 'Symbox-Gateway (eingebauter RS485-Port, noch nicht fertig)', 'value' => 'gateway'],
+                            ],
+                        ],
+                        ['type' => 'Label', 'caption' => '⚠️ „Symbox-Gateway" ist aktuell nur ein Platzhalter (SUITE.md 9j) — das Payload-Schema von Symcons nativem Gateway-Modul ist nicht öffentlich dokumentiert, es findet noch KEINE echte Kommunikation über diesen Weg statt (Instanz zeigt dann „Verbindungsfehler"). Bitte bis auf Weiteres bei „Direkt" bleiben, außer zum Testen.'],
                     ],
                 ],
                 [
