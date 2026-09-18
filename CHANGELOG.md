@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.84-beta.1] - 2026-09-18
+
+### Changed
+- Formular-UX für "Symbox-Gateway" korrigiert (Fund MeterHub, 18.09.2026): Host/Port/
+  Unit ID werden jetzt ausgeblendet, statt nur per Warntext auf ihre Wirkungslosigkeit
+  hinzuweisen — sie sahen sonst benutzbar aus, greifen im Symbox-Modus aber gar nicht
+  (die Unit-ID sitzt an der übergeordneten Gateway-Splitter-Instanz, Property
+  „DeviceID"). Eigener Hinweis dazu erscheint stattdessen nur im Symbox-Modus.
+
 ## [0.9.83-beta.1] - 2026-09-18
 
 ### Added
