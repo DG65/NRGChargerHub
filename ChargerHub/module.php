@@ -2553,7 +2553,13 @@ class ChargerHub extends IPSModule
         // Instanzen früh zurückkehrt) — das Ausblenden gilt unabhängig davon.
         $this->AdoptDismissFromSibling();
 
-        if (!$this->ReadPropertyBoolean('Active') || $this->ReadPropertyString('Host') === '' || $this->ReadPropertyString('Manufacturer') === '') {
+        // Im Symbox-Gateway-Modus ist Host ausgeblendet und damit leer — die
+        // Bereitschaftsprüfung darf ihn dort nicht voraussetzen (Fund
+        // MeterHub/Forum-Beta-Tester, 19.09.2026: Instanz blieb sonst dauerhaft
+        // in Status 104 mit gestoppten Timern, egal ob ein Gateway verbunden war).
+        $hostReady = $this->ReadPropertyString('Host') !== ''
+            || $this->ReadPropertyString('ConnectionType') === 'gateway';
+        if (!$this->ReadPropertyBoolean('Active') || !$hostReady || $this->ReadPropertyString('Manufacturer') === '') {
             $this->SetTimerInterval('FastTimer', 0);
             $this->SetTimerInterval('EnableActionsTimer', 0);
             $this->SetStatus(104);
@@ -3507,7 +3513,15 @@ class ChargerHub extends IPSModule
                 $this->ReadPropertyString('Host'),
                 $this->ReadPropertyInteger('Port'),
                 $this->ReadPropertyInteger('UnitId'),
-                fn ($payload) => $this->SendDataToParent($payload)
+                function ($payload) {
+                    // Ohne verknüpftes Gateway leer zurückgeben, statt bei
+                    // jedem Poll Symcons Warnung "Keine übergeordnete Instanz
+                    // ist konfiguriert" zu erzeugen (Fund MeterHub).
+                    if ((int)(@IPS_GetInstance($this->InstanceID)['ConnectionID'] ?? 0) <= 0) {
+                        return '';
+                    }
+                    return $this->SendDataToParent($payload);
+                }
             );
         }
         return new CHUB_ModbusTcpClient(
@@ -3583,7 +3597,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.86-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.87-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3705,7 +3719,7 @@ class ChargerHub extends IPSModule
             'status' => [
                 ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Wallbox-Hersteller wählen und IP-Adresse oder Hostname eintragen.'],
                 ['code' => 102, 'icon' => 'active',   'caption' => 'Verbindung aktiv.'],
-                ['code' => 201, 'icon' => 'error',    'caption' => 'Verbindungsfehler – Wallbox nicht erreichbar.'],
+                ['code' => 201, 'icon' => 'error',    'caption' => 'Verbindungsfehler – Wallbox nicht erreichbar (Symbox-Gateway: ggf. kein Gateway verknüpft).'],
             ],
         ];
 

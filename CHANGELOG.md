@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.87-beta.1] - 2026-09-19
+
+### Fixed
+- Symbox-Gateway-Modus: `ApplyChanges()` setzte Status 104 und stoppte beide Timer, weil
+  „Host" im Gateway-Modus ausgeblendet und damit leer ist — die Instanz hat nie gelesen,
+  egal ob ein Gateway verknüpft war (Fund MeterHub/Forum-Beta-Tester, 19.09.2026, bei uns
+  identisch). Bereitschaftsprüfung verlangt im Gateway-Modus keinen Host mehr.
+- Der `SendDataToParent`-Callback prüft vorab, ob überhaupt ein Parent verknüpft ist
+  (`ConnectionID`), und liefert sonst leer zurück, statt bei jedem Poll Symcons Warnung
+  „Keine übergeordnete Instanz ist konfiguriert" zu erzeugen. Statustext 201 nennt das
+  mögliche fehlende Gateway.
+
 ## [0.9.86-beta.1] - 2026-09-19
 
 ### Fixed
