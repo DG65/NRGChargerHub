@@ -95,8 +95,8 @@ class ChargerHubBridge extends IPSModule
                 : '⚠️ Gateway verknüpft, aber nicht aktiv (Status ' . $this->ParentStatus() . ').');
         return json_encode([
             'elements' => [
-                ['type' => 'Label', 'caption' => '🔗 Brücke zwischen ChargerHub und Symcons nativem „ModBus Gateway" (eingebauter Symbox-RS485-Port). Keine eigenen Einstellungen — in der ChargerHub-Instanz unter „Verbindungsweg: Symbox-Gateway" diese Brücke auswählen.'],
-                ['type' => 'Label', 'caption' => '⚠️ Eine Brücke bedient genau EINE Unit-ID (die „DeviceID" ihres Gateways). Mehrere Wallboxen mit verschiedenen Unit-IDs brauchen je ein eigenes Gateway und eine eigene Brücke.'],
+                ['type' => 'Label', 'caption' => '🔗 Brücke zwischen ChargerHub und dem ModBus Gateway. Keine eigenen Einstellungen — in ChargerHub „Symbox-Gateway" wählen und „Brücke anlegen und verbinden" klicken.'],
+                ['type' => 'Label', 'caption' => '⚠️ Eine Brücke = genau eine Unit-ID („DeviceID" des Gateways). Weitere Unit-IDs: eigenes Gateway und eigene Brücke.'],
                 ['type' => 'Label', 'caption' => $state],
                 ['type' => 'Label', 'caption' => 'Gelesene Unit-ID des Gateways: ' . ($unit === null ? 'nicht lesbar / kein Gateway' : (string)$unit)],
             ],

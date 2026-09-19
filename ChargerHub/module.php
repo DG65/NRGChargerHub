@@ -3626,6 +3626,23 @@ class ChargerHub extends IPSModule
         return $vid ? GetValue($vid) : null;
     }
 
+    // Statuszeile ganz oben je Verbindungsweg (Mstaudi-Feedback über MeterHub,
+    // 19.09.2026, verbundweit gleiche Worte): im Gateway-Modus geht es um
+    // Gateway/Brücke, nicht um IP-Adresse.
+    private function ConfigurationStatus(): array
+    {
+        $gateway = $this->ReadPropertyString('ConnectionType') === 'gateway';
+        return [
+            ['code' => 104, 'icon' => 'inactive', 'caption' => $gateway
+                ? 'Bitte Wallbox-Hersteller wählen und die Brücke zum ModBus Gateway eintragen (Gateway wählen, „Brücke anlegen und verbinden", übernehmen).'
+                : 'Bitte Wallbox-Hersteller wählen und IP-Adresse oder Hostname eintragen.'],
+            ['code' => 102, 'icon' => 'active', 'caption' => 'Verbindung aktiv.'],
+            ['code' => 201, 'icon' => 'error', 'caption' => $gateway
+                ? 'Verbindungsfehler – keine Antwort über die Brücke: Brücke und ModBus Gateway prüfen (Unit-ID = DeviceID am Gateway).'
+                : 'Verbindungsfehler – Wallbox nicht erreichbar.'],
+        ];
+    }
+
     public function GetConfigurationForm()
     {
         $driver = $this->GetDriver();
@@ -3677,7 +3694,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.89-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.90-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3732,11 +3749,11 @@ class ChargerHub extends IPSModule
                         // Host/Port/Unit ID sehen sonst wie benutzbar aus, greifen im
                         // Symbox-Modus aber gar nicht — die Unit-ID sitzt stattdessen an der
                         // uebergeordneten Gateway-Splitter-Instanz (Property "DeviceID").
-                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => '1. Natives ModBus-Gateway (Symbox-RS485-Port) auswählen', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'Button', 'caption' => '2. … und Brücke anlegen und verbinden', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => '3. Brücke (wird vom Knopf eingetragen, sonst hier von Hand wählen)', 'moduleID' => self::BRIDGE_GUID, 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'Label', 'caption' => '🔗 Eine Brücken-Instanz („NRG-Stack ChargerHub Brücke (ModBus-Gateway)") unter das native ModBus-Gateway hängen und hier auswählen. Die Unit-ID steht als „DeviceID" am Gateway, nicht hier — eine Brücke bedient genau EINE Unit-ID.', 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'Label', 'caption' => '⚠️ „Symbox-Gateway" (SUITE.md 9j): Lesen funktioniert, SCHREIBEN (Ladefreigabe/Stromlimit) ist noch nicht belegt/ungetestet. Bitte bis auf Weiteres bei „Direkt" bleiben, außer zum Testen.', 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => 'ModBus Gateway zum Gerät', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'Button', 'caption' => 'Brücke anlegen und verbinden', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => 'NRG-Stack Brücke zum ModBus Gateway', 'moduleID' => self::BRIDGE_GUID, 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'Label', 'caption' => '🔗 Gateway wählen, „Brücke anlegen und verbinden", übernehmen. Unit-ID = „DeviceID" am Gateway; eine Brücke = genau eine Unit-ID.', 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'Label', 'caption' => '⚠️ Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet.', 'visible' => '$ConnectionType == "gateway"'],
                     ],
                 ],
                 [
@@ -3800,11 +3817,7 @@ class ChargerHub extends IPSModule
                 // gegriffen hat (EMS-Vorschlag, Muster wie dort).
                 ['type' => 'Button', 'caption' => '🔄 Übernehmen erzwingen (ohne Formularänderung)', 'onClick' => "IPS_ApplyChanges(\$id); echo '✅ ApplyChanges() ausgeführt.';"],
             ],
-            'status' => [
-                ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Wallbox-Hersteller wählen und IP-Adresse oder Hostname eintragen.'],
-                ['code' => 102, 'icon' => 'active',   'caption' => 'Verbindung aktiv.'],
-                ['code' => 201, 'icon' => 'error',    'caption' => 'Verbindungsfehler – Wallbox nicht erreichbar (Symbox-Gateway: ggf. kein Gateway verknüpft).'],
-            ],
+            'status' => $this->ConfigurationStatus(),
         ];
 
         // Symcon-Forum-Hinweis nach den Haupteinstellungen, einmalig
