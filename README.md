@@ -49,7 +49,7 @@ InverterHub als an MeterHub.
 Zusätzlich zum direkten TCP-Weg kann ChargerHub über Symcons natives **ModBus-Gateway** (z. B. eingebauter Symbox-RS485-Port) lesen. Der Weg läuft über eine eigene Brücken-Instanz (**„NRG-Stack ChargerHub Brücke (ModBus-Gateway)"**, Modul `ChargerHubBridge`), damit normale Direkt-Instanzen keine übergeordnete Instanz brauchen.
 
 1. In der ChargerHub-Instanz „Verbindungsweg" auf **Symbox-Gateway** stellen.
-2. Das native ModBus-Gateway auswählen, **„… und Brücke anlegen und verbinden"** klicken (legt die Brücke an bzw. verwendet eine vorhandene am selben Gateway wieder), dann **„Übernehmen"**.
+2. Das native ModBus-Gateway auswählen, **„Brücke anlegen und verbinden"** klicken (legt die Brücke an bzw. verwendet eine vorhandene am selben Gateway wieder), dann **„Übernehmen"**.
 3. Die Unit-ID steht am Gateway (**„DeviceID"**), nicht am Hub. **Eine Brücke bedient genau eine Unit-ID** — mehrere Wallboxen mit verschiedenen Unit-IDs brauchen je ein eigenes Gateway und eine eigene Brücke.
 
 Stand: **Lesen** funktioniert, **Schreiben** (Ladefreigabe/Stromlimit) ist noch ungetestet. Modbus ASCII (ABL) läuft immer über den direkten Weg. Wer den Gateway-Weg mit früheren Beta-Ständen direkt am Hub eingerichtet hatte: Instanz und Historie bleiben, Gateway wählen, Knopf klicken, übernehmen.

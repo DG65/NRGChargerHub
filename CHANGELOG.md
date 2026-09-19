@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.90-beta.1] - 2026-09-19
+
+### Changed
+- Gateway-Modus an das Feedback des Forum-Testers Mstaudi angeglichen (über MeterHub,
+  verbundweit gleiche Worte): Statuszeile ganz oben nennt im Gateway-Modus Gateway/Brücke
+  statt IP-Adresse (104: „… die Brücke zum ModBus Gateway eintragen …", 201: „keine
+  Antwort über die Brücke …"); Felder heißen „ModBus Gateway zum Gerät" und „NRG-Stack
+  Brücke zum ModBus Gateway", Knopf „Brücke anlegen und verbinden"; lange Erklärtexte im
+  Hub- und Brücken-Formular gekürzt (wurden abgeschnitten).
+
 ## [0.9.89-beta.1] - 2026-09-19
 
 ### Added
