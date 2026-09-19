@@ -3,6 +3,18 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.86-beta.1] - 2026-09-19
+
+### Fixed
+- Ergänzung zu 0.9.85: `parentRequirements` allein reicht nicht — das native Modbus-
+  Gateway hat selbst ChildRequirements `{77B31ABB-18FA-4B91-BB63-E5B2AB5588F4}` und
+  akzeptiert nur Kinder, die diese Schnittstelle in `implemented` führen (live per
+  `IPS_GetModule` von MeterHub gelesen; Symcons Referenzmodul EM24-DIN und
+  WPModbusHubGateway haben beides). `module.json` führt jetzt beides. Offen bleibt die
+  separate Frage (Dietmar), ob der Gateway-Weg als Schwestermodul gebaut werden soll,
+  weil `parentRequirements` am Hauptmodul jede bestehende Direkt-Instanz betreffen könnte
+  (Anlege-Ablauf in der Konsole, unverifiziert).
+
 ## [0.9.85-beta.1] - 2026-09-18
 
 ### Fixed
