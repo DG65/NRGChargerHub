@@ -1,0 +1,14 @@
+{
+  "id": "{70A95152-45C4-4E07-9563-FB3AF5D88A40}",
+  "name": "ChargerHubBridge",
+  "type": 3,
+  "vendor": "",
+  "aliases": [
+    "NRG-Stack ChargerHub Brücke (ModBus-Gateway)"
+  ],
+  "url": "https://github.com/DG65/NRGChargerHub",
+  "parentRequirements": ["{E310B701-4AE7-458E-B618-EC13A1A6F6A8}"],
+  "childRequirements": [],
+  "implemented": ["{77B31ABB-18FA-4B91-BB63-E5B2AB5588F4}"],
+  "prefix": "CHUBB"
+}
