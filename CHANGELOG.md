@@ -3,6 +3,25 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.88-beta.1] - 2026-09-19
+
+### Changed
+- Symbox-Gateway-Weg wandert in eine EIGENE Brücken-Instanz (neues Modul
+  `ChargerHubBridge`, Prefix `CHUBB`, „NRG-Stack ChargerHub Brücke (ModBus-Gateway)"),
+  Dietmars Entscheidung nach dem Fund, dass `parentRequirements`/`implemented` am
+  Hauptmodul bei JEDER Direkt-Instanz den orangen Balken „benötigt eine übergeordnete
+  Instanz" auslösen. `module.json` des Hauptmoduls ist dafür im selben Release wieder
+  leer. Einheitlicher Vertrag mit MeterHub/InverterHub: `Forward(string $json): string`
+  reicht den Request unverändert an das Gateway (kennt keine Function Codes, Antwort
+  base64 in `{"ok":true,"data":…}` bzw. `{"ok":false,"error":"not_connected"|
+  "parent_inactive"|"no_response"}`), `GetState()` liefert Verbindung/Gateway-Status und
+  die Unit-ID (DeviceID des Gateways). Eine Brücke bedient genau EINE Unit-ID.
+- ChargerHub: neue Property „Brücke" (nur im Modus „Symbox-Gateway"); Aufruf der
+  Brückenfunktion nur hinter `function_exists()`, ohne Brücke still „Gateway-Weg nicht
+  verfügbar" (Meldungsprotokoll, einmalig je Fehlerwechsel), Direkt-Weg unberührt.
+  Neuer News-Panel-Eintrag zur Umstellung. `CHUBB` in die Fremdpräfix-Liste von
+  `check-standalone.php` aufgenommen.
+
 ## [0.9.87-beta.1] - 2026-09-19
 
 ### Fixed
