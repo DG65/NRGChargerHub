@@ -2315,13 +2315,14 @@ class ChargerHub extends IPSModule
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
     private const NEWS_VERSION = '0.9.88';
+    private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
     private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
     private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
     private const NEWS_ITEMS = [
         'Neu: „Überschussladen selbst regeln" (Panel „Steuerungshoheit & Sicherheit") — ChargerHub kann jetzt eigenständig per PV-Überschuss laden, aber NUR als Fallback ohne EMS (EMS hat immer Vorrang, sobald es läuft). Voraussetzung: genau eine aktive ChargerHub-Instanz, ein MeterHub-Zähler am Netzanschlusspunkt mit Echtzeit-Wert. Standardmäßig aus.',
-        'Umstellung Symbox-Gateway: Der Weg über Symcons natives ModBus-Gateway läuft jetzt über eine eigene Brücken-Instanz („NRG-Stack ChargerHub Brücke (ModBus-Gateway)"). ChargerHub selbst braucht dafür keine übergeordnete Instanz mehr — Direkt-Instanzen sind unverändert. Wer den Gateway-Modus testet: Brücke anlegen, unter das Gateway hängen und in der Instanz unter „Verbindungsweg" auswählen.',
+        'Umstellung Symbox-Gateway: Der Weg über Symcons natives ModBus-Gateway läuft jetzt über eine eigene Brücken-Instanz („NRG-Stack ChargerHub Brücke (ModBus-Gateway)"). ChargerHub selbst braucht dafür keine übergeordnete Instanz mehr — Direkt-Instanzen sind unverändert. Wer den Gateway-Modus mit früheren Beta-Ständen direkt am Hub eingerichtet hatte: Instanz und Historie bleiben — Verbindungsweg „Symbox-Gateway", Gateway wählen, „Brücke anlegen und verbinden" klicken, „Übernehmen".',
     ];
 
     private const DRIVERS = [
@@ -2447,6 +2448,9 @@ class ChargerHub extends IPSModule
         // Brücken-Instanz (ChargerHubBridge) für den Symbox-Gateway-Weg, siehe
         // SUITE.md 9j / GetModbusClient().
         $this->RegisterPropertyInteger('BridgeInstanceID', 0);
+        // Nur Formular-Hilfsfeld für den Knopf "Brücke anlegen und verbinden"
+        // (damit $GatewayPick im onClick ankommt), keine Betriebseinstellung.
+        $this->RegisterPropertyInteger('GatewayPick', 0);
         // Vorführmodus (Dashboard-Anfrage, 02.09.2026: öffentliche
         // Modulvorstellung des Verbunds mit eigenem WebFront-Login) —
         // deaktiviert die Steuer-Aktionsbindung in der Konsole/WebFront UND
@@ -2563,8 +2567,9 @@ class ChargerHub extends IPSModule
         // Bereitschaftsprüfung darf ihn dort nicht voraussetzen (Fund
         // MeterHub/Forum-Beta-Tester, 19.09.2026: Instanz blieb sonst dauerhaft
         // in Status 104 mit gestoppten Timern, egal ob ein Gateway verbunden war).
-        $hostReady = $this->ReadPropertyString('Host') !== ''
-            || $this->ReadPropertyString('ConnectionType') === 'gateway';
+        $hostReady = ($this->ReadPropertyString('ConnectionType') === 'gateway')
+            ? $this->ReadPropertyInteger('BridgeInstanceID') > 0
+            : $this->ReadPropertyString('Host') !== '';
         if (!$this->ReadPropertyBoolean('Active') || !$hostReady || $this->ReadPropertyString('Manufacturer') === '') {
             $this->SetTimerInterval('FastTimer', 0);
             $this->SetTimerInterval('EnableActionsTimer', 0);
@@ -2739,7 +2744,18 @@ class ChargerHub extends IPSModule
         if ($ok) {
             @$this->UpdateFormField('ConnTestResult', 'caption', "✅ Verbindung erfolgreich, Daten gelesen ({$ts} Uhr).");
         } else {
-            @$this->UpdateFormField('ConnTestResult', 'caption', "❌ Verbindung fehlgeschlagen ({$ts} Uhr) — IP-Adresse/Port/Unit-ID prüfen.");
+            $hint = 'IP-Adresse/Port/Unit-ID prüfen.';
+            if ($this->ReadPropertyString('ConnectionType') === 'gateway') {
+                $hints = [
+                    'no_bridge'       => 'Keine Brücke ausgewählt — Gateway wählen, „Brücke anlegen und verbinden" klicken, dann „Übernehmen".',
+                    'not_connected'   => 'Die Brücke ist mit keinem ModBus-Gateway verbunden (🔌-Symbol am Kopf der Brücken-Instanz).',
+                    'parent_inactive' => 'Das ModBus-Gateway ist nicht aktiv — Gateway-Instanz und Symbox-RS485-Port prüfen.',
+                    'no_response'     => 'Keine Antwort über das Gateway — Unit-ID („DeviceID") am Gateway und Verkabelung prüfen.',
+                ];
+                $reason = $this->ReadAttributeString('LastBridgeError');
+                $hint = $hints[$reason] ?? 'Brücke/Gateway prüfen (Meldungsprotokoll „ChargerHub-Symbox-Gateway").';
+            }
+            @$this->UpdateFormField('ConnTestResult', 'caption', "❌ Verbindung fehlgeschlagen ({$ts} Uhr) — {$hint}");
         }
     }
 
@@ -3498,6 +3514,39 @@ class ChargerHub extends IPSModule
         return $this->driver;
     }
 
+    // Halbautomatisch per Knopf im Formular (Dietmar, 19.09.2026, Vorlage
+    // MeterHub): legt eine Brücke am gewählten nativen ModBus-Gateway an bzw.
+    // verwendet eine vorhandene wieder und trägt sie ins offene Formular ein
+    // (Nutzer klickt danach "Übernehmen"). NIE in ApplyChanges()/
+    // GetConfigurationForm() anlegen — nur auf ausdrücklichen Klick.
+    public function CreateBridge(int $gatewayId): string
+    {
+        if ($gatewayId <= 0 || !@IPS_InstanceExists($gatewayId)) {
+            return '⚠️ Bitte zuerst oben das native ModBus-Gateway auswählen.';
+        }
+        if ((@IPS_GetInstance($gatewayId)['ModuleInfo']['ModuleID'] ?? '') !== self::MODBUS_GATEWAY_GUID) {
+            return '⚠️ Die gewählte Instanz ist kein natives ModBus-Gateway.';
+        }
+        $bridgeId = 0;
+        foreach (@IPS_GetInstanceListByModuleID(self::BRIDGE_GUID) ?: [] as $iid) {
+            if ((int)(@IPS_GetInstance($iid)['ConnectionID'] ?? 0) === $gatewayId) {
+                $bridgeId = $iid;
+                break;
+            }
+        }
+        $reused = $bridgeId > 0;
+        if (!$reused) {
+            $bridgeId = IPS_CreateInstance(self::BRIDGE_GUID);
+            IPS_SetName($bridgeId, 'ChargerHub Brücke (' . IPS_GetName($gatewayId) . ')');
+            IPS_SetParent($bridgeId, IPS_GetParent($this->InstanceID));
+            IPS_ConnectInstance($bridgeId, $gatewayId);
+            IPS_ApplyChanges($bridgeId);
+        }
+        $this->UpdateFormField('BridgeInstanceID', 'value', $bridgeId);
+        return ($reused ? '✅ Vorhandene Brücke #' : '✅ Brücke #') . $bridgeId
+            . ($reused ? ' wiederverwendet' : ' angelegt') . ' und ausgewählt — jetzt unten „Übernehmen" klicken.';
+    }
+
     // Sendeweg des Symbox-Gateway-Modus über die eigene Brücken-Instanz
     // (ChargerHubBridge, Vertrag verbundweit mit MeterHub/InverterHub): fehlt
     // die Brücke oder ist keine gewählt, still '' liefern — Gateway-Weg nicht
@@ -3507,7 +3556,7 @@ class ChargerHub extends IPSModule
     {
         $bridgeId = $this->ReadPropertyInteger('BridgeInstanceID');
         if ($bridgeId <= 0 || !@IPS_InstanceExists($bridgeId) || !function_exists('CHUBB_Forward')) {
-            $this->LogBridgeError('keine Brücke gewählt/verfügbar');
+            $this->LogBridgeError('no_bridge');
             return '';
         }
         $reply = json_decode((string)CHUBB_Forward($bridgeId, $payload), true);
@@ -3628,7 +3677,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.88-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.89-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3641,6 +3690,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer.'],
                         ['type' => 'Label', 'caption' => '• 🆕 Fox ESS EV Charger (Modelle A/L/C): Standard-Unit-ID 1, Port 502. Phasenumschaltung nur wirksam, wenn eine externe Phasenumschalt-Box angeschlossen ist.'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
+                        ['type' => 'Label', 'caption' => '🔗 Symbox-Gateway (eingebauter RS485-Port): Verbindungsweg „Symbox-Gateway" wählen, das native ModBus-Gateway auswählen, „Brücke anlegen und verbinden" klicken, „Übernehmen". Die Unit-ID steht am Gateway („DeviceID"), eine Brücke bedient genau EINE Unit-ID — mehrere Wallboxen mit verschiedenen Unit-IDs brauchen je ein eigenes Gateway und eine eigene Brücke. Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet. Modbus ASCII (ABL) läuft immer direkt.'],
                         ['type' => 'Label', 'caption' => '🆕 Manuell in der Konsole geänderte Variablenprofile werden ab jetzt nicht mehr automatisch zurückgesetzt. ⚠️ Bei Variablen mit Verbund-Bedeutung (z. B. energy_total) kann eine Profiländerung andere Module beeinträchtigen — MeterHub sucht Zähler z. B. anhand des Profil-Suffixes, Dashboard/EMS verlassen sich teils auf die Standard-Skalierung. Nur ändern, wenn ChargerHub eigenständig läuft oder die Auswirkung bekannt ist.'],
                     ],
                 ],
@@ -3682,7 +3732,9 @@ class ChargerHub extends IPSModule
                         // Host/Port/Unit ID sehen sonst wie benutzbar aus, greifen im
                         // Symbox-Modus aber gar nicht — die Unit-ID sitzt stattdessen an der
                         // uebergeordneten Gateway-Splitter-Instanz (Property "DeviceID").
-                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => '🔗 Brücke (ChargerHub Brücke für das ModBus-Gateway)', 'moduleID' => self::BRIDGE_GUID, 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => '1. Natives ModBus-Gateway (Symbox-RS485-Port) auswählen', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'Button', 'caption' => '2. … und Brücke anlegen und verbinden', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => '3. Brücke (wird vom Knopf eingetragen, sonst hier von Hand wählen)', 'moduleID' => self::BRIDGE_GUID, 'visible' => '$ConnectionType == "gateway"'],
                         ['type' => 'Label', 'caption' => '🔗 Eine Brücken-Instanz („NRG-Stack ChargerHub Brücke (ModBus-Gateway)") unter das native ModBus-Gateway hängen und hier auswählen. Die Unit-ID steht als „DeviceID" am Gateway, nicht hier — eine Brücke bedient genau EINE Unit-ID.', 'visible' => '$ConnectionType == "gateway"'],
                         ['type' => 'Label', 'caption' => '⚠️ „Symbox-Gateway" (SUITE.md 9j): Lesen funktioniert, SCHREIBEN (Ladefreigabe/Stromlimit) ist noch nicht belegt/ungetestet. Bitte bis auf Weiteres bei „Direkt" bleiben, außer zum Testen.', 'visible' => '$ConnectionType == "gateway"'],
                     ],

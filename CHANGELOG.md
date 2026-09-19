@@ -3,6 +3,26 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.89-beta.1] - 2026-09-19
+
+### Added
+- Halbautomatische Brücken-Einrichtung per Knopf (Dietmar, Vorlage MeterHub 0.30.0):
+  im Modus „Symbox-Gateway" natives ModBus-Gateway wählen und „… und Brücke anlegen und
+  verbinden" klicken — `CreateBridge($gatewayId)` prüft die Gateway-ModuleID, verwendet
+  eine vorhandene Brücke am selben Gateway wieder, sonst legt sie eine an, verbindet sie
+  und trägt sie ins offene Formular ein (danach „Übernehmen"). Nie in
+  `ApplyChanges()`/`GetConfigurationForm()`. Gateway-Auswahl, Knopf und Brückenauswahl
+  nur im Modus „Symbox-Gateway" sichtbar.
+- Prüfstand `.tools/test-bridge.php`: Binärwerte 0xFFFF/0x8001 bit-genau über die Brücke,
+  alle Fehlerarten, Hub-Seite, `module.json` beider Module.
+- Doku: Absatz im Doku-Panel, README-Abschnitt „Symbox-Gateway", News-Hinweis für alle mit
+  früheren Beta-Ständen (Instanz und Historie bleiben).
+
+### Changed
+- Bereitschaft im Gateway-Modus = Brücke gewählt (nicht mehr „immer bereit"); Verbindungs-
+  test nennt bei Fehlern den konkreten Grund mit Handlungshinweis (no_bridge/
+  not_connected/parent_inactive/no_response).
+
 ## [0.9.88-beta.1] - 2026-09-19
 
 ### Changed
