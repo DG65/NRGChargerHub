@@ -3,6 +3,28 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.91-beta.1] - 2026-09-19
+
+### Added
+- Neuer Hersteller (EXPERIMENTELL): **Peblar** Home/Home Plus/Business (auch ChargeLine),
+  Dietmars Entscheidung nach Anfrage des Forum-Testers Mstaudi, der künftig nur noch
+  Peblar einbaut und als Hardware-Prüfer eingeplant ist. Direkt per Modbus TCP (Port
+  502, Unit-ID 255, Firmware 1.6+, Modbus-Server im Web-Interface aktivieren). Registerkarte
+  gegen zwei Quellen gegengelesen (Peblars offizieller Beispielclient
+  github.com/Peblar/py-modbus-api-client und die evcc-Implementierung): Messwerte als
+  Input-Register (FC 0x04) ab 30000, Steuerung als Holding-Register ab 40000; Ladestatus
+  (CP-Zustand als ASCII-Zeichencode), Leistung/Energie gesamt, Spannung/Strom/Leistung je
+  Phase (nur so viele Phasen lesen, wie Register 30092 meldet — Phase 2/3 liefern bei
+  Einphasern eine Exception), Seriennummer/Produkt/Firmware, „Begrenzt durch"
+  (Limit-Quelle), Kabelsperre, Steuerung (Ladefreigabe = Stromlimit 0 mA, Stromlimit
+  UINT32 in mA) und Einphasig-Erzwingen (nur mit unabhängigem Relais). Bewusst nicht
+  übernommen: Sitzungsenergie (evcc entfernte sie als unzuverlässig), Fehler-/Warnungs-
+  Bitfelder, tatsächliches Stromlimit (Einheit nicht belegt). Offen für die
+  Hardware-Prüfung: ob ein per Modbus gesetztes Stromlimit zyklisch erneuert werden
+  muss. Register-Offsets/Schreibwerte mit einem Fake-Client geprüft (3-phasig 11 kW/
+  16 A/230 V/12345,678 kWh, Einphaser ohne Phase 2/3, Schreibwerte).
+- ChargerHubDiscovery erkennt Peblar (Phasenzahl/Relais/CP-Zustand plausibel).
+
 ## [0.9.90-beta.1] - 2026-09-19
 
 ### Changed

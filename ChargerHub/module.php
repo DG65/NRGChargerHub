@@ -2301,6 +2301,249 @@ class FoxEssDriver implements ChargerDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// PeblarDriver — Peblar Home/Home Plus/Business (auch ChargeLine-Ausführungen),
+// binäres Modbus TCP, EXPERIMENTELL bis zur Bestätigung an echter Hardware.
+// Aufgenommen auf Dietmars Entscheidung (19.09.2026, Anlass: Forum-Tester
+// Mstaudi baut künftig nur noch Peblar ein und ist als Hardware-Prüfer
+// eingeplant).
+//
+// Registerkarte gegen ZWEI Quellen gegengelesen ("erst messen, dann glauben"):
+// (1) Peblars offizieller Beispielclient github.com/Peblar/py-modbus-api-client
+//     (peblar_modbusclient/registers.py, MIT) und (2) die evcc-Implementierung
+//     (charger/peblar.go, läuft bei evcc-Nutzern an echter Hardware). Beide
+//     stimmen bei Adressen, Funktionscodes, Datentypen und Einheiten überein:
+//   - Unit-ID 255, Port 502, Firmware >= 1.6, Modbus-Server im Web-Interface
+//     des Ladepunkts aktivieren, Smart-Charging-Strategien auf "Standard".
+//   - Messwerte als INPUT-Register (FC 0x04) ab 30000, Steuerung als
+//     HOLDING-Register (FC 0x03/0x06/0x10) ab 40000, Adressen 1:1 wie
+//     dokumentiert (kein Offset).
+//   - Energie gesamt INT64 in Wh, Leistung INT32 in W, Spannung INT32 in V,
+//     Strom INT32 in mA, CP-Zustand als ASCII-Zeichencode ('A'/'B'/'C' ...).
+//   - Stromlimit: UINT32 in mA über Holding 40000 (2 Register), 0 = kein Strom
+//     (so schaltet evcc "aus"). Einphasig erzwingen: Holding 40002 (1 = ein
+//     Phase), nur wirksam, wenn Register 30093 (unabhängiges Relais) = 1.
+//   - Phase 2/3 (Leistung/Spannung/Strom) existieren nur bei mehrphasigen
+//     Geräten — ein Lesezugriff darauf liefert bei Einphasern eine Exception,
+//     daher wird immer nur so viel gelesen, wie Register 30092 (Phasenzahl)
+//     hergibt (wie evcc).
+// Bewusst NICHT übernommen: Sitzungsenergie (evcc hat sie nach Issue #25956
+// gezielt entfernt, unzuverlässig), Fehler-/Warnungs-Bitfelder (30100..30109,
+// Bedeutung der Bits nicht gegengelesen), "tatsächliches Stromlimit" 30113
+// (Einheit nicht belegt).
+// Offen für die Hardware-Prüfung: ob ein per Modbus gesetztes Stromlimit
+// zyklisch erneuert werden muss (Watchdog) oder dauerhaft gilt.
+// ---------------------------------------------------------------------------
+
+class PeblarDriver implements ChargerDriverInterface
+{
+    const REG_ENERGY_TOTAL  = 30000; // INT64, Wh
+    const REG_POWER_PHASE   = 30008; // je INT32, W (nur vorhandene Phasen)
+    const REG_POWER_TOTAL   = 30014; // INT32, W
+    const REG_VOLTAGE       = 30016; // je INT32, V
+    const REG_CURRENT       = 30022; // je INT32, mA
+    const REG_SERIAL        = 30050; // 12 Register ASCII
+    const REG_PRODUCT       = 30062; // 12 Register ASCII
+    const REG_FIRMWARE      = 30074; // 12 Register ASCII
+    const REG_PHASE_COUNT   = 30092; // UINT16 (+30093 unabhängiges Relais)
+    const REG_CP_STATE      = 30110; // ASCII-Zeichencode (+30111 Sperre, +30112 Limit-Quelle)
+    const REG_MB_CURRENT    = 40000; // UINT32, mA (2 Register)
+    const REG_FORCE_1PHASE  = 40002; // UINT16, 1 = einphasig erzwingen
+
+    const STATES = [
+        65 => 'A - Kein Fahrzeug', 66 => 'B - Fahrzeug verbunden', 67 => 'C - Lädt',
+        68 => 'D - Lädt (Belüftung)', 69 => 'E - Fehler', 70 => 'F - Nicht verfügbar',
+    ];
+
+    const LIMIT_SOURCES = [
+        0 => 'Unbekannt', 1 => 'Festes Kabel', 2 => 'Übertemperatur', 3 => 'Installationslimit',
+        4 => 'Dynamischer Lastausgleich', 5 => 'Gruppen-Lastausgleich', 6 => 'Ladekabel',
+        7 => 'Überstromschutz', 8 => 'Hardware-Begrenzung', 9 => 'Leistungsfaktor',
+        10 => 'OCPP Smart Charging', 11 => 'Phasenungleichgewicht', 12 => 'Lokaler Ladeplan',
+        13 => 'Solarladen', 14 => 'Strombegrenzer', 15 => 'Lokale REST-API',
+        16 => 'Lokale Modbus-API', 17 => 'Externes Leistungslimit', 18 => 'Hausanschluss-Limit',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',         'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',           'Ladestatus',         'I', 'CHB.PeblarState', true, 'device', 'Input 30110 (ASCII-Zeichencode A/B/C ...)'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', 'CHB.Connected',   true, 'device', 'abgeleitet: Status B/C/D'],
+            ['power',           'Ladeleistung',       'F', 'NRG.Watt',        true, 'device', 'Input 30014-30015 (INT32, W)'],
+            ['energy_total',    'Energie gesamt',     'F', 'NRG.kWh',         true, 'device', 'Input 30000-30003 (INT64, Wh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Leistung/Spannung/Strom je Phase', 'vars' => [
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Input 30008 (INT32, W)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Input 30010 (nur mehrphasig)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Input 30012 (nur mehrphasig)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Input 30016 (INT32, V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Input 30018 (nur mehrphasig)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Input 30020 (nur mehrphasig)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Input 30022 (INT32, mA)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Input 30024 (nur mehrphasig)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Input 30026 (nur mehrphasig)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',    'Seriennummer',      'S', '', false, 'device', 'Input 30050 ff. (ASCII)'],
+                ['dev_product',   'Produktnummer',     'S', '', false, 'device', 'Input 30062 ff. (ASCII)'],
+                ['dev_firmware',  'Firmware-Version',  'S', '', false, 'device', 'Input 30074 ff. (ASCII)'],
+                ['limit_source',  'Begrenzt durch',    'I', 'CHB.PeblarLimitSource', true, 'device', 'Input 30112 (Quelle des aktuellen Stromlimits)'],
+                ['cable_locked',  'Kabel verriegelt',  'B', '', true, 'device', 'Input 30111'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'RW Holding 40000 (Limit 0 mA = aus)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 40000-40001 (UINT32, mA)'],
+            ]],
+            // Nur wirksam, wenn das Gerät ein unabhängiges Relais hat (Input 30093 = 1).
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (nur mit unabhängigem Relais)', 'vars' => [
+                ['ctl_phase_mode', 'Phasenmodus', 'I', 'CHB.PeblarPhaseMode', true, 'control', 'RW Holding 40002 (1 = einphasig erzwingen)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $states[$k] = [$label, ($k === 67) ? 0x27D07F : (in_array($k, [69, 70], true) ? 0xE74C3C : 0x7A8A99)];
+        }
+        $sources = [];
+        foreach (self::LIMIT_SOURCES as $k => $label) {
+            $sources[$k] = [$label, 0x7A8A99];
+        }
+        return [
+            'CHB.PeblarState'       => $states,
+            'CHB.PeblarLimitSource' => $sources,
+            'CHB.PeblarPhaseMode'   => [1 => ['Einphasig (erzwungen)', 0x7A8A99], 3 => ['Dreiphasig (Automatik)', 0x27D07F]],
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $cp = $mb->readInput(self::REG_CP_STATE, 3);
+        $ok = ($cp !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+        $state = $mb->u16($cp, 0);
+        $hub->SetVarInt('state', $state);
+        $hub->SetVarBool('vehicle_plugged', in_array($state, [66, 67, 68], true));
+
+        // Phasenzahl zuerst: Phase 2/3 existieren nur bei mehrphasigen Geräten,
+        // ein Lesezugriff darauf liefert sonst eine Modbus-Exception.
+        $pc     = $mb->readInput(self::REG_PHASE_COUNT, 2);
+        $phases = ($pc !== null && $mb->u16($pc, 0) >= 1 && $mb->u16($pc, 0) <= 3) ? $mb->u16($pc, 0) : 1;
+        $indep  = ($pc !== null && $mb->u16($pc, 1) === 1);
+
+        $pw = $mb->readInput(self::REG_POWER_TOTAL, 2);
+        if ($pw !== null) {
+            $hub->SetVarFloat('power', (float)$mb->s32($pw, 0));
+        }
+        $en = $mb->readInput(self::REG_ENERGY_TOTAL, 4);
+        if ($en !== null) {
+            $wh = ($mb->u32($en, 0) << 32) | $mb->u32($en, 2);
+            $hub->SetVarFloat('energy_total', $wh / 1000.0);
+        }
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $pp = $mb->readInput(self::REG_POWER_PHASE, $phases * 2);
+            $vv = $mb->readInput(self::REG_VOLTAGE, $phases * 2);
+            $cc = $mb->readInput(self::REG_CURRENT, $phases * 2);
+            for ($i = 0; $i < $phases; $i++) {
+                if ($pp !== null) {
+                    $hub->SetVarFloat('power_l' . ($i + 1), (float)$mb->s32($pp, $i * 2));
+                }
+                if ($vv !== null) {
+                    $hub->SetVarFloat('voltage_l' . ($i + 1), (float)$mb->s32($vv, $i * 2));
+                }
+                if ($cc !== null) {
+                    $hub->SetVarFloat('current_l' . ($i + 1), $mb->s32($cc, $i * 2) / 1000.0);
+                }
+            }
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $hub->SetVarInt('limit_source', $mb->u16($cp, 2));
+            $hub->SetVarBool('cable_locked', $mb->u16($cp, 1) === 1);
+            // Strings ändern sich nicht — nur lesen, solange noch leer.
+            foreach ([['dev_serial', self::REG_SERIAL], ['dev_product', self::REG_PRODUCT], ['dev_firmware', self::REG_FIRMWARE]] as [$ident, $reg]) {
+                if ((string)$hub->GetVarValue($ident) === '') {
+                    $r = $mb->readInput($reg, 12);
+                    if ($r !== null) {
+                        $hub->SetVarStr($ident, $mb->readStr($r, 0, 12));
+                    }
+                }
+            }
+        }
+
+        if ($indep && $hub->GroupActive('GroupPhaseSwitch')) {
+            $f = $mb->readHolding(self::REG_FORCE_1PHASE, 1);
+            if ($f !== null) {
+                $hub->SetVarInt('ctl_phase_mode', $mb->u16($f, 0) === 1 ? 1 : 3);
+            }
+        }
+
+        return true;
+    }
+
+    private function writeCurrentMa($mb, int $mA): bool
+    {
+        return (bool)$mb->writeMultiple(self::REG_MB_CURRENT, [($mA >> 16) & 0xFFFF, $mA & 0xFFFF]);
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                // Kein eigenes Freigabe-Register: aus = Limit 0, an = zuletzt
+                // gewähltes Limit (mindestens 6 A), wie bei evcc.
+                $amp = (bool)$value ? max(6, (int)$hub->GetVarValue('ctl_curr_limit')) : 0;
+                if ($this->writeCurrentMa($mb, $amp * 1000)) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                // Bei ausgeschalteter Freigabe nur merken — dasselbe Register
+                // regelt beides, ein Schreiben würde sonst wieder einschalten.
+                if (!$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
+                if ($this->writeCurrentMa($mb, $amp * 1000)) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $force = ((int)$value === 1) ? 1 : 0;
+                if ($mb->writeSingle(self::REG_FORCE_1PHASE, $force)) {
+                    $hub->SetVarInt('ctl_phase_mode', $force === 1 ? 1 : 3);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChargerHub — Hauptmodul
 // ---------------------------------------------------------------------------
 
@@ -2333,6 +2576,7 @@ class ChargerHub extends IPSModule
         'abl'        => 'AblDriver',
         'daheimlader' => 'DaheimLaderDriver',
         'foxess'      => 'FoxEssDriver',
+        'peblar'      => 'PeblarDriver',
     ];
 
     // Hersteller, die Modbus ASCII statt binäres Modbus TCP sprechen (siehe
@@ -2352,6 +2596,7 @@ class ChargerHub extends IPSModule
         'abl'        => 32,
         'daheimlader' => 32,
         'foxess'      => 32,
+        'peblar'      => 32,
     ];
     private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
     // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
@@ -3694,7 +3939,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.90-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.91-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3705,6 +3950,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
                         ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, „Energie gesamt" eine daraus aufintegrierte Software-Zählung, keine echte Messung (kann von einem echten Zähler abweichen). Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
                         ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer.'],
+                        ['type' => 'Label', 'caption' => '• 🆕🧪 Peblar Home/Home Plus/Business (auch ChargeLine): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Standard-Unit-ID 255, Port 502. Firmware 1.6 oder neuer; Modbus-Server im Web-Interface des Ladepunkts aktivieren und Smart-Charging-Strategien auf „Standard" stellen. Ladefreigabe „Aus" setzt das Modbus-Stromlimit auf 0 (kein eigenes Freigabe-Register). Phasenumschaltung nur bei Geräten mit unabhängigem Relais.'],
                         ['type' => 'Label', 'caption' => '• 🆕 Fox ESS EV Charger (Modelle A/L/C): Standard-Unit-ID 1, Port 502. Phasenumschaltung nur wirksam, wenn eine externe Phasenumschalt-Box angeschlossen ist.'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
                         ['type' => 'Label', 'caption' => '🔗 Symbox-Gateway (eingebauter RS485-Port): Verbindungsweg „Symbox-Gateway" wählen, das native ModBus-Gateway auswählen, „Brücke anlegen und verbinden" klicken, „Übernehmen". Die Unit-ID steht am Gateway („DeviceID"), eine Brücke bedient genau EINE Unit-ID — mehrere Wallboxen mit verschiedenen Unit-IDs brauchen je ein eigenes Gateway und eine eigene Brücke. Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet. Modbus ASCII (ABL) läuft immer direkt.'],
@@ -3725,6 +3971,7 @@ class ChargerHub extends IPSModule
                         ['label' => '🆕 ABL (eMH1/eMH2/eMH3, Modbus ASCII)', 'value' => 'abl'],
                         ['label' => '🆕 DaheimLader (Smart/Touch/PRO-Serie)', 'value' => 'daheimlader'],
                         ['label' => '🆕 Fox ESS EV Charger (A/L/C)', 'value' => 'foxess'],
+                        ['label' => '🆕🧪 Peblar (Home/Home Plus/Business, experimentell)', 'value' => 'peblar'],
                     ],
                 ],
                 [

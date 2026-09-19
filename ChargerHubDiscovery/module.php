@@ -41,6 +41,7 @@ class ChargerHubDiscovery extends IPSModule
         // siehe ABL-PDF "Common settings"), 1 ist der praktische Standard.
         'abl'         => [1],
         'foxess'      => [1],
+        'peblar'      => [255],
     ];
 
     private const VENDOR_LABELS = [
@@ -51,6 +52,7 @@ class ChargerHubDiscovery extends IPSModule
         'daheimlader' => 'DaheimLader (Smart/Touch/PRO-Serie)',
         'abl'         => 'ABL eMH1/eMH2/eMH3',
         'foxess'      => 'Fox ESS EV Charger (A/L/C)',
+        'peblar'      => 'Peblar Home/Business (experimentell)',
     ];
 
     public function Create()
@@ -347,7 +349,7 @@ class ChargerHubDiscovery extends IPSModule
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wallboxen auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs.'],
                         ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen, dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten — Klick auf „Erstellen" legt eine ChargerHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
-                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3, Fox ESS EV Charger (A/L/C). Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
+                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3, Fox ESS EV Charger (A/L/C), Peblar Home/Business (experimentell). Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
                         ['type' => 'Label', 'caption' => '🆕 ABL spricht Modbus ASCII statt binärem Modbus TCP — die Suche prüft das automatisch mit, ein zusätzlicher Schritt ist nicht nötig.'],
                         ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP durchsuchen — das nutzt eine langsamere, aber zuverlässigere Port-Prüfung.'],
                         ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für die Suche unsichtbar. In der Praxis beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — zum Prüfen im Browser aufrufen: http://<wallbox-ip>/api/status?filter=men'],
@@ -923,6 +925,18 @@ class ChargerHubDiscovery extends IPSModule
                 // Holding 0x1013: Max Supported Current, 0,1 A, plausibel 6..100 A.
                 $maxA = $this->readHolding($ip, $port, $unitId, 0x1013, 1, 1.0);
                 return ($maxA !== null && $maxA[0] >= 60 && $maxA[0] <= 1000);
+
+            case 'peblar':
+                // Input-Register (FC 0x04) 30092: Phasenzahl 1..3, 30093:
+                // unabhängiges Relais 0/1 — dazu 30110: CP-Zustand als
+                // ASCII-Zeichencode 'A'..'F' (65..70). Registerkarte aus
+                // Peblars offiziellem Beispielclient, gegen evcc gegengelesen.
+                $pc = $this->readInput($ip, $port, $unitId, 30092, 2, 1.0);
+                if ($pc === null || $pc[0] < 1 || $pc[0] > 3 || $pc[1] > 1) {
+                    return false;
+                }
+                $cp = $this->readInput($ip, $port, $unitId, 30110, 1, 1.0);
+                return ($cp !== null && $cp[0] >= 65 && $cp[0] <= 70);
         }
         return false;
     }
