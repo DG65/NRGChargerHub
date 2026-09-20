@@ -4,8 +4,7 @@
   "type": 5,
   "vendor": "",
   "aliases": [
-    "NRG-Stack ChargerHub Suche",
-    "Wallbox Suche"
+    "NRG-Stack ChargerHub Suche"
   ],
   "url": "https://github.com/DG65/NRGChargerHub",
   "parentRequirements": [],

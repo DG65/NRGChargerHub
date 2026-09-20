@@ -3,6 +3,20 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.92-beta.1] - 2026-09-20
+
+### Changed
+- Anzeigenamen vereinheitlicht (Auftrag Dietmar, Vorbild MeterHub 0.31.3): jeder Alias in
+  `module.json` ist in „Instanz hinzufügen" ein eigener Eintrag und der Vorschlagsname neuer
+  Instanzen. Jetzt genau EIN Alias je Modul nach dem Muster „NRG-Stack ChargerHub …":
+  „NRG-Stack ChargerHub", „NRG-Stack ChargerHub Suche", „NRG-Stack ChargerHub Brücke
+  (ModBus-Gateway)". Die Zweit-Aliase „Wallbox (Multi-Hersteller)" und „Wallbox Suche"
+  entfallen (deren Schnellfilter-Suchbegriffe finden die Module nicht mehr). Modulname,
+  GUID und Prefix unverändert.
+- Statuszeile 104 ist in jedem Verbindungsweg neutral („Bitte Verbindung einstellen.").
+  Sie folgt dem gespeicherten Stand und ließ sich im offenen Formular nicht live umschalten
+  (Wechsel Symbox -> Direkt zeigte weiter „Brücke eintragen", Fund Mstaudi).
+
 ## [0.9.91-beta.1] - 2026-09-19
 
 ### Added

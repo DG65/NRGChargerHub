@@ -3871,16 +3871,16 @@ class ChargerHub extends IPSModule
         return $vid ? GetValue($vid) : null;
     }
 
-    // Statuszeile ganz oben je Verbindungsweg (Mstaudi-Feedback über MeterHub,
-    // 19.09.2026, verbundweit gleiche Worte): im Gateway-Modus geht es um
-    // Gateway/Brücke, nicht um IP-Adresse.
+    // Statuszeile ganz oben. 104 ist in JEDEM Verbindungsweg neutral (Mstaudi-
+    // Feedback über MeterHub, 20.09.2026): die Zeile folgt dem GESPEICHERTEN
+    // Stand und lässt sich im offenen Formular nicht live umschalten — ein
+    // Wechsel Symbox -> Direkt zeigte sonst weiter "Brücke eintragen". 201 nennt
+    // nur bei gespeichertem Gateway-Modus die Brücke.
     private function ConfigurationStatus(): array
     {
         $gateway = $this->ReadPropertyString('ConnectionType') === 'gateway';
         return [
-            ['code' => 104, 'icon' => 'inactive', 'caption' => $gateway
-                ? 'Bitte Wallbox-Hersteller wählen und die Brücke zum ModBus Gateway eintragen (Gateway wählen, „Brücke anlegen und verbinden", übernehmen).'
-                : 'Bitte Wallbox-Hersteller wählen und IP-Adresse oder Hostname eintragen.'],
+            ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Verbindung einstellen.'],
             ['code' => 102, 'icon' => 'active', 'caption' => 'Verbindung aktiv.'],
             ['code' => 201, 'icon' => 'error', 'caption' => $gateway
                 ? 'Verbindungsfehler – keine Antwort über die Brücke: Brücke und ModBus Gateway prüfen (Unit-ID = DeviceID am Gateway).'
@@ -3939,7 +3939,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.91-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.92-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
