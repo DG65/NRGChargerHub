@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.93-beta.1] - 2026-09-20
+
+### Fixed
+- Peblar: Ladefreigabe und Stromlimit wurden nie vom Gerät zurückgelesen. Die Freigabe zeigte
+  dadurch dauerhaft „Aus“, und ein gesetztes Stromlimit wurde dann nur gemerkt statt an die
+  Wallbox geschrieben. Jetzt wird Holding 40000 mitgelesen (Freigabe = Limit > 0, Limit in A).
+  (Fund Mstaudi im Forum)
+- Verbindungs-Formular: Felder des Symbox-Gateway-Wegs (Gateway, Brücke, Hinweise) blieben im
+  Direkt-Modus sichtbar, weil Symcon `visible`-Ausdrücke mit `$ConnectionType` nicht zuverlässig
+  auswertet. Umschaltung jetzt wie in MeterHub/InverterHub per `onChange` + `UpdateFormField`.
+- Unit ID: Höchstwert 247 → 255 (Modbus TCP erlaubt 255; Peblar/DaheimLader-Suche nutzt 255,
+  das Formular meldete dann einen Fehler).
+
+### Changed
+- Lese-Intervall: Mindestwert 5 s → 2 s (Wunsch Mstaudi).
+
 ## [0.9.92-beta.1] - 2026-09-20
 
 ### Changed
