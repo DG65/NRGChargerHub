@@ -2493,6 +2493,20 @@ class PeblarDriver implements ChargerDriverInterface
             }
         }
 
+        // Steuerwerte zurücklesen: Freigabe = Limit > 0, Limit in ganzen Ampere.
+        // Ohne Rücklesen zeigte die Freigabe dauerhaft „Aus“, und ein Stromlimit
+        // wurde dann nur gemerkt statt geschrieben (Fund Mstaudi, 20.09.2026).
+        if ($hub->GroupActive('GroupControl')) {
+            $lim = $mb->readHolding(self::REG_MB_CURRENT, 2);
+            if ($lim !== null) {
+                $mA = ($mb->u16($lim, 0) << 16) | $mb->u16($lim, 1);
+                $hub->SetVarBool('ctl_enable', $mA > 0);
+                if ($mA > 0) {
+                    $hub->SetVarInt('ctl_curr_limit', (int)round($mA / 1000));
+                }
+            }
+        }
+
         if ($indep && $hub->GroupActive('GroupPhaseSwitch')) {
             $f = $mb->readHolding(self::REG_FORCE_1PHASE, 1);
             if ($f !== null) {
@@ -3321,6 +3335,18 @@ class ChargerHub extends IPSModule
 
     public function RequestAction($Ident, $Value)
     {
+        // Formular-Ereignis (kein Gerätebefehl): Felder je Verbindungsweg live umschalten.
+        // Symcon wertet 'visible'-Ausdrücke mit $Variable nicht zuverlässig aus (Fund Mstaudi).
+        if ($Ident === 'ConnectionTypeChanged') {
+            $direct = ((string)$Value !== 'gateway');
+            foreach (['Host', 'Port', 'UnitId', 'DirectHintLabel'] as $f) {
+                $this->UpdateFormField($f, 'visible', $direct);
+            }
+            foreach (['GatewayPick', 'CreateBridgeButton', 'BridgeInstanceID', 'GatewayHintLabel', 'GatewayWarnLabel'] as $f) {
+                $this->UpdateFormField($f, 'visible', !$direct);
+            }
+            return;
+        }
         if (!$this->ReadPropertyBoolean('Active')) {
             return;
         }
@@ -3939,7 +3965,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.92-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.93-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -3987,20 +4013,21 @@ class ChargerHub extends IPSModule
                                 ['caption' => 'Direkt (eigene TCP-Verbindung, Standard)', 'value' => 'direct'],
                                 ['caption' => 'Symbox-Gateway (eingebauter RS485-Port, nur Lesen)', 'value' => 'gateway'],
                             ],
+                            'onChange' => 'IPS_RequestAction($id, "ConnectionTypeChanged", $ConnectionType);',
                         ],
-                        ['type' => 'Label', 'caption' => 'ℹ️ Über die Suche (Modul „ChargerHub Suche") werden Host/Port/Unit ID beim Anlegen automatisch befüllt — von Hand eintragen ist nur nötig, wenn die Instanz manuell angelegt oder die IP-Adresse der Wallbox geändert wurde.', 'visible' => '$ConnectionType != "gateway"'],
-                        ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$', 'visible' => '$ConnectionType != "gateway"'],
-                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535, 'visible' => '$ConnectionType != "gateway"'],
-                        ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 247, 'visible' => '$ConnectionType != "gateway"'],
+                        ['type' => 'Label', 'caption' => 'ℹ️ Über die Suche (Modul „ChargerHub Suche") werden Host/Port/Unit ID beim Anlegen automatisch befüllt — von Hand eintragen ist nur nötig, wenn die Instanz manuell angelegt oder die IP-Adresse der Wallbox geändert wurde.', 'name' => 'DirectHintLabel', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535, 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 255, 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
                         // Feld-Sichtbarkeit statt nur Warntext (Fund/Fix MeterHub, 18.09.2026):
                         // Host/Port/Unit ID sehen sonst wie benutzbar aus, greifen im
                         // Symbox-Modus aber gar nicht — die Unit-ID sitzt stattdessen an der
                         // uebergeordneten Gateway-Splitter-Instanz (Property "DeviceID").
-                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => 'ModBus Gateway zum Gerät', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'Button', 'caption' => 'Brücke anlegen und verbinden', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => 'NRG-Stack Brücke zum ModBus Gateway', 'moduleID' => self::BRIDGE_GUID, 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'Label', 'caption' => '🔗 Gateway wählen, „Brücke anlegen und verbinden", übernehmen. Unit-ID = „DeviceID" am Gateway; eine Brücke = genau eine Unit-ID.', 'visible' => '$ConnectionType == "gateway"'],
-                        ['type' => 'Label', 'caption' => '⚠️ Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet.', 'visible' => '$ConnectionType == "gateway"'],
+                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => 'ModBus Gateway zum Gerät', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Button', 'name' => 'CreateBridgeButton', 'caption' => 'Brücke anlegen und verbinden', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => 'NRG-Stack Brücke zum ModBus Gateway', 'moduleID' => self::BRIDGE_GUID, 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => '🔗 Gateway wählen, „Brücke anlegen und verbinden", übernehmen. Unit-ID = „DeviceID" am Gateway; eine Brücke = genau eine Unit-ID.', 'name' => 'GatewayHintLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => '⚠️ Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet.', 'name' => 'GatewayWarnLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
                     ],
                 ],
                 [
@@ -4008,7 +4035,7 @@ class ChargerHub extends IPSModule
                     'caption'  => '⏱️  Polling',
                     'expanded' => false,
                     'items'    => [
-                        ['type' => 'NumberSpinner', 'name' => 'IntervalFast', 'caption' => 'Lese-Intervall (Sekunden)', 'minimum' => 5, 'maximum' => 300, 'suffix' => 's'],
+                        ['type' => 'NumberSpinner', 'name' => 'IntervalFast', 'caption' => 'Lese-Intervall (Sekunden)', 'minimum' => 2, 'maximum' => 300, 'suffix' => 's'],
                         ['type' => 'CheckBox', 'name' => 'DisableArchiving', 'caption' => '🆕 Archivierung deaktivieren'],
                         ['type' => 'Label', 'caption' => 'Betrifft ALLE Variablen dieser Instanz. Bereits aktiv archivierte Werte werden beim nächsten Übernehmen automatisch abgeschaltet, ihre bisherige Historie bleibt im Archiv erhalten. ⚠️ Nur aktivieren, wenn ChargerHub eigenständig läuft: andere NRG-Stack-Module (z. B. Dashboard-Verlaufsgrafiken, MigrationsHub bei einem späteren Wechsel) können archivierte Historie brauchen.'],
                     ],
