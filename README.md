@@ -114,7 +114,7 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.5'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
+| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.6'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
 | `function` | string | `'charger'` |
 | `label` | string | Instanzname |
 | `powerID` | int | Variablen-ID Ladeleistung (W); 0 falls nicht verfügbar |
@@ -133,8 +133,10 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 | `deviceHost` | string | IP-Adresse/Hostname (Property „Host") — bei JEDEM Hersteller vorhanden, daher der zuverlässigere Abgleichspunkt als `deviceSerial` |
 | `manufacturer` | string | Interner Hersteller-Schlüssel (`goe`/`keba`/`alfen`/`heidelberg`/`abl`/`daheimlader`/`foxess`/`peblar`) |
 | `duplicateOf` | array\|null | Weicher Dubletten-Marker (`null` = zählt normal), sonst `{"source": "chargerhub"\|"ocpphub", "instanceID": int}` — zeigt auf die Instanz, die für dasselbe physische Gerät zählt. Ausschließlich vom Nutzer im Formular gesetzt, nie automatisch geraten. Betrifft NUR die Zählung (Summen/Sitzungen/Leistung) — wer ans Gerät schreibt, entscheidet weiterhin ausschließlich `managedBy`; eine Instanz kann gleichzeitig Dublette fürs Zählen UND aktiver Regler sein. Konsumenten überspringen als Dublette markierte Einträge beim Messen/Summieren/Sitzungen |
+| `phases` | int | **Optional (1.6), fehlt = unbekannt.** Aktuell genutzte Phasenzahl (1 oder 3), nur wenn das Gerät sie selbst meldet (Peblar: Register 30092; go-e: nur bei erzwungenem 1-/3-phasigem Modus, im Automatikmodus fehlt das Feld). Nie aus Verkabelung oder Messwerten geraten |
+| `phasesSwitchable` | bool | **Optional (1.6), fehlt = unbekannt.** Gerät kann zwischen 1 und 3 Phasen umschalten, nur bei Nachweis durch das Gerät (Peblar: unabhängiges Relais, Register 30093; go-e: Umschaltregister antwortet). Fehlt es, heißt das NICHT „nicht umschaltbar“ |
 
-Vertragsversion (`contractVersion`): aktuell **`1.5`** (1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer`; 1.5: `duplicateOf` — beide MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen, harter Weg `CHUB_SetActive()` plus weicher Marker `duplicateOf`).
+Vertragsversion (`contractVersion`): aktuell **`1.6`** (1.6: optionale Felder `phases`/`phasesSwitchable`, siehe Tabelle; 1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer`; 1.5: `duplicateOf` — beide MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen, harter Weg `CHUB_SetActive()` plus weicher Marker `duplicateOf`).
 
 **Sicherheitsnetz zu `duplicateOf`** (EMS-Auftrag, 13.09.2026): Da `duplicateOf` bewusst nicht
 übers Schreibrecht entscheidet, kann eine als Dublette markierte Instanz gleichzeitig aktiver

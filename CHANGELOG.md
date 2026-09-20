@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.95-beta.1] - 2026-09-20
+
+### Added
+- `CHUB_GetFunctions`, Vertrag 1.6 (EMS-Anfrage): optionale Felder `phases` (1/3) und
+  `phasesSwitchable` (bool). Nur befüllt, wenn das Gerät es selbst meldet (Peblar Input
+  30092/30093; go-e Umschaltregister). Fehlt ein Feld, ist der Wert unbekannt. Additiv, keine
+  Umbenennung. `minCurrent` (feste 6 A) und `maxCurrent` (Herstellervorgabe, begrenzt durch die
+  Property „Maximaler Anschlussstrom“) bleiben unverändert und sind keine Gerätemesswerte.
+
 ## [0.9.94-beta.1] - 2026-09-20
 
 ### Added
