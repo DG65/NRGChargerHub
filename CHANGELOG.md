@@ -3,6 +3,11 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.94-beta.1] - 2026-09-20
+
+### Added
+- Peblar: Variable „Energie akt. Sitzung“ aus Input 30004 (INT64, Wh), Wunsch Mstaudi.
+
 ## [0.9.93-beta.1] - 2026-09-20
 
 ### Fixed
