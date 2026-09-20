@@ -1045,29 +1045,37 @@ class KebaDriver implements ChargerDriverInterface
 
 // ---------------------------------------------------------------------------
 // AlfenDriver — Alfen Eve Single/Double Pro-line, NG9xx. Registeradressen
-// laut Alfen "Modbus TCP/RTU Slave Register Table" — UNGETESTET an echter
-// Hardware. Nur Sockel 1 (Basisadresse ohne Offset) wird bedient; Eve Double
+// laut Alfen "Modbus TCP/RTU Slave Register Table", in 0.9.96 gegen die
+// funktionierende Symcon-Vorlage eines Forum-Nutzers (Eve Single) korrigiert.
+// Schreibzugriffe (Limit/Freigabe/Phasen) von uns noch nicht an Hardware
+// geprüft; das Register-Schema (1210 Float FC16, 1215 U16 FC6) stammt aus der
+// Vorlage. Nur Sockel 1 (Basisadresse ohne Offset) wird bedient; Eve Double
 // bräuchte für Sockel 2 dieselben Adressen +0x80, das ist hier bewusst noch
 // nicht umgesetzt.
 // ---------------------------------------------------------------------------
 
 class AlfenDriver implements ChargerDriverInterface
 {
-    // Meter-Register (FC 0x03, lesend), Basis 300 — Float32 (2 Register)
-    const REG_VOLTAGE_L1  = 308;
-    const REG_VOLTAGE_L2  = 310;
-    const REG_VOLTAGE_L3  = 312;
-    const REG_CURRENT_L1  = 322;
-    const REG_CURRENT_L2  = 324;
-    const REG_CURRENT_L3  = 326;
+    // Meter-Register (FC 0x03, lesend), Basis 300 — Float32 (2 Register).
+    // Adressen korrigiert in 0.9.96 nach Alfens Registertabelle (Vorlage von tkpage,
+    // Forum 20.09.2026): L1-N/L2-N/L3-N = 306/308/310, Strom L1/L2/L3 = 320/322/324.
+    // Die früheren Adressen 308.. bzw. 322.. lagen je ein Register zu weit.
+    const REG_VOLTAGE_L1  = 306;
+    const REG_VOLTAGE_L2  = 308;
+    const REG_VOLTAGE_L3  = 310;
+    const REG_CURRENT_L1  = 320;
+    const REG_CURRENT_L2  = 322;
+    const REG_CURRENT_L3  = 324;
     const REG_POWER_SUM   = 344; // W
 
     // Sockel-Status (Basis 1200), Sockel 1
     const REG_AVAILABILITY   = 1200; // U16: 0=nicht betriebsbereit,1=betriebsbereit,2=in Betrieb
     const REG_ACTUAL_CURRENT = 1206; // Float32, tatsächlich angewandtes Stromlimit (A)
-    const REG_SETPOINT_CURR  = 1210; // Float32, Modbus-Slave-Stromlimit (A) — schreiben
-    const REG_SETPOINT_TTL   = 1212; // U16, Gültigkeitsdauer des Setpoints (s) — muss periodisch erneuert werden
-    const REG_SLAVE_CONTROL  = 1214; // U16, 1=Modbus-Slave-Steuerung aktiv, 0=Ladestation entscheidet selbst
+    const REG_SETPOINT_CURR  = 1210; // Float32, Modbus-Slave-Stromlimit (A) — schreiben (FC 0x10)
+    // 1208 (U32 Gültigkeitsdauer des Setpoints), 1212 (Float32 Sicherheitsstrom des Lastmanagements)
+    // und 1214 (U16 „Sollwert berücksichtigt“) werden bewusst NICHT geschrieben: 1212/1214 sind
+    // laut Registertabelle nur lesbar; der frühere Schreibzugriff darauf war falsch.
+    const REG_PHASES         = 1215; // U16, RW: 1 = einphasig, 3 = dreiphasig laden (FC 0x06)
 
     const AVAIL_LABELS = [0 => 'Nicht betriebsbereit', 1 => 'Betriebsbereit', 2 => 'In Betrieb'];
 
@@ -1085,16 +1093,20 @@ class AlfenDriver implements ChargerDriverInterface
     {
         return [
             'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
-                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 308'],
-                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 310'],
-                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 312'],
-                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 322'],
-                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 324'],
-                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 326'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 306'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 308'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 310'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 320'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 322'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 324'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',    true,  'control', 'RW Holding 1210/1214'],
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',    true,  'control', 'RW Holding 1210'],
                 ['ctl_curr_limit', 'Stromlimit (A)', 'F', 'NRG.Ampere', true,  'control', 'RW Holding 1210'],
+            ]],
+            // Erprobt an einer Eve Single (tkpage): 1 = einphasig, 3 = dreiphasig in Register 1215.
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (1/3 Phasen)', 'vars' => [
+                ['ctl_phase_mode', 'Phasenmodus', 'I', 'CHB.AlfenPhaseMode', true, 'control', 'RW Holding 1215 (1 = einphasig, 3 = dreiphasig)'],
             ]],
         ];
     }
@@ -1114,7 +1126,10 @@ class AlfenDriver implements ChargerDriverInterface
         foreach (self::AVAIL_LABELS as $k => $label) {
             $avail[$k] = [$label, $k === 2 ? 0x27D07F : 0x7A8A99];
         }
-        return ['CHB.AlfenAvail' => $avail];
+        return [
+            'CHB.AlfenAvail'     => $avail,
+            'CHB.AlfenPhaseMode' => [1 => ['Einphasig', 0x7A8A99], 3 => ['Dreiphasig', 0x27D07F]],
+        ];
     }
 
     public function readValues($mb, $hub)
@@ -1152,6 +1167,14 @@ class AlfenDriver implements ChargerDriverInterface
             if ($i3 !== null) { $hub->SetVarFloat('current_l3', $mb->readFloat32($i3, 0)); }
         }
 
+        if ($hub->GroupActive('GroupPhaseSwitch')) {
+            $ph = $mb->readHolding(self::REG_PHASES, 1);
+            if ($ph !== null && in_array($mb->u16($ph, 0), [1, 3], true)) {
+                $hub->SetVarInt('ctl_phase_mode', $mb->u16($ph, 0));
+                $hub->SetPhaseInfo($mb->u16($ph, 0), -1);
+            }
+        }
+
         return true;
     }
 
@@ -1160,21 +1183,25 @@ class AlfenDriver implements ChargerDriverInterface
         switch ($ident) {
             case 'ctl_enable':
                 $enable = (bool)$value;
-                // Ladefreigabe = Slave-Steuerung aktivieren + aktuelles Stromlimit
-                // (0 A, wenn Freigabe entzogen wird) für 60 s gültig schreiben.
+                // Ladefreigabe = Stromlimit-Sollwert (0 A, wenn Freigabe entzogen wird).
                 $limit = $enable ? max(6.0, (float)$hub->GetVarValue('ctl_curr_limit')) : 0.0;
-                $mb->writeFloat32(self::REG_SETPOINT_CURR, $limit);
-                $mb->writeSingle(self::REG_SETPOINT_TTL, 60);
-                $mb->writeSingle(self::REG_SLAVE_CONTROL, 1);
-                $hub->SetVarBool('ctl_enable', $enable);
+                if ($mb->writeFloat32(self::REG_SETPOINT_CURR, $limit)) {
+                    $hub->SetVarBool('ctl_enable', $enable);
+                }
                 break;
 
             case 'ctl_curr_limit':
                 $amp = max(0.0, min((float)$hub->GetMaxCurrentA(), (float)$value));
-                $mb->writeFloat32(self::REG_SETPOINT_CURR, $amp);
-                $mb->writeSingle(self::REG_SETPOINT_TTL, 60);
-                $mb->writeSingle(self::REG_SLAVE_CONTROL, 1);
-                $hub->SetVarFloat('ctl_curr_limit', $amp);
+                if ($mb->writeFloat32(self::REG_SETPOINT_CURR, $amp)) {
+                    $hub->SetVarFloat('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $mode = ((int)$value === 1) ? 1 : 3;
+                if ($mb->writeSingle(self::REG_PHASES, $mode)) {
+                    $hub->SetVarInt('ctl_phase_mode', $mode);
+                }
                 break;
         }
     }
@@ -4012,7 +4039,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.95-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.96-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

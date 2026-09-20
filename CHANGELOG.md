@@ -3,6 +3,24 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.96-beta.1] - 2026-09-20
+
+### Fixed
+- Alfen: Registeradressen für Spannung und Strom je Phase lagen ein Register zu weit
+  (Spannung 308/310/312 statt 306/308/310, Strom 322/324/326 statt 320/322/324). Dadurch
+  zeigte L1 die Werte von L2, L2 die von L3 und L3 blieb bei 0. Ladeleistung (344) war richtig.
+  Fund tkpage (Forum), Gegenprüfung an seiner Symcon-Vorlage.
+- Alfen: Steuern schrieb fälschlich in die nur lesbaren Register 1212 (Sicherheitsstrom,
+  Float32) und 1214 („Sollwert berücksichtigt“). Jetzt wird nur noch der Stromlimit-Sollwert
+  (Register 1210, Float32, FC 0x10) geschrieben; die Variablen ändern sich nur bei erfolgreichem
+  Schreiben.
+
+### Added
+- Alfen: Phasenumschaltung 1/3 (Register 1215, U16, 1 = einphasig, 3 = dreiphasig), Variable
+  `ctl_phase_mode`. Register-Schema aus der Vorlage von tkpage, der damit an seiner Eve Single
+  regelmäßig umschaltet. Ob die Phasenumschaltung im Überschussladen greift, hängt wie bei den
+  anderen Herstellern an dieser Variable.
+
 ## [0.9.95-beta.1] - 2026-09-20
 
 ### Added
