@@ -1612,6 +1612,9 @@ class GoeChargerDriver implements ChargerDriverInterface
             $psm = $mb->readHolding(self::REG_PHASE_SWITCH, 1);
             if ($psm !== null && $mb->u16($psm, 0) <= 2) {
                 $hub->SetVarInt('ctl_phase_mode', $mb->u16($psm, 0));
+                // psm 1 = einphasig, 2 = dreiphasig erzwungen; 0 = Auto, dann ist die
+                // aktuelle Phasenzahl aus diesem Register nicht ablesbar (unbekannt).
+                $hub->SetPhaseInfo($mb->u16($psm, 0) === 1 ? 1 : ($mb->u16($psm, 0) === 2 ? 3 : 0), 1);
             }
             $acc = $mb->readHolding(self::REG_ACCESS_STATE, 1);
             if ($acc !== null && $mb->u16($acc, 0) <= 3) {
@@ -2454,6 +2457,10 @@ class PeblarDriver implements ChargerDriverInterface
         $pc     = $mb->readInput(self::REG_PHASE_COUNT, 2);
         $phases = ($pc !== null && $mb->u16($pc, 0) >= 1 && $mb->u16($pc, 0) <= 3) ? $mb->u16($pc, 0) : 1;
         $indep  = ($pc !== null && $mb->u16($pc, 1) === 1);
+        if ($pc !== null && $mb->u16($pc, 0) >= 1 && $mb->u16($pc, 0) <= 3) {
+            // Gerät meldet Phasenzahl (Input 30092) und unabhängiges Relais (30093).
+            $hub->SetPhaseInfo($mb->u16($pc, 0) === 1 ? 1 : 3, $mb->u16($pc, 1) === 1 ? 1 : 0);
+        }
 
         $pw = $mb->readInput(self::REG_POWER_TOTAL, 2);
         if ($pw !== null) {
@@ -2681,6 +2688,9 @@ class ChargerHub extends IPSModule
         // Zeitpunkt (Unix-Timestamp) des letzten erfolgreichen Lesezyklus —
         // siehe SetVarBool()/GetFunctions() 'lastSeenAt', contractVersion 1.3.
         $this->RegisterAttributeInteger('LastSeenAt', 0);
+        // 1.6: vom Gerät gemeldete Phasenangaben, 0 = unbekannt (siehe SetPhaseInfo()).
+        $this->RegisterAttributeInteger('DevicePhases', 0);
+        $this->RegisterAttributeInteger('DevicePhaseSwitch', -1);
         // Beobachtungszähler fürs Phasen-Umschalten beim Überschussladen — ein
         // Wechsel wird erst nach mehreren AUFEINANDERFOLGENDEN Polls mit derselben
         // Tendenz ausgelöst, nicht schon beim ersten (verhindert Pendeln).
@@ -3546,6 +3556,22 @@ class ChargerHub extends IPSModule
         return $vid ? (bool)@GetValueBoolean($vid) : false;
     }
 
+    // Vom Treiber gemeldete Phasenangaben fürs GetFunctions() (Vertrag 1.6).
+    // $phases: 1/3 nur, wenn das Gerät es selbst meldet, sonst 0 (unbekannt);
+    // $switchable: 1/0 nur bei Nachweis durch das Gerät, sonst -1 (unbekannt).
+    // Nichts wird aus Verkabelung, Herstellername oder Messwerten geraten.
+    public function SetPhaseInfo(int $phases, int $switchable)
+    {
+        $phases = in_array($phases, [1, 3], true) ? $phases : 0;
+        $switchable = in_array($switchable, [0, 1], true) ? $switchable : -1;
+        if ($this->ReadAttributeInteger('DevicePhases') !== $phases) {
+            $this->WriteAttributeInteger('DevicePhases', $phases);
+        }
+        if ($this->ReadAttributeInteger('DevicePhaseSwitch') !== $switchable) {
+            $this->WriteAttributeInteger('DevicePhaseSwitch', $switchable);
+        }
+    }
+
     // Wirksame Ladestrom-Obergrenze: Hardware-Limit des Herstellers,
     // zusätzlich begrenzt durch die Property „Maximaler Anschlussstrom".
     public function GetMaxCurrentA(): int
@@ -3709,13 +3735,14 @@ class ChargerHub extends IPSModule
             $energyID = $this->FindVarByIdent('energy_session');
         }
 
-        return [[
+        $fn = [
             // Vertragsversion Major.Minor (Verbund-Konvention, siehe SUITE.md
             // im EMS-Repo). Konsumenten prüfen die Major; additive Felder
             // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
             // 1.1: managedBy ergänzt. 1.3: lastSeenAt ergänzt. 1.4: deviceSerial/
-            // deviceHost/manufacturer ergänzt. 1.5: duplicateOf ergänzt.
-            'contractVersion'    => '1.5',
+            // deviceHost/manufacturer ergänzt. 1.5: duplicateOf ergänzt. 1.6: phases/
+            // phasesSwitchable ergänzt (optional, fehlt = unbekannt).
+            'contractVersion'    => '1.6',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -3778,7 +3805,20 @@ class ChargerHub extends IPSModule
             // überspringen als Dublette markierte Einträge beim Messen/
             // Summieren/Sitzungen.
             'duplicateOf'        => $this->GetDuplicateOf(),
-        ]];
+        ];
+        // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
+        // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
+        // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
+        // (1 oder 3); phasesSwitchable: Gerät kann zwischen 1 und 3 umschalten.
+        $devPhases = $this->ReadAttributeInteger('DevicePhases');
+        if ($devPhases > 0) {
+            $fn['phases'] = $devPhases;
+        }
+        $devSwitch = $this->ReadAttributeInteger('DevicePhaseSwitch');
+        if ($devSwitch >= 0) {
+            $fn['phasesSwitchable'] = ($devSwitch === 1);
+        }
+        return [$fn];
     }
 
     private function GetDriver()
@@ -3972,7 +4012,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.94-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.95-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
