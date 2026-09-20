@@ -2337,6 +2337,7 @@ class FoxEssDriver implements ChargerDriverInterface
 class PeblarDriver implements ChargerDriverInterface
 {
     const REG_ENERGY_TOTAL  = 30000; // INT64, Wh
+    const REG_ENERGY_SESSION = 30004; // INT64, Wh (letzte/laufende Ladesitzung)
     const REG_POWER_PHASE   = 30008; // je INT32, W (nur vorhandene Phasen)
     const REG_POWER_TOTAL   = 30014; // INT32, W
     const REG_VOLTAGE       = 30016; // je INT32, V
@@ -2371,6 +2372,7 @@ class PeblarDriver implements ChargerDriverInterface
             ['vehicle_plugged', 'Fahrzeug verbunden', 'B', 'CHB.Connected',   true, 'device', 'abgeleitet: Status B/C/D'],
             ['power',           'Ladeleistung',       'F', 'NRG.Watt',        true, 'device', 'Input 30014-30015 (INT32, W)'],
             ['energy_total',    'Energie gesamt',     'F', 'NRG.kWh',         true, 'device', 'Input 30000-30003 (INT64, Wh)'],
+            ['energy_session',  'Energie akt. Sitzung', 'F', 'CHB.kWhSession', true, 'device', 'Input 30004-30007 (INT64, Wh)'],
         ];
     }
 
@@ -2413,6 +2415,7 @@ class PeblarDriver implements ChargerDriverInterface
             'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
             'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
             'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
             'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
         ];
     }
@@ -2460,6 +2463,10 @@ class PeblarDriver implements ChargerDriverInterface
         if ($en !== null) {
             $wh = ($mb->u32($en, 0) << 32) | $mb->u32($en, 2);
             $hub->SetVarFloat('energy_total', $wh / 1000.0);
+        }
+        $es = $mb->readInput(self::REG_ENERGY_SESSION, 4);
+        if ($es !== null) {
+            $hub->SetVarFloat('energy_session', (($mb->u32($es, 0) << 32) | $mb->u32($es, 2)) / 1000.0);
         }
 
         if ($hub->GroupActive('GroupPhases')) {
@@ -3965,7 +3972,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.93-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.94-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
