@@ -4039,7 +4039,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.99-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.100-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4225,6 +4225,8 @@ class ChargerHub extends IPSModule
         foreach ($items as &$item) {
             if (($item['name'] ?? '') === $name) {
                 $item['caption'] = $caption;
+                // 🔗 = automatisch übernommen -> grün (SUITE.md 21.09.2026), sonst Standardfarbe.
+                $item['color'] = (strpos($caption, '🔗') === 0) ? 0x2E8B3D : -1;
                 return true;
             }
             if (isset($item['items']) && is_array($item['items']) && $this->SetFormLabelCaption($item['items'], $name, $caption)) {

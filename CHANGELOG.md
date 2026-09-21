@@ -3,6 +3,12 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.100-beta.1] - 2026-09-21
+
+### Changed
+- Statuszeilen mit „🔗“ (automatisch übernommen) werden grün dargestellt (Label-`color`
+  0x2E8B3D, sonst Standardfarbe), Verbund-Konvention SUITE.md 21.09.2026.
+
 ## [0.9.99-beta.1] - 2026-09-21
 
 ### Changed

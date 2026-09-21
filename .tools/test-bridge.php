@@ -118,6 +118,12 @@ check('Zeile 🔗 mit Wert und Quelle', strpos($ls->invoke($hub)['LinkGridStatus
 $hub->prop = ['SurplusMeterID' => 77];
 check('Feld: eigene Wahl -> nicht automatisch, Zeile ✏️', $gm->invoke($hub) === false && strpos($ls->invoke($hub)['LinkGridStatus'], '✏️') === 0);
 
+// 🔗-Zeilen grün, andere Standardfarbe
+$f2 = [['type' => 'Label', 'name' => 'A', 'caption' => 'x'], ['type' => 'Label', 'name' => 'B', 'caption' => 'x']];
+$rep->invokeArgs($hub, [&$f2, 'A', '🔗 Netzzähler: X (automatisch von MeterHub)']);
+$rep->invokeArgs($hub, [&$f2, 'B', '✏️ Netzzähler: eigene Wahl']);
+check('Farbe: 🔗 grün 0x2E8B3D, ✏️ Standard -1', $f2[0]['color'] === 0x2E8B3D && $f2[1]['color'] === -1);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);
