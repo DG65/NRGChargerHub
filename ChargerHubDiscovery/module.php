@@ -44,6 +44,8 @@ class ChargerHubDiscovery extends IPSModule
         // 1 an echter Hardware bestätigt (Forum-Tester, 20.09.2026); 255 laut Peblars
         // Beispielclient, an Hardware nicht gegengeprüft. 1 zuerst.
         'peblar'      => [1, 255],
+        // CHARX: Modbus-Server-Adresse 1 laut Handbuch.
+        'charx'       => [1],
     ];
 
     private const VENDOR_LABELS = [
@@ -55,6 +57,7 @@ class ChargerHubDiscovery extends IPSModule
         'abl'         => 'ABL eMH1/eMH2/eMH3',
         'foxess'      => 'Fox ESS EV Charger (A/L/C)',
         'peblar'      => 'Peblar Home/Business (experimentell)',
+        'charx'       => 'Phoenix Contact CHARX SEC-3xxx (experimentell)',
     ];
 
     public function Create()
@@ -351,7 +354,7 @@ class ChargerHubDiscovery extends IPSModule
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wallboxen auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs.'],
                         ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen, dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten — Klick auf „Erstellen" legt eine ChargerHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
-                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3, Fox ESS EV Charger (A/L/C), Peblar Home/Business (experimentell). Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
+                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3, Fox ESS EV Charger (A/L/C), Peblar Home/Business (experimentell), Phoenix Contact CHARX SEC-3xxx (experimentell, ein Eintrag je IP-Adresse; die Nummer des Ladepunkts danach in der Instanz einstellen). Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
                         ['type' => 'Label', 'caption' => '🆕 ABL spricht Modbus ASCII statt binärem Modbus TCP — die Suche prüft das automatisch mit, ein zusätzlicher Schritt ist nicht nötig.'],
                         ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP durchsuchen — das nutzt eine langsamere, aber zuverlässigere Port-Prüfung.'],
                         ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für die Suche unsichtbar. In der Praxis beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — zum Prüfen im Browser aufrufen: http://<wallbox-ip>/api/status?filter=men'],
@@ -939,6 +942,24 @@ class ChargerHubDiscovery extends IPSModule
                 }
                 $cp = $this->readInput($ip, $port, $unitId, 30110, 1, 1.0);
                 return ($cp !== null && $cp[0] >= 65 && $cp[0] <= 70);
+
+            case 'charx':
+                // Zentrale Register laut Handbuch: 114 = Anzahl Ladesteuerungen (1..48),
+                // 100 = Gerätebezeichnung (20 Zeichen ASCII, darstellbar).
+                $cnt = $this->readHolding($ip, $port, $unitId, 114, 1, 1.0);
+                if ($cnt === null || $cnt[0] < 1 || $cnt[0] > 48) {
+                    return false;
+                }
+                $name = $this->readHolding($ip, $port, $unitId, 100, 10, 1.0);
+                if ($name === null) {
+                    return false;
+                }
+                $txt = '';
+                foreach ($name as $w) {
+                    $txt .= chr(($w >> 8) & 0xFF) . chr($w & 0xFF);
+                }
+                $txt = rtrim($txt, "\x00 ");
+                return ($txt !== '' && preg_match('/^[\x20-\x7E]+$/', $txt) === 1);
         }
         return false;
     }
