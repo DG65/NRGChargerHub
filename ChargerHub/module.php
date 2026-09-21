@@ -1071,7 +1071,12 @@ class AlfenDriver implements ChargerDriverInterface
     // Sockel-Status (Basis 1200), Sockel 1
     const REG_AVAILABILITY   = 1200; // U16: 0=nicht betriebsbereit,1=betriebsbereit,2=in Betrieb
     const REG_ACTUAL_CURRENT = 1206; // Float32, tatsächlich angewandtes Stromlimit (A)
+    const REG_SETPOINT_TTL   = 1208; // U32, verbleibende Gültigkeit des Sollwerts (s), zählt rückwärts (nur gelesen)
     const REG_SETPOINT_CURR  = 1210; // Float32, Modbus-Slave-Stromlimit (A) — schreiben (FC 0x10)
+    // Läuft die Gültigkeit ab, fällt die Box auf ihren Standard-/Sicherheitsstrom zurück (Auskunft
+    // tkpage, 21.09.2026; Dauer an der Box einstellbar). Deshalb wird ein von uns gesetzter Sollwert
+    // kurz vor Ablauf erneuert.
+    const REFRESH_BELOW_S    = 120;
     // 1208 (U32 Gültigkeitsdauer des Setpoints), 1212 (Float32 Sicherheitsstrom des Lastmanagements)
     // und 1214 (U16 „Sollwert berücksichtigt“) werden bewusst NICHT geschrieben: 1212/1214 sind
     // laut Registertabelle nur lesbar; der frühere Schreibzugriff darauf war falsch.
@@ -1165,6 +1170,23 @@ class AlfenDriver implements ChargerDriverInterface
             if ($i1 !== null) { $hub->SetVarFloat('current_l1', $mb->readFloat32($i1, 0)); }
             if ($i2 !== null) { $hub->SetVarFloat('current_l2', $mb->readFloat32($i2, 0)); }
             if ($i3 !== null) { $hub->SetVarFloat('current_l3', $mb->readFloat32($i3, 0)); }
+        }
+
+        // Sollwert erneuern, solange er von uns stammt: gültig (Restzeit > 0), bald ablaufend und
+        // der Wert in Register 1210 entspricht dem, den wir zuletzt geschrieben haben (Freigabe an:
+        // Limit, mindestens 6 A; Freigabe aus: 0 A). Ein fremder Sollwert wird nicht verlängert.
+        if ($hub->GroupActive('GroupControl')) {
+            $ttl = $mb->readHolding(self::REG_SETPOINT_TTL, 2);
+            $sp  = $mb->readHolding(self::REG_SETPOINT_CURR, 2);
+            if ($ttl !== null && $sp !== null) {
+                $remaining = $mb->u32($ttl, 0);
+                $current   = $mb->readFloat32($sp, 0);
+                $ours      = ((bool)$hub->GetVarValue('ctl_enable'))
+                    ? max(6.0, (float)$hub->GetVarValue('ctl_curr_limit')) : 0.0;
+                if ($remaining > 0 && $remaining < self::REFRESH_BELOW_S && abs($current - $ours) < 0.05) {
+                    $mb->writeFloat32(self::REG_SETPOINT_CURR, $ours);
+                }
+            }
         }
 
         if ($hub->GroupActive('GroupPhaseSwitch')) {
@@ -4039,7 +4061,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.100-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.101-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
