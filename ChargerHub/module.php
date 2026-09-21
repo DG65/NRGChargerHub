@@ -2138,6 +2138,15 @@ class DaheimLaderDriver implements ChargerDriverInterface
             $hub->SetVarInt('ladezeit_sek', $mb->u32($r, 78));
         }
 
+        // Freigabe über Stromlimit (Register 91): Zustand aus dem Register ablesen.
+        if ($hub->GroupActive('GroupControl') && $hub->GetDaheimEnableVia() === 'limit') {
+            $lim = $mb->u16($r, self::REG_CURR_LIMIT);
+            $hub->SetVarBool('ctl_enable', $lim >= 60);
+            if ($lim >= 60) {
+                $hub->SetVarInt('ctl_curr_limit', (int)round($lim / 10));
+            }
+        }
+
         if ($hub->GroupActive('GroupPhaseSwitch')) {
             $ps = $mb->readHolding(self::REG_PHASE_STATUS, 1);
             if ($ps !== null) {
@@ -2174,6 +2183,17 @@ class DaheimLaderDriver implements ChargerDriverInterface
     {
         switch ($ident) {
             case 'ctl_enable':
+                if ($hub->GetDaheimEnableVia() === 'limit') {
+                    // Wie evcc (charger/daheimladen.go): Freigabe = Stromlimit (mindestens 6 A),
+                    // Sperre = 0,1 A. „0" wäre nach einem Neustart eine Freigabe (Autostart),
+                    // deshalb 1. evcc wartet vorher 1 s, weil die Box zu schnelle Befehle verwirft.
+                    usleep(1000000);
+                    $amp10 = (bool)$value ? max(60, min($hub->GetMaxCurrentA(), max(6, (int)$hub->GetVarValue('ctl_curr_limit'))) * 10) : 1;
+                    if ($mb->writeMultiple(self::REG_CURR_LIMIT, [$amp10])) {
+                        $hub->SetVarBool('ctl_enable', (bool)$value);
+                    }
+                    break;
+                }
                 $cmd = (bool)$value ? 1 : 2; // 1=Start, 2=Stopp
                 if ($mb->writeMultiple(self::REG_CHARGE_CMD, [$cmd])) {
                     $hub->SetVarBool('ctl_enable', (bool)$value);
@@ -2182,6 +2202,12 @@ class DaheimLaderDriver implements ChargerDriverInterface
 
             case 'ctl_curr_limit':
                 $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                // Im Limit-Modus ist das Register zugleich die Freigabe: bei gesperrter Freigabe
+                // (0,1 A) nur merken, nicht schreiben, sonst würde das Limit die Ladung freigeben.
+                if ($hub->GetDaheimEnableVia() === 'limit' && !$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
                 if ($mb->writeMultiple(self::REG_CURR_LIMIT, [$amp * 10])) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
                 }
@@ -3060,6 +3086,9 @@ class ChargerHub extends IPSModule
         $this->RegisterPropertyInteger('MaxCurrent', 16);
         // Fehlersuche: jeden Schreibbefehl (Anfrage/Antwort als Hex) im Meldungen-Log protokollieren.
         $this->RegisterPropertyBoolean('WriteLog', false);
+        // Nur DaheimLader: Ladefreigabe über Ladebefehl (Register 95, Standard) oder über das
+        // Stromlimit (Register 91, wie evcc).
+        $this->RegisterPropertyString('DaheimEnableVia', 'cmd');
         // Nur CHARX: Nummer des Ladepunkts in der Gruppe (Startadresse = Nummer * 1000).
         $this->RegisterPropertyInteger('ChargePointNo', 1);
         // Eigenständiges Überschussladen als Fallback, wenn EMS nicht
@@ -3648,6 +3677,7 @@ class ChargerHub extends IPSModule
         // Symcon wertet 'visible'-Ausdrücke mit $Variable nicht zuverlässig aus (Fund Mstaudi).
         if ($Ident === 'ManufacturerChanged') {
             $this->UpdateFormField('ChargePointNo', 'visible', (string)$Value === 'charx');
+            $this->UpdateFormField('DaheimEnableVia', 'visible', (string)$Value === 'daheimlader');
             return;
         }
         if ($Ident === 'ConnectionTypeChanged') {
@@ -3899,6 +3929,13 @@ class ChargerHub extends IPSModule
         if ($vid && (bool)(@IPS_GetObject($vid)['ObjectIsHidden'] ?? false) !== $hidden) {
             IPS_SetHidden($vid, $hidden);
         }
+    }
+
+    // Nur DaheimLader: 'cmd' = Ladefreigabe über Ladebefehl (Register 95), 'limit' = über das
+    // Stromlimit (Register 91: Freigabe = Limit >= 6 A, Sperre = 0,1 A), wie evcc.
+    public function GetDaheimEnableVia(): string
+    {
+        return $this->ReadPropertyString('DaheimEnableVia') === 'limit' ? 'limit' : 'cmd';
     }
 
     // Nummer des Ladepunkts (nur CHARX, Startadresse = Nummer * 1000), mindestens 1.
@@ -4347,7 +4384,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.105-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.106-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4357,7 +4394,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
                         ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
                         ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, „Energie gesamt" eine daraus aufintegrierte Software-Zählung, keine echte Messung (kann von einem echten Zähler abweichen). Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
-                        ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer.'],
+                        ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer. Laut evcc-Vorlage muss in den Geräteeinstellungen bei der Smart „Nachladen“, bei der Touch „RSDA“ aktiviert sein. Startet die Box über Ladebefehl (Register 95) nicht, hilft ggf. die Ladefreigabe über das Stromlimit (Register 91, wie evcc) im Panel „Steuerungshoheit & Sicherheit“.'],
                         ['type' => 'Label', 'caption' => '• 🆕🧪 Phoenix Contact CHARX SEC-3xxx (Ladesteuerung): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Unit-ID 1, Port 502. Im WBM der Steuerung Modbus-Server aktivieren, Port 502 freigeben und für Steuerung die Freigabe-Art „Modbus" einstellen. Ein Ladepunkt je Instanz: „Nummer des Ladepunkts" = x der Startadresse (1000 = 1, 2000 = 2 …). Startadressen besser fest im WBM vergeben, „automatisch" kann sich nach einem Neustart ändern.'],
                         ['type' => 'Label', 'caption' => '• 🆕🧪 Peblar Home/Home Plus/Business (auch ChargeLine): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Standard-Unit-ID 255, Port 502. Firmware 1.6 oder neuer; Modbus-Server im Web-Interface des Ladepunkts aktivieren und Smart-Charging-Strategien auf „Standard" stellen. Ladefreigabe „Aus" setzt das Modbus-Stromlimit auf 0 (kein eigenes Freigabe-Register). Phasenumschaltung nur bei Geräten mit unabhängigem Relais.'],
                         ['type' => 'Label', 'caption' => '• 🆕 Fox ESS EV Charger (Modelle A/L/C): Standard-Unit-ID 1, Port 502. Phasenumschaltung nur wirksam, wenn eine externe Phasenumschalt-Box angeschlossen ist.'],
@@ -4439,6 +4476,10 @@ class ChargerHub extends IPSModule
                         ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Vorführmodus (Steuerung deaktiviert, nur Anzeige)'],
                         ['type' => 'Label', 'caption' => 'Für öffentlich zugängliche Vorführ-/Demo-Instanzen (z. B. eine Modulvorstellung mit eigenem Login): deaktiviert Schalter/Schieberegler für Ladefreigabe, Stromlimit usw. in Konsole/WebFront UND weist Steuerbefehle zusätzlich serverseitig zurück — Messwerte bleiben normal sichtbar. Nicht aktivieren für den echten Betrieb.'],
                         ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards, eine §14a-Steuerung ODER OCPPHub/ein anderes OCPP-Backend an DERSELBEN physischen Wallbox —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Beim go-eCharger besonders wichtig: unsere Ladefreigabe „Aus" setzt geräteseitig FORCE_STATE=1 (erzwungen aus) — das blockiert dann JEDEN anderen Kanal (App, OCPP-Backend) hart, bis hier wieder freigegeben wird. Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit; ChargerHub gibt beim Wechsel von „Niemand" auf einen anderen Wert eine zuvor gesetzte Zwangs-Aus-Sperre automatisch wieder frei.'],
+                        ['type' => 'Select', 'name' => 'DaheimEnableVia', 'caption' => '🆕 Ladefreigabe (nur DaheimLader)', 'visible' => $this->ReadPropertyString('Manufacturer') === 'daheimlader', 'options' => [
+                            ['caption' => 'Über Ladebefehl, Register 95 (Standard, laut Hersteller-PDF)', 'value' => 'cmd'],
+                            ['caption' => 'Über Stromlimit, Register 91 (wie evcc; Sperre = 0,1 A)', 'value' => 'limit'],
+                        ]],
                         ['type' => 'CheckBox', 'name' => 'WriteLog', 'caption' => '🆕 Schreibbefehle im Meldungen-Log protokollieren (Fehlersuche)'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],

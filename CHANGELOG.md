@@ -3,6 +3,19 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.106-beta.1] - 2026-09-22
+
+### Added
+- DaheimLader: neue Einstellung „Ladefreigabe“ (Panel „Steuerungshoheit & Sicherheit“): „Über
+  Ladebefehl, Register 95“ (Standard, unverändert) oder „Über Stromlimit, Register 91“ wie evcc
+  (charger/daheimladen.go: Freigabe = Limit mindestens 6 A, Sperre = 0,1 A, weil 0 nach einem
+  Neustart als Autostart-Freigabe gilt; vor jedem Freigabe-Befehl 1 s Pause, weil die Box zu
+  schnelle Befehle verwirft). Im Limit-Modus wird die Freigabe aus Register 91 zurückgelesen.
+  Anlass: Bei sieckendieck (Touch PRO) startet die Box über Register 95 nicht, obwohl die
+  Schreibanfrage identisch zu seinem funktionierenden Direktzugriff ist. evcc nutzt Register 95
+  gar nicht. Ob der Limit-Modus bei ihm hilft, ist offen.
+- Hinweis zur Einrichtung ergänzt: laut evcc-Vorlage Smart „Nachladen“, Touch „RSDA“ aktivieren.
+
 ## [0.9.105-beta.1] - 2026-09-21
 
 ### Fixed
