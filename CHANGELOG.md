@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.104-beta.1] - 2026-09-21
+
+### Added
+- Neue Option „Schreibbefehle im Meldungen-Log protokollieren (Fehlersuche)“ (Panel
+  „Steuerungshoheit & Sicherheit“, Standard aus). Schreibt je Steuerbefehl Funktionscode, Register,
+  Werte, Unit-ID sowie Anfrage und Antwort als Hex ins Log („ChargerHub-Schreibprotokoll“). Anlass:
+  DaheimLader startet über ChargerHub nicht, direkt per Modbus schon (sieckendieck) — so lässt sich
+  vergleichen, was tatsächlich gesendet wird. Gilt für die direkte TCP-Verbindung.
+
 ## [0.9.103-beta.1] - 2026-09-21
 
 ### Fixed
