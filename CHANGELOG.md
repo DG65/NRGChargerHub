@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.101-beta.1] - 2026-09-21
+
+### Fixed
+- Alfen: Ein gesetztes Stromlimit/Ladefreigabe „Aus“ verfiel, weil die Box nach Ablauf der
+  Gültigkeit (Register 1208, zählt rückwärts, an der Box einstellbar) auf ihren Standardstrom
+  zurückfällt und ChargerHub den Sollwert nie erneuerte. Jetzt wird der Sollwert (Register 1210)
+  kurz vor Ablauf (unter 120 s Restzeit) erneuert, aber nur, wenn er dem zuletzt von uns
+  geschriebenen Wert entspricht; ein fremder Sollwert wird nicht verlängert. Voraussetzung: das
+  Lese-Intervall ist kürzer als die an der Box eingestellte Gültigkeitsdauer. (Auskunft tkpage)
+
 ## [0.9.100-beta.1] - 2026-09-21
 
 ### Changed
