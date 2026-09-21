@@ -2147,14 +2147,22 @@ class DaheimLaderDriver implements ChargerDriverInterface
 
         // Eigener Lesezugriff, da weit außerhalb des großen Blocks 0..113.
         if ($hub->GroupActive('GroupControl')) {
-            $auto = $mb->readHolding(self::REG_AUTO_PHASE_SWITCH, 1);
-            if ($auto !== null) {
-                $hub->SetVarBool('ctl_auto_phase_switch', $mb->u16($auto, 0) === 1);
-                $hub->SetVarHidden('ctl_auto_phase_switch', false);
+            // Nach dem ersten Fehlschlag nicht mehr pollen (bis zum nächsten „Übernehmen“): Seit
+            // 0.9.79 lief dieser Lesezugriff bei jedem Poll ins Leere (Modbus-Exception 2, „Register
+            // nicht vorhanden“, Touch PRO von sieckendieck), und ab da ließ sich die Box über
+            // ChargerHub nicht mehr starten/stoppen — direkt per Modbus schon. Ob der Dauerfehler
+            // die Ursache ist, ist noch nicht bestätigt; ein Register, das die Box nicht kennt,
+            // muss aber ohnehin nicht ständig abgefragt werden.
+            if (!$hub->GetDriverFlag('no_auto_phase_switch')) {
+                $auto = $mb->readHolding(self::REG_AUTO_PHASE_SWITCH, 1);
+                if ($auto !== null) {
+                    $hub->SetVarBool('ctl_auto_phase_switch', $mb->u16($auto, 0) === 1);
+                    $hub->SetVarHidden('ctl_auto_phase_switch', false);
+                } else {
+                    $hub->SetDriverFlag('no_auto_phase_switch', true);
+                    $hub->SetVarHidden('ctl_auto_phase_switch', true);
+                }
             } else {
-                // Register nicht lesbar (Rückmeldung sieckendieck, 21.09.2026: Modbus-Exception 2,
-                // „Register nicht vorhanden“ bei einer Touch PRO). Dann zeigt der Schalter nur seinen
-                // Standardwert „Aus“ und sagt nichts über die Box: ausblenden statt falsch anzeigen.
                 $hub->SetVarHidden('ctl_auto_phase_switch', true);
             }
         }
@@ -2966,6 +2974,7 @@ class ChargerHub extends IPSModule
         // siehe SetVarBool()/GetFunctions() 'lastSeenAt', contractVersion 1.3.
         $this->RegisterAttributeInteger('LastSeenAt', 0);
         // 1.6: vom Gerät gemeldete Phasenangaben, 0 = unbekannt (siehe SetPhaseInfo()).
+        $this->RegisterAttributeString('DriverFlags', '{}');
         $this->RegisterAttributeInteger('DevicePhases', 0);
         $this->RegisterAttributeInteger('DevicePhaseSwitch', -1);
         // Beobachtungszähler fürs Phasen-Umschalten beim Überschussladen — ein
@@ -3113,6 +3122,8 @@ class ChargerHub extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+        // Treiber-Merker („Register nicht vorhanden") bei jedem Übernehmen zurücksetzen.
+        $this->WriteAttributeString('DriverFlags', '{}');
 
         $this->CreateProfiles();
         $this->RegisterVariables();
@@ -3862,6 +3873,24 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // Merker der Treiber (z. B. „Register nicht vorhanden, nicht mehr abfragen“); werden bei
+    // jedem „Übernehmen“ zurückgesetzt, damit ein Register danach einmal neu versucht wird.
+    public function GetDriverFlag(string $key): bool
+    {
+        $f = json_decode((string)$this->ReadAttributeString('DriverFlags'), true);
+        return is_array($f) && !empty($f[$key]);
+    }
+
+    public function SetDriverFlag(string $key, bool $value)
+    {
+        $f = json_decode((string)$this->ReadAttributeString('DriverFlags'), true);
+        $f = is_array($f) ? $f : [];
+        if ((bool)($f[$key] ?? false) !== $value) {
+            $f[$key] = $value;
+            $this->WriteAttributeString('DriverFlags', json_encode($f));
+        }
+    }
+
     // Blendet eine Variable aus/ein (für Werte, die das Gerät nicht liefert). Es wird nur
     // umgeschaltet, wenn sich der Zustand ändert.
     public function SetVarHidden(string $ident, bool $hidden)
@@ -4318,7 +4347,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.104-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.105-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

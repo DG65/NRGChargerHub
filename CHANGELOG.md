@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.105-beta.1] - 2026-09-21
+
+### Fixed
+- DaheimLader: Register 0x300A („Automatische Phasenumschaltung“) wird nach dem ersten
+  Fehlschlag nicht mehr bei jedem Poll abgefragt (bis zum nächsten „Übernehmen“). Es lief bei
+  Touch PRO ständig in eine Modbus-Exception 2 („Register nicht vorhanden“). Seit dieser
+  Abfrage (0.9.79) lässt sich die Box laut sieckendieck über ChargerHub weder starten noch stoppen,
+  obwohl das Protokoll die identische Schreibanfrage zeigt wie sein funktionierender Direktzugriff.
+  Ob der Dauerfehler die Ursache ist, ist noch nicht bestätigt.
+
 ## [0.9.104-beta.1] - 2026-09-21
 
 ### Added
