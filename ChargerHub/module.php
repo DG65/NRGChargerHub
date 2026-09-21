@@ -2049,7 +2049,7 @@ class DaheimLaderDriver implements ChargerDriverInterface
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
                 ['ctl_enable',            'Ladefreigabe',   'B', '~Switch', true, 'control', 'WO Holding 95 (1=Start, 2=Stopp)'],
                 ['ctl_curr_limit',        'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 91 (0,1 A)'],
-                ['ctl_auto_phase_switch', '🆕 Automatische Phasenumschaltung (werkseitig an)', 'B', '~Switch', true, 'control', 'RW Holding 0x300A (0=aus, 1=an) — bei aktiver manueller Phasenumschaltung ggf. ausschalten, sonst überschreibt die Wallbox einen manuellen Befehl anhand der Ladeleistung wieder'],
+                ['ctl_auto_phase_switch', '🆕 Automatische Phasenumschaltung (werkseitig an)', 'B', '~Switch', true, 'control', 'RW Holding 0x300A (0=aus, 1=an). Nicht bei jedem Modell vorhanden: ist das Register nicht lesbar, wird die Variable ausgeblendet'],
             ]],
             // Nur Smart PRO/Touch PRO/Business PRO — auf Nicht-PRO-Geräten
             // liefert der Lesezugriff schlicht keine gültigen Werte (Register
@@ -2144,6 +2144,12 @@ class DaheimLaderDriver implements ChargerDriverInterface
             $auto = $mb->readHolding(self::REG_AUTO_PHASE_SWITCH, 1);
             if ($auto !== null) {
                 $hub->SetVarBool('ctl_auto_phase_switch', $mb->u16($auto, 0) === 1);
+                $hub->SetVarHidden('ctl_auto_phase_switch', false);
+            } else {
+                // Register nicht lesbar (Rückmeldung sieckendieck, 21.09.2026: Modbus-Exception 2,
+                // „Register nicht vorhanden“ bei einer Touch PRO). Dann zeigt der Schalter nur seinen
+                // Standardwert „Aus“ und sagt nichts über die Box: ausblenden statt falsch anzeigen.
+                $hub->SetVarHidden('ctl_auto_phase_switch', true);
             }
         }
 
@@ -3843,6 +3849,16 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // Blendet eine Variable aus/ein (für Werte, die das Gerät nicht liefert). Es wird nur
+    // umgeschaltet, wenn sich der Zustand ändert.
+    public function SetVarHidden(string $ident, bool $hidden)
+    {
+        $vid = $this->FindVarByIdent($ident);
+        if ($vid && (bool)(@IPS_GetObject($vid)['ObjectIsHidden'] ?? false) !== $hidden) {
+            IPS_SetHidden($vid, $hidden);
+        }
+    }
+
     // Nummer des Ladepunkts (nur CHARX, Startadresse = Nummer * 1000), mindestens 1.
     public function GetChargePointNo(): int
     {
@@ -4289,7 +4305,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.102-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.103-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

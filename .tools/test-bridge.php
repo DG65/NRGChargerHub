@@ -141,6 +141,8 @@ class FakeHub {
     function GroupActive($g) { return true; }
     function GetMaxCurrentA() { return 16; }
     function GetVarValue($i) { return $this->v[$i] ?? ''; }
+    public $hidden = [];
+    function SetVarHidden($i, $h) { $this->hidden[$i] = $h; }
     function SetVarBool($i, $x) { $this->v[$i] = $x; } function SetVarInt($i, $x) { $this->v[$i] = $x; }
     function SetVarFloat($i, $x) { $this->v[$i] = $x; } function SetVarStr($i, $x) { $this->v[$i] = $x; }
 }
@@ -164,6 +166,15 @@ $mb->w = []; $drv->writeControl($mb, $ch, 'ctl_curr_limit', 60); check('CHARX sc
 $mb->w = []; $drv->writeControl($mb, $ch, 'ctl_enable', false); check('CHARX schreiben: Freigabe x300', $mb->w === [2300 => 0]);
 $mb2 = new FakeMb();
 check('CHARX ohne Antwort: connected false', $drv->readValues($mb2, new FakeHub()) === false);
+
+// DaheimLader: nicht lesbares Register 0x300A -> Schalter ausgeblendet, lesbar -> sichtbar.
+$dmb = new FakeMb(); $dh = new FakeHub(); $dd = new DaheimLaderDriver();
+for ($i = 0; $i < 114; $i++) { $dmb->r[$i] = 0; }
+$dmb->r[0] = 1;
+$dd->readValues($dmb, $dh);
+check('DaheimLader: 0x300A nicht lesbar -> Variable ausgeblendet', ($dh->hidden['ctl_auto_phase_switch'] ?? null) === true && !isset($dh->v['ctl_auto_phase_switch']));
+$dmb->r[0x300A] = 1; $dd->readValues($dmb, $dh);
+check('DaheimLader: 0x300A lesbar -> sichtbar, Wert übernommen', ($dh->hidden['ctl_auto_phase_switch'] ?? null) === false && $dh->v['ctl_auto_phase_switch'] === true);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
