@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.103-beta.1] - 2026-09-21
+
+### Fixed
+- DaheimLader: Der Schalter „Automatische Phasenumschaltung“ (Register 0x300A) zeigte „Aus“, auch
+  wenn die Box das Register gar nicht kennt (Modbus-Exception 2 bei einer Touch PRO,
+  Rückmeldung sieckendieck). Ist das Register nicht lesbar, wird die Variable jetzt ausgeblendet
+  statt einen falschen Wert zu zeigen; sie erscheint wieder, sobald das Register lesbar ist. Die
+  frühere Vermutung, diese Automatik überschreibe manuelle Umschaltbefehle, ist damit nicht belegt.
+
 ## [0.9.102-beta.1] - 2026-09-21
 
 ### Added
