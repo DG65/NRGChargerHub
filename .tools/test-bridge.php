@@ -14,6 +14,10 @@ function IPS_GetInstance($id) { return $GLOBALS['inst'][$id] ?? []; }
 function IPS_GetProperty($id, $n) { return $GLOBALS['props'][$id][$n] ?? false; }
 function IPS_InstanceExists($id) { return isset($GLOBALS['inst'][$id]); }
 function IPS_LogMessage($a, $b) { $GLOBALS['log'][] = "$a: $b"; }
+function IPS_GetInstanceListByModuleID($g) { return []; }
+function IPS_GetChildrenIDs($id) { return []; }
+function IPS_GetName($id) { return 'Name' . $id; }
+function CHUBB_GetState($id) { return $GLOBALS['bridge']->GetState(); }
 function CHUBB_Forward($id, $json) { return $GLOBALS['bridge']->Forward($json); }
 
 class IPSModule {
@@ -24,6 +28,8 @@ class IPSModule {
     public function SendDataToParent($j) { $r = $GLOBALS['parentReply']; if ($r instanceof Throwable) throw $r; return $r; }
     public function ReadPropertyInteger($n) { return $this->prop[$n] ?? 0; }
     public function ReadPropertyString($n) { return $this->prop[$n] ?? ''; }
+    public function ReadPropertyBoolean($n) { return $this->prop[$n] ?? false; }
+    public function ReadPropertyFloat($n) { return $this->prop[$n] ?? 0.0; }
     public function ReadAttributeString($n) { return $this->attr[$n] ?? ''; }
     public function WriteAttributeString($n, $v) { $this->attr[$n] = $v; }
 }
@@ -69,6 +75,34 @@ $GLOBALS['inst'][20]['InstanceStatus'] = 102;
 $client = new CHUB_ModbusGatewayClient('', 0, 1, fn ($p) => $bin);
 $regs = $client->readHolding(0, 2);
 check('Gateway-Client: 0xFFFF/0x8001', $regs === [0xFFFF, 0x8001]);
+
+// Verbund-Statuszeilen (SUITE.md 21.09.2026): live berechnet UND im ausgelieferten
+// Formular-JSON angekommen (rekursiv, Platzhalter weg), je Zustand.
+$form = ['elements' => [
+    ['type' => 'ExpansionPanel', 'name' => 'P', 'items' => [
+        ['type' => 'RowLayout', 'items' => [['type' => 'Label', 'name' => 'LinkBridgeStatus', 'caption' => 'LINKSTATUS']]],
+    ]],
+]];
+$rep = new ReflectionMethod($hub, 'SetFormLabelCaption');
+$ok = $rep->invokeArgs($hub, [&$form['elements'], 'LinkBridgeStatus', 'x']);
+check('Statuszeile: rekursiv in verschachteltem Panel ersetzt', $ok && strpos(json_encode($form), 'LINKSTATUS') === false);
+
+$ls = new ReflectionMethod($hub, 'LinkStatusLines');
+$GLOBALS['parentReply'] = $bin;
+$hub->prop = ['BridgeInstanceID' => 10, 'ConnectionType' => 'gateway'];
+$l = $ls->invoke($hub);
+check('Zeile Brücke ✅ (Gateway aktiv, Unit-ID)', strpos($l['LinkBridgeStatus'], '✅') === 0 && strpos($l['LinkBridgeStatus'], 'Unit-ID 7') !== false);
+$GLOBALS['inst'][20]['InstanceStatus'] = 104;
+check('Zeile Brücke ⚠️ (Gateway inaktiv)', strpos($ls->invoke($hub)['LinkBridgeStatus'], '⚠️') === 0);
+$GLOBALS['inst'][20]['InstanceStatus'] = 102;
+$hub->prop['BridgeInstanceID'] = 0;
+check('Zeile Brücke ⛔ (keine Brücke)', strpos($ls->invoke($hub)['LinkBridgeStatus'], '⛔') === 0);
+$l = $ls->invoke($hub);
+foreach (['LinkDuplicateStatus', 'LinkEmsStatus', 'LinkGridStatus', 'LinkBatteryStatus', 'LinkVehicleStatus'] as $k) {
+    check("Zeile $k vorhanden, ℹ️ ohne Partnermodul, kein Platzhalter", isset($l[$k]) && strpos($l[$k], 'ℹ️') === 0 && strpos($l[$k], 'LINKSTATUS') === false);
+}
+$hub->prop['DuplicateOfKey'] = 'ocpphub:999';
+check('Zeile Dublette ⚠️ (Ziel fehlt)', strpos($ls->invoke($hub)['LinkDuplicateStatus'], '⚠️') === 0);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

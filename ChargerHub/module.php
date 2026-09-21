@@ -3992,7 +3992,7 @@ class ChargerHub extends IPSModule
     {
         $driver = $this->GetDriver();
 
-        $groupItems = [];
+        $groupItems = [['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkVehicleStatus']];
         foreach ($driver->getOptionalGroups() as $propName => $group) {
             $groupItems[] = [
                 'type'    => 'CheckBox',
@@ -4039,7 +4039,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.97-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.98-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4102,6 +4102,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => 'NRG-Stack Brücke zum ModBus Gateway', 'moduleID' => self::BRIDGE_GUID, 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
                         ['type' => 'Label', 'caption' => '🔗 Gateway wählen, „Brücke anlegen und verbinden", übernehmen. Unit-ID = „DeviceID" am Gateway; eine Brücke = genau eine Unit-ID.', 'name' => 'GatewayHintLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
                         ['type' => 'Label', 'caption' => '⚠️ Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet.', 'name' => 'GatewayWarnLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBridgeStatus', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
                     ],
                 ],
                 [
@@ -4121,17 +4122,21 @@ class ChargerHub extends IPSModule
                     'items'    => [
                         ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Wer regelt diesen Ladepunkt?', 'options' => $managedByOptions],
                         ['type' => 'Select', 'name' => 'DuplicateOfKey', 'caption' => '🆕 Diese Wallbox ist dasselbe Gerät wie …', 'options' => $duplicateOfOptions],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkDuplicateStatus'],
                         ['type' => 'Label', 'caption' => 'Nur setzen, wenn dieselbe physische Wallbox bereits über eine andere Instanz (ChargerHub oder OCPPHub) läuft. Betrifft NUR die Zählung — EMS/Dashboard/MeterHub überspringen diese Instanz dann bei Summen/Sitzungen/Leistung zugunsten der ausgewählten. Wer die Wallbox tatsächlich STEUERT, entscheidet weiterhin allein „Wer regelt diesen Ladepunkt?" oben — eine Instanz kann also gleichzeitig als Dublette markiert UND der aktive Regler sein. Für den vollständigen Stopp (Messen UND Steuern) gibt es zusätzlich CHUB_SetActive().'],
                         ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Vorführmodus (Steuerung deaktiviert, nur Anzeige)'],
                         ['type' => 'Label', 'caption' => 'Für öffentlich zugängliche Vorführ-/Demo-Instanzen (z. B. eine Modulvorstellung mit eigenem Login): deaktiviert Schalter/Schieberegler für Ladefreigabe, Stromlimit usw. in Konsole/WebFront UND weist Steuerbefehle zusätzlich serverseitig zurück — Messwerte bleiben normal sichtbar. Nicht aktivieren für den echten Betrieb.'],
                         ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards, eine §14a-Steuerung ODER OCPPHub/ein anderes OCPP-Backend an DERSELBEN physischen Wallbox —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Beim go-eCharger besonders wichtig: unsere Ladefreigabe „Aus" setzt geräteseitig FORCE_STATE=1 (erzwungen aus) — das blockiert dann JEDEN anderen Kanal (App, OCPP-Backend) hart, bis hier wieder freigegeben wird. Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit; ChargerHub gibt beim Wechsel von „Niemand" auf einen anderen Wert eine zuvor gesetzte Zwangs-Aus-Sperre automatisch wieder frei.'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkEmsStatus'],
                         ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Überschussladen selbst regeln (nur Fallback ohne EMS)'],
                         ['type' => 'Label', 'caption' => 'Nur wirksam, wenn oben „Wer regelt?" auf „Niemand" steht UND kein aktives EMS installiert ist UND genau eine ChargerHub-Instanz aktiv ist (bei mehreren Wallboxen bitte EMS für die Koordination nutzen) UND ein MeterHub-Zähler am Netzanschlusspunkt einen Echtzeit-Wert liefert. Ist EMS aktiv, hat es immer Vorrang — diese Option greift dann automatisch nicht. Sichtbarer Status (aktiv/warum nicht) erscheint als eigene Variable „Überschussladen", sobald diese Option angehakt ist.'],
                         ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag)', 'moduleID' => self::METERHUB_GUID],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkGridStatus'],
                         ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
                         ['type' => 'NumberSpinner', 'name' => 'BatteryCapacityKWh', 'caption' => '🆕 Speicherkapazität (kWh, 0 = kein Speicher/unbekannt)', 'minimum' => 0, 'maximum' => 200, 'digits' => 1, 'suffix' => 'kWh'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBatteryStatus'],
                         ['type' => 'Label', 'caption' => 'Nur für die Phasenumschalt-Wartezeit: je mehr freie Speicherkapazität (Kapazität × (100 % − SOC), SOC über InverterHub) gerade übrig ist, desto länger darf beobachtet werden, bevor die Phasenzahl während einer laufenden Ladung wechselt — ein Wechsel kostet dann effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach den Speicher weiter. 0 = feste Grund-Wartezeit wie ohne Speicher.'],
                         ['type' => 'Label', 'caption' => 'Dieser Anteil des Überschusses bleibt dem Speicher vorbehalten und wird von der Ampere-Berechnung fürs Laden abgezogen. 0 % = kompletter Überschuss geht in die Wallbox, 100 % = nichts geht in die Wallbox.'],
                     ],
@@ -4199,7 +4204,146 @@ class ChargerHub extends IPSModule
             array_unshift($form['elements'], $intro);
         }
 
+        // Verbund-Verbindungen als live berechnete Statuszeilen (SUITE.md, 21.09.2026):
+        // rekursiv über alle items ersetzen, nicht nur auf oberster Ebene.
+        foreach ($this->LinkStatusLines() as $name => $caption) {
+            $this->SetFormLabelCaption($form['elements'], $name, $caption);
+        }
+
         return json_encode($form);
+    }
+
+    // Setzt die Beschriftung eines benannten Elements, egal wie tief in
+    // ExpansionPanels/RowLayouts verschachtelt (rekursiv über 'items').
+    private function SetFormLabelCaption(array &$items, string $name, string $caption): bool
+    {
+        foreach ($items as &$item) {
+            if (($item['name'] ?? '') === $name) {
+                $item['caption'] = $caption;
+                return true;
+            }
+            if (isset($item['items']) && is_array($item['items']) && $this->SetFormLabelCaption($item['items'], $name, $caption)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Eine Statuszeile je automatischer Verbindung zu einem Partnermodul
+    // (✅ verbunden mit Werten/Quelle, ⚠️ verbunden ohne Brauchbares, ℹ️ nicht
+    // gefunden und was dann gilt, ⛔ Pflichtangabe fehlt). Jeder Fremdzugriff
+    // hinter function_exists().
+    private function LinkStatusLines(): array
+    {
+        $lines = [];
+
+        // Brücke (nur Symbox-Gateway-Weg)
+        $bridgeId = $this->ReadPropertyInteger('BridgeInstanceID');
+        if ($this->ReadPropertyString('ConnectionType') === 'gateway') {
+            if ($bridgeId <= 0 || !@IPS_InstanceExists($bridgeId)) {
+                $lines['LinkBridgeStatus'] = '⛔ Keine Brücke gewählt: „Brücke anlegen und verbinden" klicken (Gateway zuerst wählen), dann übernehmen.';
+            } elseif (!function_exists('CHUBB_GetState')) {
+                $lines['LinkBridgeStatus'] = '⚠️ Brücke #' . $bridgeId . ' eingetragen, aber das Brückenmodul liefert keinen Zustand (Modul nicht geladen?).';
+            } else {
+                $st = json_decode((string)@CHUBB_GetState($bridgeId), true);
+                $bn = @IPS_GetName($bridgeId);
+                if (!is_array($st) || empty($st['connected'])) {
+                    $lines['LinkBridgeStatus'] = '⚠️ Brücke #' . $bridgeId . ' („' . $bn . '"): kein ModBus-Gateway verknüpft.';
+                } elseif (empty($st['parentActive'])) {
+                    $lines['LinkBridgeStatus'] = '⚠️ Brücke #' . $bridgeId . ' („' . $bn . '"): Gateway verknüpft, aber nicht aktiv (Status ' . (int)($st['parentStatus'] ?? 0) . ').';
+                } else {
+                    $lines['LinkBridgeStatus'] = '✅ Brücke #' . $bridgeId . ' („' . $bn . '") mit aktivem ModBus-Gateway verbunden, Unit-ID ' . (($st['unitId'] ?? null) === null ? 'nicht lesbar' : (int)$st['unitId']) . ' (gelesen am Gateway).';
+                }
+            }
+        }
+
+        // Dubletten-Zuordnung
+        $key = $this->ReadPropertyString('DuplicateOfKey');
+        $dup = $this->GetDuplicateOf();
+        if ($key === '') {
+            $lines['LinkDuplicateStatus'] = 'ℹ️ Keine Zuordnung: diese Instanz zählt normal (Summen, Sitzungen, Leistung).';
+        } elseif ($dup === null) {
+            $lines['LinkDuplicateStatus'] = '⚠️ Zuordnung eingetragen („' . $key . '"), aber die Zielinstanz existiert nicht mehr. Sie wird ignoriert, diese Instanz zählt normal.';
+        } else {
+            $targetName = @IPS_GetName($dup['instanceID']);
+            $targetManaged = null;
+            if ($dup['source'] === 'chargerhub' && function_exists('CHUB_GetFunctions')) {
+                $targetManaged = @CHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
+            } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
+                $targetManaged = @OHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
+            }
+            $src = $dup['source'] === 'ocpphub' ? 'OCPPHub' : 'ChargerHub';
+            $own = $this->GetManagedBy();
+            $lines['LinkDuplicateStatus'] = '✅ Zählt als Dublette von ' . $src . '-Instanz #' . $dup['instanceID'] . ' („' . $targetName . '"), wird bei Summen/Sitzungen übersprungen. Regler: hier „' . $own . '", dort ' . ($targetManaged === null ? 'unbekannt' : '„' . $targetManaged . '"') . '.'
+                . ((in_array($own, ['none', 'ems'], true) && in_array($targetManaged, ['none', 'ems'], true)) ? ' ⚠️ Beide Seiten regeln: bei einer „Wer regelt?" auf „Anderer" stellen.' : '');
+        }
+
+        // EMS
+        $emsIDs = @IPS_GetInstanceListByModuleID(self::EMS_GUID) ?: [];
+        if ($emsIDs === []) {
+            $lines['LinkEmsStatus'] = 'ℹ️ Kein EMS installiert: eine Eigenregelung per Überschussladen (unten) ist möglich, wenn aktiviert.';
+        } elseif ($this->IsEmsActive()) {
+            $lines['LinkEmsStatus'] = '✅ EMS #' . $emsIDs[0] . ' („' . @IPS_GetName($emsIDs[0]) . '") ist aktiv und hat Vorrang: die Eigenregelung per Überschussladen greift dann nicht.';
+        } else {
+            $lines['LinkEmsStatus'] = 'ℹ️ EMS #' . $emsIDs[0] . ' installiert, aber nicht aktiv (Statusvariable „EMS_Active_State" nicht an): die Eigenregelung ist möglich, wenn aktiviert.';
+        }
+
+        // Netzzähler (MeterHub)
+        $forced = $this->ReadPropertyInteger('SurplusMeterID');
+        $usedBy = $this->ReadPropertyBoolean('EnableSurplusCharging') ? 'Überschussladen ist aktiviert' : 'wird nur bei aktiviertem Überschussladen genutzt';
+        if (!function_exists('MHUB_GetFunctions')) {
+            $lines['LinkGridStatus'] = 'ℹ️ MeterHub nicht installiert: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
+        } else {
+            $mhubs = @IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: [];
+            $w = $this->FindGridSurplusW();
+            if ($mhubs === []) {
+                $lines['LinkGridStatus'] = 'ℹ️ Keine MeterHub-Instanz vorhanden: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
+            } elseif ($w === null) {
+                $lines['LinkGridStatus'] = '⚠️ MeterHub vorhanden, aber ' . ($forced > 0 ? 'die gewählte Instanz #' . $forced : 'keine Instanz') . ' liefert keinen Netzzähler („grid") mit Echtzeit-Wert. Ohne ihn regelt das Überschussladen nicht.';
+            } else {
+                $lines['LinkGridStatus'] = '✅ Netzzähler „' . $this->SurplusMeterLabel() . '" (MeterHub, Echtzeit' . ($forced > 0 ? ', von Hand gewählt' : ', automatisch über den Vertrag erkannt') . '): aktuell ' . round($w) . ' W Überschuss (' . $usedBy . ').';
+            }
+        }
+
+        // Speicher (InverterHub)
+        $cap = $this->ReadPropertyFloat('BatteryCapacityKWh');
+        $capNote = $cap > 0 ? 'Kapazität ' . $cap . ' kWh (eigene Eingabe)' : 'Kapazität 0 = unbekannt (Phasen-Wartezeit nutzt den Grundwert)';
+        if (!function_exists('IHUB_GetFunctions')) {
+            $lines['LinkBatteryStatus'] = 'ℹ️ InverterHub nicht installiert: Speicher wird nicht berücksichtigt. ' . $capNote . '.';
+        } else {
+            $ihubs = @IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [];
+            $parts = [];
+            foreach ($ihubs as $iid) {
+                $fns = @IHUB_GetFunctions($iid);
+                $bp = (int)($fns['batPowerID'] ?? 0);
+                $sc = (int)($fns['socID'] ?? 0);
+                $one = [];
+                if ($bp > 0 && is_numeric(@GetValue($bp))) {
+                    $one[] = 'Ladeleistung ' . round(max(0.0, -(float)GetValue($bp))) . ' W';
+                }
+                if ($sc > 0 && is_numeric(@GetValue($sc))) {
+                    $one[] = 'Ladestand ' . round((float)GetValue($sc)) . ' %';
+                }
+                if ($one !== []) {
+                    $parts[] = '„' . @IPS_GetName($iid) . '" (' . implode(', ', $one) . ')';
+                }
+            }
+            if ($ihubs === []) {
+                $lines['LinkBatteryStatus'] = 'ℹ️ Keine InverterHub-Instanz: Speicher wird nicht berücksichtigt. ' . $capNote . '.';
+            } elseif ($parts === []) {
+                $lines['LinkBatteryStatus'] = '⚠️ InverterHub vorhanden, liefert aber weder Speicher-Ladeleistung noch Ladestand: Speicher wird nicht berücksichtigt. ' . $capNote . '.';
+            } else {
+                $lines['LinkBatteryStatus'] = '✅ Speicher über InverterHub (Quelle: Vertrag) gelesen: ' . implode('; ', $parts) . '. ' . $capNote . '.';
+            }
+        }
+
+        // Fahrzeug (von einem Fahrzeug-Modul eingetragen)
+        $veh = trim((string)$this->GetVarValue('vehicle_name'));
+        $lines['LinkVehicleStatus'] = $veh !== ''
+            ? '✅ Zugeordnetes Fahrzeug: „' . $veh . '" (von einem Fahrzeug-Modul über CHUB_SetVehicleName eingetragen).'
+            : 'ℹ️ Kein Fahrzeug zugeordnet: kein Fahrzeug-Modul hat gerade einen Namen eingetragen (leer, solange nichts angesteckt ist oder kein Modul koppelt).';
+
+        return $lines;
     }
 
     // „Was ist neu"-Banner: erscheint nach einem Update (Attribut startet

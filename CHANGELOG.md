@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.98-beta.1] - 2026-09-21
+
+### Added
+- Formular: live berechnete Statuszeilen für jede automatische Verbindung zu einem Partnermodul
+  (Verbund-Konvention „Verbindungen sichtbar machen“, SUITE.md 21.09.2026): Brücke (Gateway-Weg),
+  Dubletten-Zuordnung (OCPPHub/ChargerHub), EMS, Netzzähler (MeterHub), Speicher (InverterHub),
+  zugeordnetes Fahrzeug. Je ✅ verbunden mit Werten und Quelle, ⚠️ verbunden ohne Brauchbares,
+  ℹ️ nicht gefunden und was dann gilt, ⛔ Pflichtangabe fehlt. Die Zeilen werden in
+  `GetConfigurationForm()` rekursiv über alle `items` eingesetzt.
+
 ## [0.9.97-beta.1] - 2026-09-21
 
 ### Fixed
