@@ -3,6 +3,12 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.97-beta.1] - 2026-09-21
+
+### Fixed
+- Suche: Peblar wird jetzt mit Unit-ID 1 (an echter Hardware bestätigt) und danach 255
+  gesucht. Bisher wurde nur 255 versucht, das an keiner echten Box geprüft ist.
+
 ## [0.9.96-beta.1] - 2026-09-20
 
 ### Fixed
