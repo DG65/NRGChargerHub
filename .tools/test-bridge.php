@@ -176,6 +176,25 @@ check('DaheimLader: 0x300A nicht lesbar -> Variable ausgeblendet', ($dh->hidden[
 $dmb->r[0x300A] = 1; $dd->readValues($dmb, $dh);
 check('DaheimLader: 0x300A lesbar -> sichtbar, Wert übernommen', ($dh->hidden['ctl_auto_phase_switch'] ?? null) === false && $dh->v['ctl_auto_phase_switch'] === true);
 
+// Schreibprotokoll: Roh-Anfrage (FC16, Unit 255, Reg 95, Wert 1) und Antwort bit-genau erfasst.
+if (function_exists('pcntl_fork')) {
+    $srv = stream_socket_server('tcp://127.0.0.1:0', $en, $es);
+    $port = (int)substr(strrchr(stream_socket_get_name($srv, false), ':'), 1);
+    $tc = new CHUB_ModbusTcpClient('127.0.0.1', $port, 255);
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        $c = stream_socket_accept($srv, 5); $req = fread($c, 64);
+        fwrite($c, substr($req, 0, 2) . "\x00\x00\x00\x06\xff\x10\x00\x5f\x00\x01"); fclose($c); exit(0);
+    }
+    $okw = $tc->writeMultiple(95, [1]);
+    pcntl_waitpid($pid, $st2);
+    $tr = $tc->writeTrace[0] ?? '';
+    check('Schreibprotokoll: Anfrage FC16 Reg 95 = 1, Unit 255, bit-genau', $okw === true && preg_match('/^FC16 Reg 95 Werte \\[1\\] \\| Unit 255 \\| Anfrage [0-9a-f]{4}00000009ff10005f0001020001 \\|/', $tr) === 1);
+    check('Schreibprotokoll: Antwort erfasst', preg_match('/Antwort [0-9a-f]{4}00000006ff10005f0001$/', $tr) === 1);
+} else {
+    echo "SKIP Schreibprotokoll (pcntl nicht verfügbar)\n";
+}
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

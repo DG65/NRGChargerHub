@@ -36,6 +36,10 @@ class CHUB_ModbusTcpClient
     // auslesbar, damit ein stiller false-Rückgabewert nicht mehr unbegründet bleibt.
     public $lastWriteError = '';
 
+    // Roh-Protokoll der Schreibzugriffe dieses Clients (Anfrage/Antwort als Hex) für die
+    // Fehlersuche; die Instanz gibt es nur aus, wenn „Schreibbefehle protokollieren“ an ist.
+    public $writeTrace = [];
+
     private $batchSock = null;
 
     public function beginBatch()
@@ -167,6 +171,7 @@ class CHUB_ModbusTcpClient
         @fwrite($sock, $mbap . $pdu);
         $resp = @fread($sock, 64);
         fclose($sock);
+        $this->writeTrace[] = 'FC06 Reg ' . $reg . ' Wert ' . ($value & 0xFFFF) . ' | Unit ' . $this->unitId . ' | Anfrage ' . bin2hex($mbap . $pdu) . ' | Antwort ' . bin2hex((string)$resp);
 
         return $this->CheckWriteResponse($resp, 0x06);
     }
@@ -194,6 +199,7 @@ class CHUB_ModbusTcpClient
         @fwrite($sock, $mbap . $pdu);
         $resp = @fread($sock, 64);
         fclose($sock);
+        $this->writeTrace[] = 'FC16 Reg ' . $startReg . ' Werte [' . implode(',', array_map(fn ($v) => $v & 0xFFFF, $values)) . '] | Unit ' . $this->unitId . ' | Anfrage ' . bin2hex($mbap . $pdu) . ' | Antwort ' . bin2hex((string)$resp);
 
         return $this->CheckWriteResponse($resp, 0x10);
     }
@@ -3043,6 +3049,8 @@ class ChargerHub extends IPSModule
         // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
         // Verteidigungslinie unabhängig vom EMS (EMS-Vertragsabsprache).
         $this->RegisterPropertyInteger('MaxCurrent', 16);
+        // Fehlersuche: jeden Schreibbefehl (Anfrage/Antwort als Hex) im Meldungen-Log protokollieren.
+        $this->RegisterPropertyBoolean('WriteLog', false);
         // Nur CHARX: Nummer des Ladepunkts in der Gruppe (Startadresse = Nummer * 1000).
         $this->RegisterPropertyInteger('ChargePointNo', 1);
         // Eigenständiges Überschussladen als Fallback, wenn EMS nicht
@@ -3670,6 +3678,11 @@ class ChargerHub extends IPSModule
         // Meldungen-Log unter "ChargerHub-Schreibfehler".
         if ($mb->lastWriteError !== '') {
             IPS_LogMessage('ChargerHub-Schreibfehler', 'Instanz ' . $this->InstanceID . ', ' . $Ident . ': ' . $mb->lastWriteError);
+        }
+        if ($this->ReadPropertyBoolean('WriteLog') && !empty($mb->writeTrace)) {
+            foreach ($mb->writeTrace as $line) {
+                IPS_LogMessage('ChargerHub-Schreibprotokoll', 'Instanz ' . $this->InstanceID . ', ' . $Ident . ': ' . $line);
+            }
         }
     }
 
@@ -4305,7 +4318,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.103-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.104-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4397,6 +4410,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Vorführmodus (Steuerung deaktiviert, nur Anzeige)'],
                         ['type' => 'Label', 'caption' => 'Für öffentlich zugängliche Vorführ-/Demo-Instanzen (z. B. eine Modulvorstellung mit eigenem Login): deaktiviert Schalter/Schieberegler für Ladefreigabe, Stromlimit usw. in Konsole/WebFront UND weist Steuerbefehle zusätzlich serverseitig zurück — Messwerte bleiben normal sichtbar. Nicht aktivieren für den echten Betrieb.'],
                         ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards, eine §14a-Steuerung ODER OCPPHub/ein anderes OCPP-Backend an DERSELBEN physischen Wallbox —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Beim go-eCharger besonders wichtig: unsere Ladefreigabe „Aus" setzt geräteseitig FORCE_STATE=1 (erzwungen aus) — das blockiert dann JEDEN anderen Kanal (App, OCPP-Backend) hart, bis hier wieder freigegeben wird. Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit; ChargerHub gibt beim Wechsel von „Niemand" auf einen anderen Wert eine zuvor gesetzte Zwangs-Aus-Sperre automatisch wieder frei.'],
+                        ['type' => 'CheckBox', 'name' => 'WriteLog', 'caption' => '🆕 Schreibbefehle im Meldungen-Log protokollieren (Fehlersuche)'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkEmsStatus'],
