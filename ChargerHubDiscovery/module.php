@@ -41,7 +41,9 @@ class ChargerHubDiscovery extends IPSModule
         // siehe ABL-PDF "Common settings"), 1 ist der praktische Standard.
         'abl'         => [1],
         'foxess'      => [1],
-        'peblar'      => [255],
+        // 1 an echter Hardware bestätigt (Forum-Tester, 20.09.2026); 255 laut Peblars
+        // Beispielclient, an Hardware nicht gegengeprüft. 1 zuerst.
+        'peblar'      => [1, 255],
     ];
 
     private const VENDOR_LABELS = [
