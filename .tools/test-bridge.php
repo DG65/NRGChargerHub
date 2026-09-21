@@ -134,6 +134,7 @@ class FakeMb {
     function u32($x, $o) { return (($x[$o] & 0xFFFF) << 16) | ($x[$o + 1] & 0xFFFF); }
     function readStr($x, $o, $n) { $s = ''; for ($i = 0; $i < $n; $i++) $s .= chr(($x[$o + $i] >> 8) & 255) . chr($x[$o + $i] & 255); return rtrim($s, "\0 "); }
     function writeSingle($a, $v) { $this->w[$a] = $v; return true; }
+    function writeMultiple($a, $v) { $this->w[$a] = $v[0]; return true; }
 }
 class FakeHub {
     public $v = []; public $cp = 2;
@@ -142,7 +143,8 @@ class FakeHub {
     function GetMaxCurrentA() { return 16; }
     function GetVarValue($i) { return $this->v[$i] ?? ''; }
     public $hidden = [];
-    public $flags = [];
+    public $flags = []; public $via = 'cmd';
+    function GetDaheimEnableVia() { return $this->via; }
     function SetVarHidden($i, $h) { $this->hidden[$i] = $h; }
     function GetDriverFlag($k) { return $this->flags[$k] ?? false; }
     function SetDriverFlag($k, $v) { $this->flags[$k] = $v; }
@@ -201,6 +203,25 @@ if (function_exists('pcntl_fork')) {
 } else {
     echo "SKIP Schreibprotokoll (pcntl nicht verfügbar)\n";
 }
+
+// DaheimLader: Ladefreigabe über Ladebefehl (95: 1/2, Standard) oder Stromlimit (91, wie evcc: Freigabe >= 6 A, Sperre 0,1 A).
+$wm = new FakeMb(); $wh = new FakeHub(); $wh->v['ctl_curr_limit'] = 10;
+$dd->writeControl($wm, $wh, 'ctl_enable', true);  $a = $wm->w;
+$dd->writeControl($wm, $wh, 'ctl_enable', false); $b = $wm->w;
+check('DaheimLader Standard: Freigabe über Register 95 (1/2), Register 91 unberührt', $a === [95 => 1] && $b === [95 => 2]);
+$wm = new FakeMb(); $wh = new FakeHub(); $wh->via = 'limit'; $wh->v['ctl_curr_limit'] = 10; $wh->v['ctl_enable'] = false;
+$dd->writeControl($wm, $wh, 'ctl_curr_limit', 12);
+check('DaheimLader Limit-Modus: Limit bei gesperrter Freigabe nur gemerkt, nicht geschrieben', $wm->w === [] && $wh->v['ctl_curr_limit'] === 12);
+$dd->writeControl($wm, $wh, 'ctl_enable', true);
+check('DaheimLader Limit-Modus: Freigabe schreibt Limit x10 in Register 91 (12 A = 120)', $wm->w === [91 => 120]);
+$dd->writeControl($wm, $wh, 'ctl_enable', false);
+check('DaheimLader Limit-Modus: Sperre schreibt 1 (0,1 A) in Register 91, nicht 0', $wm->w === [91 => 1]);
+$rb = new FakeMb(); $rh = new FakeHub(); $rh->via = 'limit';
+for ($i = 0; $i < 114; $i++) { $rb->r[$i] = 0; } $rb->r[0] = 1; $rb->r[91] = 100;
+$dd->readValues($rb, $rh);
+check('DaheimLader Limit-Modus: Rücklesen Register 91 = 100 -> Freigabe an, 10 A', $rh->v['ctl_enable'] === true && $rh->v['ctl_curr_limit'] === 10);
+$rb->r[91] = 1; $dd->readValues($rb, $rh);
+check('DaheimLader Limit-Modus: Rücklesen Register 91 = 1 -> Freigabe aus', $rh->v['ctl_enable'] === false);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
