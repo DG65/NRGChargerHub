@@ -14,7 +14,7 @@ function IPS_GetInstance($id) { return $GLOBALS['inst'][$id] ?? []; }
 function IPS_GetProperty($id, $n) { return $GLOBALS['props'][$id][$n] ?? false; }
 function IPS_InstanceExists($id) { return isset($GLOBALS['inst'][$id]); }
 function IPS_LogMessage($a, $b) { $GLOBALS['log'][] = "$a: $b"; }
-function IPS_GetInstanceListByModuleID($g) { return []; }
+function IPS_GetInstanceListByModuleID($g) { return $GLOBALS['byGuid'][$g] ?? []; }
 function IPS_GetChildrenIDs($id) { return []; }
 function IPS_GetName($id) { return 'Name' . $id; }
 function CHUBB_GetState($id) { return $GLOBALS['bridge']->GetState(); }
@@ -103,6 +103,20 @@ foreach (['LinkDuplicateStatus', 'LinkEmsStatus', 'LinkGridStatus', 'LinkBattery
 }
 $hub->prop['DuplicateOfKey'] = 'ocpphub:999';
 check('Zeile Dublette ⚠️ (Ziel fehlt)', strpos($ls->invoke($hub)['LinkDuplicateStatus'], '⚠️') === 0);
+
+// „Wert kommt automatisch“ (SUITE.md 21.09.2026): MeterHub liefert den Zähler, Feld leer ->
+// automatisch (Panel eingeklappt, Zeile 🔗); eigene Wahl -> ✏️, nie automatisch.
+if (true) {
+    function MHUB_GetFunctions($id) { return json_encode(['assignments' => [['function' => 'grid', 'latency' => 'realtime', 'powerID' => 500]]]); }
+    function GetValue($id) { return -1234; }
+}
+$GLOBALS['byGuid']['{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}'] = [77];
+$gm = new ReflectionMethod($hub, 'GridMeterIsAutomatic');
+$hub->prop = ['SurplusMeterID' => 0];
+check('Feld: Zähler kommt automatisch, Feld leer -> automatisch', $gm->invoke($hub) === true);
+check('Zeile 🔗 mit Wert und Quelle', strpos($ls->invoke($hub)['LinkGridStatus'], '🔗 Netzzähler:') === 0 && strpos($ls->invoke($hub)['LinkGridStatus'], '1234 W') !== false);
+$hub->prop = ['SurplusMeterID' => 77];
+check('Feld: eigene Wahl -> nicht automatisch, Zeile ✏️', $gm->invoke($hub) === false && strpos($ls->invoke($hub)['LinkGridStatus'], '✏️') === 0);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
