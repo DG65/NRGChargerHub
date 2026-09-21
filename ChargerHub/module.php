@@ -4039,7 +4039,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.98-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.99-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4132,8 +4132,13 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkEmsStatus'],
                         ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Überschussladen selbst regeln (nur Fallback ohne EMS)'],
                         ['type' => 'Label', 'caption' => 'Nur wirksam, wenn oben „Wer regelt?" auf „Niemand" steht UND kein aktives EMS installiert ist UND genau eine ChargerHub-Instanz aktiv ist (bei mehreren Wallboxen bitte EMS für die Koordination nutzen) UND ein MeterHub-Zähler am Netzanschlusspunkt einen Echtzeit-Wert liefert. Ist EMS aktiv, hat es immer Vorrang — diese Option greift dann automatisch nicht. Sichtbarer Status (aktiv/warum nicht) erscheint als eigene Variable „Überschussladen", sobald diese Option angehakt ist.'],
-                        ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag)', 'moduleID' => self::METERHUB_GUID],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkGridStatus'],
+                        // Kommt der Netzzähler automatisch (MeterHub-Vertrag) und ist das Feld leer,
+                        // bleibt das Eingabefeld eingeklappt (SUITE.md 21.09.2026): der Wert wird NIE
+                        // ins Feld geschrieben, sonst würde „Übernehmen“ ihn als eigene Wahl speichern.
+                        ['type' => 'ExpansionPanel', 'name' => 'SurplusMeterOverridePanel', 'caption' => '✏️  Anderen Netzzähler stattdessen verwenden', 'expanded' => !$this->GridMeterIsAutomatic(), 'items' => [
+                            ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag)', 'moduleID' => self::METERHUB_GUID],
+                        ]],
                         ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
                         ['type' => 'NumberSpinner', 'name' => 'BatteryCapacityKWh', 'caption' => '🆕 Speicherkapazität (kWh, 0 = kein Speicher/unbekannt)', 'minimum' => 0, 'maximum' => 200, 'digits' => 1, 'suffix' => 'kWh'],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBatteryStatus'],
@@ -4229,6 +4234,15 @@ class ChargerHub extends IPSModule
         return false;
     }
 
+    // Liefert MeterHub ohne eigene Wahl einen Netzzähler? Dann bleibt das Eingabefeld
+    // eingeklappt („🔗 automatisch"), sonst offen (ℹ️/⚠️/✏️).
+    private function GridMeterIsAutomatic(): bool
+    {
+        return $this->ReadPropertyInteger('SurplusMeterID') <= 0
+            && function_exists('MHUB_GetFunctions')
+            && $this->FindGridSurplusW() !== null;
+    }
+
     // Eine Statuszeile je automatischer Verbindung zu einem Partnermodul
     // (✅ verbunden mit Werten/Quelle, ⚠️ verbunden ohne Brauchbares, ℹ️ nicht
     // gefunden und was dann gilt, ⛔ Pflichtangabe fehlt). Jeder Fremdzugriff
@@ -4300,8 +4314,10 @@ class ChargerHub extends IPSModule
                 $lines['LinkGridStatus'] = 'ℹ️ Keine MeterHub-Instanz vorhanden: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
             } elseif ($w === null) {
                 $lines['LinkGridStatus'] = '⚠️ MeterHub vorhanden, aber ' . ($forced > 0 ? 'die gewählte Instanz #' . $forced : 'keine Instanz') . ' liefert keinen Netzzähler („grid") mit Echtzeit-Wert. Ohne ihn regelt das Überschussladen nicht.';
+            } elseif ($forced > 0) {
+                $lines['LinkGridStatus'] = '✏️ Netzzähler: „' . $this->SurplusMeterLabel() . '" (eigene Wahl, MeterHub, Echtzeit), aktuell ' . round($w) . ' W Überschuss (' . $usedBy . ').';
             } else {
-                $lines['LinkGridStatus'] = '✅ Netzzähler „' . $this->SurplusMeterLabel() . '" (MeterHub, Echtzeit' . ($forced > 0 ? ', von Hand gewählt' : ', automatisch über den Vertrag erkannt') . '): aktuell ' . round($w) . ' W Überschuss (' . $usedBy . ').';
+                $lines['LinkGridStatus'] = '🔗 Netzzähler: „' . $this->SurplusMeterLabel() . '" (automatisch von MeterHub, Echtzeit), aktuell ' . round($w) . ' W Überschuss (' . $usedBy . ').';
             }
         }
 

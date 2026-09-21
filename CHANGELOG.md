@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.99-beta.1] - 2026-09-21
+
+### Changed
+- Formular „Wert kommt automatisch“ (SUITE.md 21.09.2026): Der NAP-Zähler für das Überschussladen
+  wird bei automatischer Erkennung über MeterHub nicht mehr als leeres Eingabefeld gezeigt. Das
+  Feld liegt jetzt im eingeklappten Panel „✏️ Anderen Netzzähler stattdessen verwenden“, die
+  Statuszeile lautet „🔗 Netzzähler: … (automatisch von MeterHub …)“. Eigene Wahl: „✏️ …“, Panel
+  offen. Nichts automatisch gefunden: Panel offen. Der automatische Wert wird nie ins Feld
+  geschrieben.
+
 ## [0.9.98-beta.1] - 2026-09-21
 
 ### Added
