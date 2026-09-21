@@ -124,6 +124,47 @@ $rep->invokeArgs($hub, [&$f2, 'A', '🔗 Netzzähler: X (automatisch von MeterHu
 $rep->invokeArgs($hub, [&$f2, 'B', '✏️ Netzzähler: eigene Wahl']);
 check('Farbe: 🔗 grün 0x2E8B3D, ✏️ Standard -1', $f2[0]['color'] === 0x2E8B3D && $f2[1]['color'] === -1);
 
+// CHARX-Treiber (Handbuch 109999_en_09, Anhang 8.4): Adressen je Ladepunkt (x*1000), MSW zuerst,
+// Einheiten (mV/mA/mW/Wh), Statuszeichen, Schreiben nur in x300/x301, Grenzen 6-80 A.
+class FakeMb {
+    public $r = []; public $w = [];
+    function set($a, $vals) { foreach ($vals as $i => $v) $this->r[$a + $i] = $v; }
+    function readHolding($a, $n) { $o = []; for ($i = 0; $i < $n; $i++) { if (!isset($this->r[$a + $i])) return null; $o[] = $this->r[$a + $i]; } return $o; }
+    function u16($x, $o) { return $x[$o] & 0xFFFF; }
+    function u32($x, $o) { return (($x[$o] & 0xFFFF) << 16) | ($x[$o + 1] & 0xFFFF); }
+    function readStr($x, $o, $n) { $s = ''; for ($i = 0; $i < $n; $i++) $s .= chr(($x[$o + $i] >> 8) & 255) . chr($x[$o + $i] & 255); return rtrim($s, "\0 "); }
+    function writeSingle($a, $v) { $this->w[$a] = $v; return true; }
+}
+class FakeHub {
+    public $v = []; public $cp = 2;
+    function GetChargePointNo() { return $this->cp; }
+    function GroupActive($g) { return true; }
+    function GetMaxCurrentA() { return 16; }
+    function GetVarValue($i) { return $this->v[$i] ?? ''; }
+    function SetVarBool($i, $x) { $this->v[$i] = $x; } function SetVarInt($i, $x) { $this->v[$i] = $x; }
+    function SetVarFloat($i, $x) { $this->v[$i] = $x; } function SetVarStr($i, $x) { $this->v[$i] = $x; }
+}
+$mb = new FakeMb(); $ch = new FakeHub(); $drv = new CharxDriver();
+$b = 2000;
+$mb->set($b + 299, [(ord('C') << 8) | ord('2')]);
+$mb->set($b + 244, [0x0000, 0x2B67]);          // 11111 mW
+$mb->set($b + 250, [0x0001, 0x86A0]);          // 100000 Wh
+$mb->set($b + 289, [0, 0, 0x0000, 0x0BB8]);    // 3000 Wh
+$mb->set($b + 232, [3, 33392, 3, 34392, 3, 35392]); // 230000/231000/232000 mV (MSW, LSW)
+$mb->set($b + 238, [0, 10500, 0, 10600, 0, 10700]);
+$mb->set($b + 300, [1]); $mb->set($b + 301, [13]); $mb->set($b + 120, [5]);
+$mb->set($b + 113, [0x4142, 0x4344, 0x4546]); $mb->set(110, [0x312E, 0x3900, 0, 0]);
+$mb->set($b + 293, [0, 0x0040]);
+check('CHARX lesen: Status/Leistung/Energie', $drv->readValues($mb, $ch) === true && $ch->v['state'] === 31 && $ch->v['vehicle_plugged'] === true && abs($ch->v['power'] - 11.111) < 0.001 && $ch->v['energy_total'] === 100.0 && $ch->v['energy_session'] === 3.0);
+check('CHARX lesen: Spannung/Strom je Phase, Freigabe, Limit', $ch->v['voltage_l2'] === 231.0 && abs($ch->v['current_l3'] - 10.7) < 1e-9 && $ch->v['ctl_enable'] === true && $ch->v['ctl_curr_limit'] === 13 && $ch->v['release_mode'] === 5);
+check('CHARX lesen: UID/Fehlercode', $ch->v['dev_serial'] === 'ABCDEF' && $ch->v['error_code'] === 0x40);
+$drv->writeControl($mb, $ch, 'ctl_curr_limit', 4);
+check('CHARX schreiben: Limit auf x301, mind. 6 A', $mb->w === [2301 => 6]);
+$mb->w = []; $drv->writeControl($mb, $ch, 'ctl_curr_limit', 60); check('CHARX schreiben: Limit gedeckelt (Max 16 A)', $mb->w === [2301 => 16]);
+$mb->w = []; $drv->writeControl($mb, $ch, 'ctl_enable', false); check('CHARX schreiben: Freigabe x300', $mb->w === [2300 => 0]);
+$mb2 = new FakeMb();
+check('CHARX ohne Antwort: connected false', $drv->readValues($mb2, new FakeHub()) === false);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

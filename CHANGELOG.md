@@ -3,6 +3,17 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.102-beta.1] - 2026-09-21
+
+### Added
+- Neuer Hersteller: Phoenix Contact CHARX SEC-3xxx (Ladesteuerung), **experimentell**. Registerkarte
+  aus dem Handbuch CHARX SEC-XXXX (Anhang 8.4, Wunsch Mstaudi): Ladestatus, Leistung, Energie
+  gesamt/Sitzung, Spannung/Strom je Phase, Kennung, Software-Version, Freigabe-Art, Fehlercode;
+  Steuerung Ladefreigabe (x300) und Stromlimit 6-80 A (x301). Ein Registerblock je Ladepunkt
+  (Startadresse = Nummer x 1000), neue Property „Nummer des Ladepunkts“ (nur CHARX, additiv,
+  öffentliche Funktion `CHUB_GetChargePointNo`). Netzwerksuche erkennt die Steuerung über
+  Register 114 und 100. Watchdog (x306/x307) und Phasenumschaltung sind nicht umgesetzt.
+
 ## [0.9.101-beta.1] - 2026-09-21
 
 ### Fixed
