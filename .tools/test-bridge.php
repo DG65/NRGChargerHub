@@ -127,9 +127,9 @@ check('Farbe: 🔗 grün 0x2E8B3D, ✏️ Standard -1', $f2[0]['color'] === 0x2E
 // CHARX-Treiber (Handbuch 109999_en_09, Anhang 8.4): Adressen je Ladepunkt (x*1000), MSW zuerst,
 // Einheiten (mV/mA/mW/Wh), Statuszeichen, Schreiben nur in x300/x301, Grenzen 6-80 A.
 class FakeMb {
-    public $r = []; public $w = [];
+    public $r = []; public $w = []; public $reads = [];
     function set($a, $vals) { foreach ($vals as $i => $v) $this->r[$a + $i] = $v; }
-    function readHolding($a, $n) { $o = []; for ($i = 0; $i < $n; $i++) { if (!isset($this->r[$a + $i])) return null; $o[] = $this->r[$a + $i]; } return $o; }
+    function readHolding($a, $n) { $this->reads[] = $a; $o = []; for ($i = 0; $i < $n; $i++) { if (!isset($this->r[$a + $i])) return null; $o[] = $this->r[$a + $i]; } return $o; }
     function u16($x, $o) { return $x[$o] & 0xFFFF; }
     function u32($x, $o) { return (($x[$o] & 0xFFFF) << 16) | ($x[$o + 1] & 0xFFFF); }
     function readStr($x, $o, $n) { $s = ''; for ($i = 0; $i < $n; $i++) $s .= chr(($x[$o + $i] >> 8) & 255) . chr($x[$o + $i] & 255); return rtrim($s, "\0 "); }
@@ -142,7 +142,10 @@ class FakeHub {
     function GetMaxCurrentA() { return 16; }
     function GetVarValue($i) { return $this->v[$i] ?? ''; }
     public $hidden = [];
+    public $flags = [];
     function SetVarHidden($i, $h) { $this->hidden[$i] = $h; }
+    function GetDriverFlag($k) { return $this->flags[$k] ?? false; }
+    function SetDriverFlag($k, $v) { $this->flags[$k] = $v; }
     function SetVarBool($i, $x) { $this->v[$i] = $x; } function SetVarInt($i, $x) { $this->v[$i] = $x; }
     function SetVarFloat($i, $x) { $this->v[$i] = $x; } function SetVarStr($i, $x) { $this->v[$i] = $x; }
 }
@@ -171,10 +174,14 @@ check('CHARX ohne Antwort: connected false', $drv->readValues($mb2, new FakeHub(
 $dmb = new FakeMb(); $dh = new FakeHub(); $dd = new DaheimLaderDriver();
 for ($i = 0; $i < 114; $i++) { $dmb->r[$i] = 0; }
 $dmb->r[0] = 1;
-$dd->readValues($dmb, $dh);
+$dmb->reads = []; $dd->readValues($dmb, $dh);
 check('DaheimLader: 0x300A nicht lesbar -> Variable ausgeblendet', ($dh->hidden['ctl_auto_phase_switch'] ?? null) === true && !isset($dh->v['ctl_auto_phase_switch']));
-$dmb->r[0x300A] = 1; $dd->readValues($dmb, $dh);
-check('DaheimLader: 0x300A lesbar -> sichtbar, Wert übernommen', ($dh->hidden['ctl_auto_phase_switch'] ?? null) === false && $dh->v['ctl_auto_phase_switch'] === true);
+$n1 = count(array_filter($dmb->reads, fn ($a) => $a === 0x300A));
+$dmb->reads = []; $dd->readValues($dmb, $dh);
+$n2 = count(array_filter($dmb->reads, fn ($a) => $a === 0x300A));
+check('DaheimLader: 0x300A nach Fehlschlag nicht erneut abgefragt (1x, dann 0x)', $n1 === 1 && $n2 === 0 && $dh->flags['no_auto_phase_switch'] === true);
+$dh2 = new FakeHub(); $dmb->r[0x300A] = 1; $dd->readValues($dmb, $dh2);
+check('DaheimLader: 0x300A lesbar -> sichtbar, Wert übernommen', ($dh2->hidden['ctl_auto_phase_switch'] ?? null) === false && $dh2->v['ctl_auto_phase_switch'] === true);
 
 // Schreibprotokoll: Roh-Anfrage (FC16, Unit 255, Reg 95, Wert 1) und Antwort bit-genau erfasst.
 if (function_exists('pcntl_fork')) {
