@@ -17,6 +17,8 @@ function IPS_LogMessage($a, $b) { $GLOBALS['log'][] = "$a: $b"; }
 function IPS_GetInstanceListByModuleID($g) { return $GLOBALS['byGuid'][$g] ?? []; }
 function IPS_GetChildrenIDs($id) { return []; }
 function IPS_GetName($id) { return 'Name' . $id; }
+function IPS_SemaphoreEnter($n, $ms) { return true; }
+function IPS_SemaphoreLeave($n) {}
 function CHUBB_GetState($id) { return $GLOBALS['bridge']->GetState(); }
 function CHUBB_Forward($id, $json) { return $GLOBALS['bridge']->Forward($json); }
 
@@ -222,6 +224,28 @@ $dd->readValues($rb, $rh);
 check('DaheimLader Limit-Modus: Rücklesen Register 91 = 100 -> Freigabe an, 10 A', $rh->v['ctl_enable'] === true && $rh->v['ctl_curr_limit'] === 10);
 $rb->r[91] = 1; $dd->readValues($rb, $rh);
 check('DaheimLader Limit-Modus: Rücklesen Register 91 = 1 -> Freigabe aus', $rh->v['ctl_enable'] === false);
+
+// Dauerhafte Verbindung (CHUB_ModbusTcpClient::persistent): zwei Schreibzugriffe laufen über
+// dieselbe wiederverwendete TCP-Verbindung statt über zwei getrennte (Fund sieckendieck).
+$srv2 = stream_socket_server('tcp://127.0.0.1:0', $en2, $es2);
+$port2 = (int)substr(strrchr(stream_socket_get_name($srv2, false), ':'), 1);
+$pc = new CHUB_ModbusTcpClient('127.0.0.1', $port2, 1);
+$pc->persistent = true;
+$pid2 = pcntl_fork();
+if ($pid2 === 0) {
+    $c = stream_socket_accept($srv2, 5); // genau EINE eingehende Verbindung für beide Schreibzugriffe
+    for ($i = 0; $i < 2; $i++) {
+        $req = fread($c, 64);
+        if ($req === false || $req === '') { exit(1); }
+        fwrite($c, substr($req, 0, 2) . "\x00\x00\x00\x06\x01\x10\x00\x5f\x00\x01");
+    }
+    fclose($c);
+    exit(0);
+}
+$r1 = $pc->writeMultiple(95, [1]);
+$r2 = $pc->writeMultiple(95, [1]);
+pcntl_waitpid($pid2, $st3);
+check('Dauerhafte Verbindung: zwei Schreibzugriffe über dieselbe (geteilte) Verbindung', $r1 === true && $r2 === true && pcntl_wexitstatus($st3) === 0);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

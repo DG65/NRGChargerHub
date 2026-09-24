@@ -40,7 +40,17 @@ class CHUB_ModbusTcpClient
     // Fehlersuche; die Instanz gibt es nur aus, wenn „Schreibbefehle protokollieren“ an ist.
     public $writeTrace = [];
 
+    // Dauerhafte statt einer für jeden Zugriff neuen Verbindung (Property „PersistentConnection“,
+    // von GetModbusClient() gesetzt). Fund sieckendieck, 22.09.2026: eine DaheimLader Touch PRO
+    // ließ sich per ChargerHub trotz bit-identischer Schreibanfrage nicht starten/stoppen — mit
+    // sehr langem Lese-Intervall (kaum noch Verbindungen) ging es sofort. Das ständige Verbinden/
+    // Trennen brachte offenbar den kleinen Modbus-Server der Box aus dem Tritt. Die Verbindung wird
+    // über Host+Port geteilt (auch über mehrere ChargerHub-Instanzen zum selben Gerät hinweg, z. B.
+    // mehrere CHARX-Ladepunkte an einer IP), Zugriffe darauf per IPS-Semaphore serialisiert.
+    public $persistent = false;
+
     private $batchSock = null;
+    private static array $persistentSockets = [];
 
     public function beginBatch()
     {
@@ -77,100 +87,162 @@ class CHUB_ModbusTcpClient
         return $this->modbusRead(0x04, $startReg, $count);
     }
 
+    private function persistentKey(): string
+    {
+        return $this->host . ':' . $this->port;
+    }
+
+    // Liefert eine offene, noch nutzbare dauerhafte Verbindung zu Host+Port (neu verbunden, falls
+    // keine vorhanden oder die vorhandene tot ist) — geteilt über alle Client-Objekte, die auf
+    // dasselbe Gerät zeigen, damit ein zweiter Poll oder eine zweite Instanz sie weiterverwendet
+    // statt selbst erneut zu verbinden.
+    private function getPersistentSocket()
+    {
+        $key = $this->persistentKey();
+        $s   = self::$persistentSockets[$key] ?? null;
+        if (is_resource($s)) {
+            $meta = @stream_get_meta_data($s);
+            if ($meta !== false && empty($meta['eof']) && empty($meta['timed_out'])) {
+                return $s;
+            }
+            @fclose($s);
+            unset(self::$persistentSockets[$key]);
+        }
+        $s = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($s !== false) {
+            stream_set_timeout($s, 3);
+            self::$persistentSockets[$key] = $s;
+        }
+        return $s;
+    }
+
+    // Verwirft eine als kaputt erkannte dauerhafte Verbindung, damit der nächste Zugriff neu
+    // verbindet statt eine tote Verbindung wiederzuverwenden.
+    private function dropPersistentSocket(): void
+    {
+        $key = $this->persistentKey();
+        if (isset(self::$persistentSockets[$key])) {
+            @fclose(self::$persistentSockets[$key]);
+            unset(self::$persistentSockets[$key]);
+        }
+    }
+
+    // Führt $body($sock) aus und kümmert sich um Verbindungsaufbau/-abbau je nach Modus:
+    // Batch (bestehende Verbindung, siehe beginBatch()) > dauerhaft (geteilt, per Semaphore
+    // serialisiert, bei Fehler verworfen) > wie bisher eine frische Verbindung je Aufruf.
+    private function withSocket(callable $body)
+    {
+        if ($this->batchSock !== null) {
+            return $body($this->batchSock, false);
+        }
+        if (!$this->persistent) {
+            $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+            if ($sock === false) {
+                return $body(false, false);
+            }
+            stream_set_timeout($sock, 3);
+            $result = $body($sock, false);
+            @fclose($sock);
+            return $result;
+        }
+
+        $sem = 'CHUB_Modbus_' . $this->persistentKey();
+        if (!@IPS_SemaphoreEnter($sem, 5000)) {
+            return $body(false, false); // Gerät gerade anderweitig belegt — kein Grund, ewig zu warten.
+        }
+        try {
+            $sock = $this->getPersistentSocket();
+            $result = $body($sock, true);
+            if ($result === null || $result === false) {
+                $this->dropPersistentSocket();
+            }
+            return $result;
+        } finally {
+            @IPS_SemaphoreLeave($sem);
+        }
+    }
+
     private function modbusRead($fc, $startReg, $count)
     {
-        $sock = $this->batchSock ?: @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
-        if ($sock === false) {
-            return null;
-        }
-        if ($this->batchSock === null) {
-            stream_set_timeout($sock, 3);
-        }
-
-        $tid  = mt_rand(1, 65535);
-        $pdu  = pack('Cnn', $fc, $startReg, $count);
-        $mbap = pack('nnn', $tid, 0, strlen($pdu) + 1) . chr($this->unitId);
-
-        @fwrite($sock, $mbap . $pdu);
-
-        $response = '';
-        $deadline = microtime(true) + 3.0;
-        while (microtime(true) < $deadline) {
-            $chunk = @fread($sock, 512);
-            if ($chunk === false || $chunk === '') {
-                break;
+        return $this->withSocket(function ($sock, bool $isPersistent) use ($fc, $startReg, $count) {
+            if ($sock === false) {
+                return null;
             }
-            $response .= $chunk;
-            if (strlen($response) >= 9) {
-                if (ord($response[7]) & 0x80) {
-                    break; // Modbus-Exception (9-Byte-Antwort)
-                }
-                $byteCount = ord($response[8]);
-                if (strlen($response) >= 9 + $byteCount) {
+
+            $tid  = mt_rand(1, 65535);
+            $pdu  = pack('Cnn', $fc, $startReg, $count);
+            $mbap = pack('nnn', $tid, 0, strlen($pdu) + 1) . chr($this->unitId);
+
+            @fwrite($sock, $mbap . $pdu);
+
+            $response = '';
+            $deadline = microtime(true) + 3.0;
+            while (microtime(true) < $deadline) {
+                $chunk = @fread($sock, 512);
+                if ($chunk === false || $chunk === '') {
                     break;
                 }
+                $response .= $chunk;
+                if (strlen($response) >= 9) {
+                    if (ord($response[7]) & 0x80) {
+                        break; // Modbus-Exception (9-Byte-Antwort)
+                    }
+                    $byteCount = ord($response[8]);
+                    if (strlen($response) >= 9 + $byteCount) {
+                        break;
+                    }
+                }
             }
-        }
-        if ($this->batchSock === null) {
-            fclose($sock);
-        }
 
-        if (strlen($response) < 9) {
-            return null;
-        }
+            if (strlen($response) < 9) {
+                return null;
+            }
 
-        // Transaktions-ID prüfen (MBAP-Header, erste 2 Bytes) — Fund der
-        // InverterHub-Sitzung (12.09.2026) an ihrer eigenen, unabhängigen
-        // Modbus-Basisklasse: im Batch-Modus (eine wiederverwendete
-        // Verbindung für mehrere Reads pro Zyklus, siehe beginBatch()) wurde
-        // dort nie geprüft, ob eine eintreffende Antwort tatsächlich zur
-        // zuletzt gestellten Anfrage gehört. Trifft die Antwort eines
-        // vorherigen, bereits als Timeout gewerteten Reads verspätet doch
-        // noch ein, würde sie sonst dem nächsten Read im selben Zyklus als
-        // Ergebnis untergeschoben — zwei fremde Registerhälften könnten so
-        // als High-/Low-Wort eines 32-Bit-Werts zusammengesetzt werden (bei
-        // InverterHub real beobachtet: 261,5 MW PV-Leistung nachts). Unser
-        // beginBatch()/endBatch() wird aktuell nirgends aufgerufen (jeder
-        // Read bekommt also ohnehin eine frische Verbindung) — die Prüfung
-        // schützt trotzdem vor genau diesem Fehler, falls das künftig doch
-        // genutzt wird, und kostet im Normalfall nichts.
-        $rtid = (ord($response[0]) << 8) | ord($response[1]);
-        if ($rtid !== $tid) {
-            return null;
-        }
+            // Transaktions-ID prüfen (MBAP-Header, erste 2 Bytes) — Fund der
+            // InverterHub-Sitzung (12.09.2026) an ihrer eigenen, unabhängigen
+            // Modbus-Basisklasse: im Batch-/dauerhaften Modus (eine wiederverwendete
+            // Verbindung für mehrere Zugriffe, siehe beginBatch()/$persistent) wurde
+            // dort nie geprüft, ob eine eintreffende Antwort tatsächlich zur
+            // zuletzt gestellten Anfrage gehört. Trifft die Antwort eines
+            // vorherigen, bereits als Timeout gewerteten Reads verspätet doch
+            // noch ein, würde sie sonst dem nächsten Read im selben Zyklus als
+            // Ergebnis untergeschoben — zwei fremde Registerhälften könnten so
+            // als High-/Low-Wort eines 32-Bit-Werts zusammengesetzt werden (bei
+            // InverterHub real beobachtet: 261,5 MW PV-Leistung nachts).
+            $rtid = (ord($response[0]) << 8) | ord($response[1]);
+            if ($rtid !== $tid) {
+                return null;
+            }
 
-        $rfc = ord($response[7]);
-        if ($rfc & 0x80 || $rfc !== $fc) {
-            return null;
-        }
+            $rfc = ord($response[7]);
+            if ($rfc & 0x80 || $rfc !== $fc) {
+                return null;
+            }
 
-        $byteCount = ord($response[8]);
-        $data      = substr($response, 9, $byteCount);
+            $byteCount = ord($response[8]);
+            $data      = substr($response, 9, $byteCount);
 
-        $regs = [];
-        for ($i = 0; $i < $count && ($i * 2 + 1) < strlen($data); $i++) {
-            $regs[$i] = (ord($data[$i * 2]) << 8) | ord($data[$i * 2 + 1]);
-        }
-        return $regs;
+            $regs = [];
+            for ($i = 0; $i < $count && ($i * 2 + 1) < strlen($data); $i++) {
+                $regs[$i] = (ord($data[$i * 2]) << 8) | ord($data[$i * 2 + 1]);
+            }
+            return $regs;
+        });
     }
 
     public function writeSingle($reg, $value)
     {
         $this->lastWriteError = '';
-        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
-        if ($sock === false) {
-            $this->lastWriteError = "Verbindung fehlgeschlagen: $errstr ($errno)";
-            return false;
-        }
-        stream_set_timeout($sock, 3);
-
-        $tid  = mt_rand(1, 65535);
         $pdu  = pack('Cnn', 0x06, $reg, $value & 0xFFFF);
-        $mbap = pack('nnn', $tid, 0, strlen($pdu) + 1) . chr($this->unitId);
-
-        @fwrite($sock, $mbap . $pdu);
-        $resp = @fread($sock, 64);
-        fclose($sock);
+        $mbap = pack('nnn', mt_rand(1, 65535), 0, strlen($pdu) + 1) . chr($this->unitId);
+        $resp = $this->withSocket(function ($sock) use ($mbap, $pdu) {
+            if ($sock === false) {
+                $this->lastWriteError = 'Verbindung fehlgeschlagen';
+                return false;
+            }
+            @fwrite($sock, $mbap . $pdu);
+            return @fread($sock, 64);
+        });
         $this->writeTrace[] = 'FC06 Reg ' . $reg . ' Wert ' . ($value & 0xFFFF) . ' | Unit ' . $this->unitId . ' | Anfrage ' . bin2hex($mbap . $pdu) . ' | Antwort ' . bin2hex((string)$resp);
 
         return $this->CheckWriteResponse($resp, 0x06);
@@ -179,26 +251,22 @@ class CHUB_ModbusTcpClient
     public function writeMultiple($startReg, $values)
     {
         $this->lastWriteError = '';
-        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
-        if ($sock === false) {
-            $this->lastWriteError = "Verbindung fehlgeschlagen: $errstr ($errno)";
-            return false;
-        }
-        stream_set_timeout($sock, 3);
-
         $count     = count($values);
         $byteCount = $count * 2;
         $dataPart  = '';
         foreach ($values as $v) {
             $dataPart .= pack('n', $v & 0xFFFF);
         }
-        $tid  = mt_rand(1, 65535);
         $pdu  = pack('CnnC', 0x10, $startReg, $count, $byteCount) . $dataPart;
-        $mbap = pack('nnn', $tid, 0, strlen($pdu) + 1) . chr($this->unitId);
-
-        @fwrite($sock, $mbap . $pdu);
-        $resp = @fread($sock, 64);
-        fclose($sock);
+        $mbap = pack('nnn', mt_rand(1, 65535), 0, strlen($pdu) + 1) . chr($this->unitId);
+        $resp = $this->withSocket(function ($sock) use ($mbap, $pdu) {
+            if ($sock === false) {
+                $this->lastWriteError = 'Verbindung fehlgeschlagen';
+                return false;
+            }
+            @fwrite($sock, $mbap . $pdu);
+            return @fread($sock, 64);
+        });
         $this->writeTrace[] = 'FC16 Reg ' . $startReg . ' Werte [' . implode(',', array_map(fn ($v) => $v & 0xFFFF, $values)) . '] | Unit ' . $this->unitId . ' | Anfrage ' . bin2hex($mbap . $pdu) . ' | Antwort ' . bin2hex((string)$resp);
 
         return $this->CheckWriteResponse($resp, 0x10);
@@ -3086,6 +3154,11 @@ class ChargerHub extends IPSModule
         $this->RegisterPropertyInteger('MaxCurrent', 16);
         // Fehlersuche: jeden Schreibbefehl (Anfrage/Antwort als Hex) im Meldungen-Log protokollieren.
         $this->RegisterPropertyBoolean('WriteLog', false);
+        // Manche Wallboxen vertragen häufiges Verbinden/Trennen schlecht (Fund sieckendieck,
+        // DaheimLader Touch PRO, 22.09.2026): Schreibbefehle blieben wirkungslos, solange
+        // ChargerHub häufig pollte, und funktionierten sofort bei sehr langem Intervall. Diese
+        // Option hält stattdessen eine Verbindung offen statt für jeden Zugriff neu zu verbinden.
+        $this->RegisterPropertyBoolean('PersistentConnection', false);
         // Nur DaheimLader: Ladefreigabe über Ladebefehl (Register 95, Standard) oder über das
         // Stromlimit (Register 91, wie evcc).
         $this->RegisterPropertyString('DaheimEnableVia', 'cmd');
@@ -4294,11 +4367,13 @@ class ChargerHub extends IPSModule
                 fn ($payload) => $this->ForwardViaBridge($payload)
             );
         }
-        return new CHUB_ModbusTcpClient(
+        $client = new CHUB_ModbusTcpClient(
             $this->ReadPropertyString('Host'),
             $this->ReadPropertyInteger('Port'),
             $this->ReadPropertyInteger('UnitId')
         );
+        $client->persistent = $this->ReadPropertyBoolean('PersistentConnection');
+        return $client;
     }
 
     public function GroupActive(string $propName): bool
@@ -4384,7 +4459,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.106-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.107-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4480,6 +4555,8 @@ class ChargerHub extends IPSModule
                             ['caption' => 'Über Ladebefehl, Register 95 (Standard, laut Hersteller-PDF)', 'value' => 'cmd'],
                             ['caption' => 'Über Stromlimit, Register 91 (wie evcc; Sperre = 0,1 A)', 'value' => 'limit'],
                         ]],
+                        ['type' => 'CheckBox', 'name' => 'PersistentConnection', 'caption' => '🆕 Dauerhafte Verbindung statt für jeden Zugriff neu zu verbinden', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'Label', 'caption' => 'Standardmäßig verbindet ChargerHub für jeden Lese-/Schreibzugriff neu und trennt danach sofort wieder. Manche Wallboxen (beobachtet bei einer DaheimLader Touch PRO) vertragen das nicht: Schreibbefehle bestätigt das Gerät zwar, wirken aber nicht. Hilft ein sehr langes Lese-Intervall, hilft meist auch diese Option — probieren, wenn Steuerbefehle trotz Bestätigung wirkungslos bleiben.'],
                         ['type' => 'CheckBox', 'name' => 'WriteLog', 'caption' => '🆕 Schreibbefehle im Meldungen-Log protokollieren (Fehlersuche)'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
