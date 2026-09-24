@@ -3,6 +3,20 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.107-beta.1] - 2026-09-24
+
+### Added
+- Neue Option „Dauerhafte Verbindung statt für jeden Zugriff neu zu verbinden“ (Panel
+  „Steuerungshoheit & Sicherheit“, Standard aus, nur direkter Verbindungsweg). Fund sieckendieck
+  (DaheimLader Touch PRO, 22.-24.09.2026): Steuerbefehle blieben trotz bestätigter Schreibantwort
+  wirkungslos, solange ChargerHub häufig pollte (2-10 s); mit dem Lese-Intervall auf Maximum
+  (300 s, kaum noch Verbindungen) startete die Ladung sofort. Das häufige Verbinden/Trennen
+  brachte offenbar den kleinen Modbus-Server der Box aus dem Tritt. Mit der neuen Option hält
+  ChargerHub stattdessen eine Verbindung offen (geteilt über Host+Port, auch über mehrere
+  ChargerHub-Instanzen zum selben Gerät hinweg, z. B. mehrere CHARX-Ladepunkte an einer IP;
+  Zugriffe darauf per IPS-Semaphore serialisiert, bei Fehler wird neu verbunden). Betrifft nur den
+  direkten TCP-Weg (nicht Modbus ASCII/ABL, nicht den Symbox-Gateway-Weg).
+
 ## [0.9.106-beta.1] - 2026-09-22
 
 ### Added
