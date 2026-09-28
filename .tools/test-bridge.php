@@ -59,6 +59,8 @@ class IPSModule {
     public function ReadAttributeBoolean($n) { return $this->attrb[$n] ?? false; }
     public function WriteAttributeBoolean($n, $v) { $this->attrb[$n] = $v; }
     public function EnableAction($ident) {}
+    public $formFields = [];
+    public function UpdateFormField($name, $prop, $value) { $this->formFields[$name][$prop] = $value; }
     public function GetIDForIdent($ident)
     {
         foreach ($GLOBALS['objs'] as $id => $o) {
@@ -306,6 +308,16 @@ $GLOBALS['objs'][$vid]['ObjectPosition'] = 42;
 // ... und ein zweites ApplyChanges (andere Positionsnummer, wie bei einer echten Neuberechnung) darf das nicht zurücksetzen.
 $rv->invoke($rvHub, $def, 9);
 check('RegisterVar: Position bei erneutem ApplyChanges NICHT zurückgesetzt (Symcon-Review-Fund 9m)', $GLOBALS['objs'][$vid]['ObjectPosition'] === 42);
+
+// „Auswahlfelder: Zeile folgt der Auswahl“ (SUITE.md 21.09.2026, EMS-Fund 28.09.2026): die
+// Dubletten-Statuszeile muss der noch nicht übernommenen Formularauswahl folgen, nicht der
+// gespeicherten Property.
+$dcHub = new ChargerHub(778);
+$dcHub->prop = ['Active' => true, 'DuplicateOfKey' => '']; // gespeichert: keine Zuordnung
+$dcHub->RequestAction('DuplicateOfKeyChanged', 'ocpphub:999'); // Auswahl im Formular: Ziel #999 (existiert nicht)
+check('DuplicateOfKeyChanged: Zeile folgt der Auswahl (⚠️ fehlendes Ziel), nicht der gespeicherten Property (ℹ️)', ($dcHub->formFields['LinkDuplicateStatus']['caption'] ?? '') !== '' && strpos($dcHub->formFields['LinkDuplicateStatus']['caption'], '⚠️') === 0);
+$dcHub->RequestAction('DuplicateOfKeyChanged', '');
+check('DuplicateOfKeyChanged: Auswahl zurück auf leer -> ℹ️-Zeile', strpos($dcHub->formFields['LinkDuplicateStatus']['caption'], 'ℹ️') === 0);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

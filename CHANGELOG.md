@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.109-beta.1] - 2026-09-28
+
+### Fixed
+- Statuszeile der Dubletten-Zuordnung folgte nur beim Öffnen des Formulars der Auswahl, nicht bei
+  einer Änderung (Verstoß gegen SUITE.md „Auswahlfelder: Zeile folgt der Auswahl“, EMS-Fund
+  28.09.2026 im verbundweiten Formular-Review). Das Auswahlfeld „Diese Wallbox ist dasselbe Gerät
+  wie …“ aktualisiert die Zeile jetzt bei jeder Änderung live, mit der noch nicht übernommenen
+  Auswahl (nicht der gespeicherten Property).
+
 ## [0.9.108-beta.1] - 2026-09-28
 
 ### Fixed

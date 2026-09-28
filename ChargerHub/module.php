@@ -3748,6 +3748,12 @@ class ChargerHub extends IPSModule
     {
         // Formular-Ereignis (kein Gerätebefehl): Felder je Verbindungsweg live umschalten.
         // Symcon wertet 'visible'-Ausdrücke mit $Variable nicht zuverlässig aus (Fund Mstaudi).
+        if ($Ident === 'DuplicateOfKeyChanged') {
+            // Auswahlfeld: Zeile folgt der Auswahl (SUITE.md 21.09.2026) — zeigt die noch nicht
+            // übernommene Auswahl, nicht die gespeicherte Property.
+            $this->UpdateFormField('LinkDuplicateStatus', 'caption', $this->DuplicateLine((string)$Value));
+            return;
+        }
         if ($Ident === 'ManufacturerChanged') {
             $this->UpdateFormField('ChargePointNo', 'visible', (string)$Value === 'charx');
             $this->UpdateFormField('DaheimEnableVia', 'visible', (string)$Value === 'daheimlader');
@@ -4086,7 +4092,15 @@ class ChargerHub extends IPSModule
     // 'duplicateOf'.
     private function GetDuplicateOf(): ?array
     {
-        $key = $this->ReadPropertyString('DuplicateOfKey');
+        return $this->ResolveDuplicateOf($this->ReadPropertyString('DuplicateOfKey'));
+    }
+
+    // Wie GetDuplicateOf(), aber für einen beliebigen Schlüssel statt zwingend der gespeicherten
+    // Property — so kann die Statuszeile (siehe DuplicateLine()) live die gerade im offenen
+    // Formular gewählte, noch nicht übernommene Auswahl anzeigen (SUITE.md, „Auswahlfelder:
+    // Zeile folgt der Auswahl", 21.09.2026).
+    private function ResolveDuplicateOf(string $key): ?array
+    {
         if ($key === '') {
             return null;
         }
@@ -4100,6 +4114,32 @@ class ChargerHub extends IPSModule
             return null;
         }
         return ['source' => $source, 'instanceID' => $id];
+    }
+
+    // Statuszeile zur Dubletten-Zuordnung für einen gegebenen Schlüssel (siehe ResolveDuplicateOf()) —
+    // eigene Funktion statt inline in LinkStatusLines(), damit derselbe Text sowohl beim Formular-
+    // aufbau (gespeicherte Property) als auch live per onChange (noch nicht übernommene Auswahl)
+    // entsteht.
+    private function DuplicateLine(string $key): string
+    {
+        $dup = $this->ResolveDuplicateOf($key);
+        if ($key === '') {
+            return 'ℹ️ Keine Zuordnung: diese Instanz zählt normal (Summen, Sitzungen, Leistung).';
+        }
+        if ($dup === null) {
+            return '⚠️ Zuordnung eingetragen („' . $key . '"), aber die Zielinstanz existiert nicht mehr. Sie wird ignoriert, diese Instanz zählt normal.';
+        }
+        $targetName = @IPS_GetName($dup['instanceID']);
+        $targetManaged = null;
+        if ($dup['source'] === 'chargerhub' && function_exists('CHUB_GetFunctions')) {
+            $targetManaged = @CHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
+        } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
+            $targetManaged = @OHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
+        }
+        $src = $dup['source'] === 'ocpphub' ? 'OCPPHub' : 'ChargerHub';
+        $own = $this->GetManagedBy();
+        return '✅ Zählt als Dublette von ' . $src . '-Instanz #' . $dup['instanceID'] . ' („' . $targetName . '"), wird bei Summen/Sitzungen übersprungen. Regler: hier „' . $own . '", dort ' . ($targetManaged === null ? 'unbekannt' : '„' . $targetManaged . '"') . '.'
+            . ((in_array($own, ['none', 'ems'], true) && in_array($targetManaged, ['none', 'ems'], true)) ? ' ⚠️ Beide Seiten regeln: bei einer „Wer regelt?" auf „Anderer" stellen.' : '');
     }
 
     // Schmale Auskunftsfunktion für MigrationsHub (Verbund-Konvention
@@ -4459,7 +4499,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.108-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.109-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4545,7 +4585,7 @@ class ChargerHub extends IPSModule
                     'expanded' => true,
                     'items'    => [
                         ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Wer regelt diesen Ladepunkt?', 'options' => $managedByOptions],
-                        ['type' => 'Select', 'name' => 'DuplicateOfKey', 'caption' => '🆕 Diese Wallbox ist dasselbe Gerät wie …', 'options' => $duplicateOfOptions],
+                        ['type' => 'Select', 'name' => 'DuplicateOfKey', 'caption' => '🆕 Diese Wallbox ist dasselbe Gerät wie …', 'options' => $duplicateOfOptions, 'onChange' => 'IPS_RequestAction($id, "DuplicateOfKeyChanged", $DuplicateOfKey);'],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkDuplicateStatus'],
                         ['type' => 'Label', 'caption' => 'Nur setzen, wenn dieselbe physische Wallbox bereits über eine andere Instanz (ChargerHub oder OCPPHub) läuft. Betrifft NUR die Zählung — EMS/Dashboard/MeterHub überspringen diese Instanz dann bei Summen/Sitzungen/Leistung zugunsten der ausgewählten. Wer die Wallbox tatsächlich STEUERT, entscheidet weiterhin allein „Wer regelt diesen Ladepunkt?" oben — eine Instanz kann also gleichzeitig als Dublette markiert UND der aktive Regler sein. Für den vollständigen Stopp (Messen UND Steuern) gibt es zusätzlich CHUB_SetActive().'],
                         ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Vorführmodus (Steuerung deaktiviert, nur Anzeige)'],
@@ -4705,25 +4745,7 @@ class ChargerHub extends IPSModule
         }
 
         // Dubletten-Zuordnung
-        $key = $this->ReadPropertyString('DuplicateOfKey');
-        $dup = $this->GetDuplicateOf();
-        if ($key === '') {
-            $lines['LinkDuplicateStatus'] = 'ℹ️ Keine Zuordnung: diese Instanz zählt normal (Summen, Sitzungen, Leistung).';
-        } elseif ($dup === null) {
-            $lines['LinkDuplicateStatus'] = '⚠️ Zuordnung eingetragen („' . $key . '"), aber die Zielinstanz existiert nicht mehr. Sie wird ignoriert, diese Instanz zählt normal.';
-        } else {
-            $targetName = @IPS_GetName($dup['instanceID']);
-            $targetManaged = null;
-            if ($dup['source'] === 'chargerhub' && function_exists('CHUB_GetFunctions')) {
-                $targetManaged = @CHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
-            } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
-                $targetManaged = @OHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
-            }
-            $src = $dup['source'] === 'ocpphub' ? 'OCPPHub' : 'ChargerHub';
-            $own = $this->GetManagedBy();
-            $lines['LinkDuplicateStatus'] = '✅ Zählt als Dublette von ' . $src . '-Instanz #' . $dup['instanceID'] . ' („' . $targetName . '"), wird bei Summen/Sitzungen übersprungen. Regler: hier „' . $own . '", dort ' . ($targetManaged === null ? 'unbekannt' : '„' . $targetManaged . '"') . '.'
-                . ((in_array($own, ['none', 'ems'], true) && in_array($targetManaged, ['none', 'ems'], true)) ? ' ⚠️ Beide Seiten regeln: bei einer „Wer regelt?" auf „Anderer" stellen.' : '');
-        }
+        $lines['LinkDuplicateStatus'] = $this->DuplicateLine($this->ReadPropertyString('DuplicateOfKey'));
 
         // EMS
         $emsIDs = @IPS_GetInstanceListByModuleID(self::EMS_GUID) ?: [];
