@@ -15,7 +15,27 @@ function IPS_GetProperty($id, $n) { return $GLOBALS['props'][$id][$n] ?? false; 
 function IPS_InstanceExists($id) { return isset($GLOBALS['inst'][$id]); }
 function IPS_LogMessage($a, $b) { $GLOBALS['log'][] = "$a: $b"; }
 function IPS_GetInstanceListByModuleID($g) { return $GLOBALS['byGuid'][$g] ?? []; }
-function IPS_GetChildrenIDs($id) { return []; }
+$GLOBALS['objs'] = [];
+function IPS_GetChildrenIDs($id)
+{
+    $r = [];
+    foreach ($GLOBALS['objs'] as $cid => $o) {
+        if (($o['ParentID'] ?? null) === $id) {
+            $r[] = $cid;
+        }
+    }
+    return $r;
+}
+function IPS_GetObject($id) { return $GLOBALS['objs'][$id] ?? ['ObjectIdent' => '', 'ObjectType' => -1]; }
+function IPS_GetVariable($id) { return $GLOBALS['objs'][$id] ?? []; }
+function IPS_SetPosition($id, $pos) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ObjectPosition'] = $pos; } }
+function IPS_SetParent($id, $pid) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ParentID'] = $pid; } }
+function IPS_SetName($id, $n) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ObjectName'] = $n; } }
+function IPS_SetIdent($id, $ident) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ObjectIdent'] = $ident; } }
+function IPS_CreateCategory() { $id = 30000 + count($GLOBALS['objs']); $GLOBALS['objs'][$id] = ['ObjectIdent' => '', 'ObjectType' => 0, 'ParentID' => 0]; return $id; }
+function IPS_SetVariableCustomProfile($id, $p) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['VariableCustomProfile'] = $p; } }
+function IPS_SetInfo($id, $s) {}
+function IPS_DeleteVariable($id) { unset($GLOBALS['objs'][$id]); }
 function IPS_GetName($id) { return 'Name' . $id; }
 function IPS_SemaphoreEnter($n, $ms) { return true; }
 function IPS_SemaphoreLeave($n) {}
@@ -34,6 +54,30 @@ class IPSModule {
     public function ReadPropertyFloat($n) { return $this->prop[$n] ?? 0.0; }
     public function ReadAttributeString($n) { return $this->attr[$n] ?? ''; }
     public function WriteAttributeString($n, $v) { $this->attr[$n] = $v; }
+    public $attrb = [];
+    public function RegisterAttributeBoolean($n, $d) { if (!isset($this->attrb[$n])) $this->attrb[$n] = $d; }
+    public function ReadAttributeBoolean($n) { return $this->attrb[$n] ?? false; }
+    public function WriteAttributeBoolean($n, $v) { $this->attrb[$n] = $v; }
+    public function EnableAction($ident) {}
+    public function GetIDForIdent($ident)
+    {
+        foreach ($GLOBALS['objs'] as $id => $o) {
+            if (($o['ParentID'] ?? null) === $this->InstanceID && $o['ObjectIdent'] === $ident) {
+                return $id;
+            }
+        }
+        return false;
+    }
+    private function createVar($ident, $pos, $type)
+    {
+        $vid = 20000 + count($GLOBALS['objs']);
+        $GLOBALS['objs'][$vid] = ['ObjectIdent' => $ident, 'ObjectType' => 2, 'ParentID' => $this->InstanceID, 'ObjectPosition' => $pos, 'VariableType' => $type, 'VariableCustomProfile' => ''];
+        return $vid;
+    }
+    public function RegisterVariableFloat($ident, $name, $profile, $pos) { return $this->createVar($ident, $pos, 2); }
+    public function RegisterVariableInteger($ident, $name, $profile, $pos) { return $this->createVar($ident, $pos, 1); }
+    public function RegisterVariableBoolean($ident, $name, $profile, $pos) { return $this->createVar($ident, $pos, 0); }
+    public function RegisterVariableString($ident, $name, $profile, $pos) { return $this->createVar($ident, $pos, 3); }
 }
 
 $fail = 0;
@@ -246,6 +290,22 @@ $r1 = $pc->writeMultiple(95, [1]);
 $r2 = $pc->writeMultiple(95, [1]);
 pcntl_waitpid($pid2, $st3);
 check('Dauerhafte Verbindung: zwei Schreibzugriffe über dieselbe (geteilte) Verbindung', $r1 === true && $r2 === true && pcntl_wexitstatus($st3) === 0);
+
+// Symcon-Review-Fund (SUITE.md 9m, Referenz InverterHub-Fix, 28.09.2026): Position nur bei
+// Neuanlage einer Variable setzen, nicht bei jedem ApplyChanges — sonst wirft ein „Übernehmen"
+// eine manuelle Umsortierung im Objektbaum wieder auf die feste Reihenfolge zurück.
+$rvHub = new ChargerHub(777);
+$rv = new ReflectionMethod($rvHub, 'RegisterVar');
+$fvbi = new ReflectionMethod($rvHub, 'FindVarByIdent');
+$def = ['connected', 'Verbindung', 'B', '', false, 'errors', ''];
+$rv->invoke($rvHub, $def, 5);
+$vid = $fvbi->invoke($rvHub, 'connected');
+check('RegisterVar: Neuanlage bekommt die übergebene Position', $vid && $GLOBALS['objs'][$vid]['ObjectPosition'] === 5);
+// Nutzer sortiert im Objektbaum manuell um ...
+$GLOBALS['objs'][$vid]['ObjectPosition'] = 42;
+// ... und ein zweites ApplyChanges (andere Positionsnummer, wie bei einer echten Neuberechnung) darf das nicht zurücksetzen.
+$rv->invoke($rvHub, $def, 9);
+check('RegisterVar: Position bei erneutem ApplyChanges NICHT zurückgesetzt (Symcon-Review-Fund 9m)', $GLOBALS['objs'][$vid]['ObjectPosition'] === 42);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

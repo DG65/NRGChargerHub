@@ -4459,7 +4459,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.107-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.108-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5166,6 +5166,7 @@ class ChargerHub extends IPSModule
             @IPS_DeleteVariable($vid);
             $vid = 0;
         }
+        $isNewVar = !$vid;
         // RegisterVariableX NUR bei echter Neuanlage aufrufen (!$vid), nicht
         // bei jedem ApplyChanges: der Ident-Registrierung dieser SDK-Methode
         // ist instanzweit, nicht nur auf direkte Kinder beschränkt — ein
@@ -5211,7 +5212,14 @@ class ChargerHub extends IPSModule
 
         $catID = $this->EnsureCategory($group);
         IPS_SetParent($vid, $catID);
-        IPS_SetPosition($vid, $pos);
+        // Position NUR bei Neuanlage setzen (Symcon-Review-Fund, Verbund-Konvention SUITE.md 9m,
+        // Referenz InverterHub-Fix): bei jedem ApplyChanges erneut gesetzt, würde eine manuelle
+        // Umsortierung im Objektbaum bei jedem „Übernehmen" wieder auf die feste Reihenfolge
+        // zurückgesetzt — das ist Symcons Vorgabe an Nutzer, das Modul soll die Reihenfolge nur
+        // vorschlagen, nicht dauerhaft erzwingen.
+        if ($isNewVar) {
+            IPS_SetPosition($vid, $pos);
+        }
         IPS_SetName($vid, $caption);
 
         // Profil grundsätzlich nachziehen (0.9.11-Fix: RegisterVariableX setzt
