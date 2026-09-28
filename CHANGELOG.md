@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Modul werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.108-beta.1] - 2026-09-28
+
+### Fixed
+- Variablen-Position wurde bei JEDEM „Übernehmen“ neu gesetzt, nicht nur bei Neuanlage einer
+  Variable (Symcon-Review-Fund, SUITE.md 9m, ausgelöst durch HeishaMons abgelehntes v1.33.0;
+  Referenz InverterHub-Fix). Eine manuelle Umsortierung der Variablen im Objektbaum wurde dadurch
+  bei jedem „Übernehmen“ wieder auf die feste Reihenfolge zurückgesetzt. Die Position wird jetzt
+  nur noch bei der Neuanlage einer Variable gesetzt.
+
 ## [0.9.107-beta.1] - 2026-09-24
 
 ### Added
