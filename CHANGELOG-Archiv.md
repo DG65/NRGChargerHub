@@ -1,0 +1,1397 @@
+# Changelog-Archiv
+
+Ältere Versionen von ChargerHub, ausgelagert aus CHANGELOG.md, damit der Store nur die letzten
+rund 20 Versionen anzeigt (Verbund-Konvention SUITE.md, „CHANGELOG.md im Store schlank halten“,
+Symcon-Review-Feedback 30.09.2026). Format unverändert wie zuvor in CHANGELOG.md.
+
+## [0.9.90-beta.1] - 2026-09-19
+
+### Changed
+- Gateway-Modus an das Feedback des Forum-Testers Mstaudi angeglichen (über MeterHub,
+  verbundweit gleiche Worte): Statuszeile ganz oben nennt im Gateway-Modus Gateway/Brücke
+  statt IP-Adresse (104: „… die Brücke zum ModBus Gateway eintragen …", 201: „keine
+  Antwort über die Brücke …"); Felder heißen „ModBus Gateway zum Gerät" und „NRG-Stack
+  Brücke zum ModBus Gateway", Knopf „Brücke anlegen und verbinden"; lange Erklärtexte im
+  Hub- und Brücken-Formular gekürzt (wurden abgeschnitten).
+
+## [0.9.89-beta.1] - 2026-09-19
+
+### Added
+- Halbautomatische Brücken-Einrichtung per Knopf (Dietmar, Vorlage MeterHub 0.30.0):
+  im Modus „Symbox-Gateway" natives ModBus-Gateway wählen und „… und Brücke anlegen und
+  verbinden" klicken — `CreateBridge($gatewayId)` prüft die Gateway-ModuleID, verwendet
+  eine vorhandene Brücke am selben Gateway wieder, sonst legt sie eine an, verbindet sie
+  und trägt sie ins offene Formular ein (danach „Übernehmen"). Nie in
+  `ApplyChanges()`/`GetConfigurationForm()`. Gateway-Auswahl, Knopf und Brückenauswahl
+  nur im Modus „Symbox-Gateway" sichtbar.
+- Prüfstand `.tools/test-bridge.php`: Binärwerte 0xFFFF/0x8001 bit-genau über die Brücke,
+  alle Fehlerarten, Hub-Seite, `module.json` beider Module.
+- Doku: Absatz im Doku-Panel, README-Abschnitt „Symbox-Gateway", News-Hinweis für alle mit
+  früheren Beta-Ständen (Instanz und Historie bleiben).
+
+### Changed
+- Bereitschaft im Gateway-Modus = Brücke gewählt (nicht mehr „immer bereit"); Verbindungs-
+  test nennt bei Fehlern den konkreten Grund mit Handlungshinweis (no_bridge/
+  not_connected/parent_inactive/no_response).
+
+## [0.9.88-beta.1] - 2026-09-19
+
+### Changed
+- Symbox-Gateway-Weg wandert in eine EIGENE Brücken-Instanz (neues Modul
+  `ChargerHubBridge`, Prefix `CHUBB`, „NRG-Stack ChargerHub Brücke (ModBus-Gateway)"),
+  Dietmars Entscheidung nach dem Fund, dass `parentRequirements`/`implemented` am
+  Hauptmodul bei JEDER Direkt-Instanz den orangen Balken „benötigt eine übergeordnete
+  Instanz" auslösen. `module.json` des Hauptmoduls ist dafür im selben Release wieder
+  leer. Einheitlicher Vertrag mit MeterHub/InverterHub: `Forward(string $json): string`
+  reicht den Request unverändert an das Gateway (kennt keine Function Codes, Antwort
+  base64 in `{"ok":true,"data":…}` bzw. `{"ok":false,"error":"not_connected"|
+  "parent_inactive"|"no_response"}`), `GetState()` liefert Verbindung/Gateway-Status und
+  die Unit-ID (DeviceID des Gateways). Eine Brücke bedient genau EINE Unit-ID.
+- ChargerHub: neue Property „Brücke" (nur im Modus „Symbox-Gateway"); Aufruf der
+  Brückenfunktion nur hinter `function_exists()`, ohne Brücke still „Gateway-Weg nicht
+  verfügbar" (Meldungsprotokoll, einmalig je Fehlerwechsel), Direkt-Weg unberührt.
+  Neuer News-Panel-Eintrag zur Umstellung. `CHUBB` in die Fremdpräfix-Liste von
+  `check-standalone.php` aufgenommen.
+
+## [0.9.87-beta.1] - 2026-09-19
+
+### Fixed
+- Symbox-Gateway-Modus: `ApplyChanges()` setzte Status 104 und stoppte beide Timer, weil
+  „Host" im Gateway-Modus ausgeblendet und damit leer ist — die Instanz hat nie gelesen,
+  egal ob ein Gateway verknüpft war (Fund MeterHub/Forum-Beta-Tester, 19.09.2026, bei uns
+  identisch). Bereitschaftsprüfung verlangt im Gateway-Modus keinen Host mehr.
+- Der `SendDataToParent`-Callback prüft vorab, ob überhaupt ein Parent verknüpft ist
+  (`ConnectionID`), und liefert sonst leer zurück, statt bei jedem Poll Symcons Warnung
+  „Keine übergeordnete Instanz ist konfiguriert" zu erzeugen. Statustext 201 nennt das
+  mögliche fehlende Gateway.
+
+## [0.9.86-beta.1] - 2026-09-19
+
+### Fixed
+- Ergänzung zu 0.9.85: `parentRequirements` allein reicht nicht — das native Modbus-
+  Gateway hat selbst ChildRequirements `{77B31ABB-18FA-4B91-BB63-E5B2AB5588F4}` und
+  akzeptiert nur Kinder, die diese Schnittstelle in `implemented` führen (live per
+  `IPS_GetModule` von MeterHub gelesen; Symcons Referenzmodul EM24-DIN und
+  WPModbusHubGateway haben beides). `module.json` führt jetzt beides. Offen bleibt die
+  separate Frage (Dietmar), ob der Gateway-Weg als Schwestermodul gebaut werden soll,
+  weil `parentRequirements` am Hauptmodul jede bestehende Direkt-Instanz betreffen könnte
+  (Anlege-Ablauf in der Konsole, unverifiziert).
+
+## [0.9.85-beta.1] - 2026-09-18
+
+### Fixed
+- Symbox-Gateway-Modus konnte in der Konsole gar nicht erst mit einem nativen
+  Modbus-Gateway verknüpft werden — Fund MeterHub (18.09.2026, live gegen echte
+  Hardware verifiziert): `module.json` fehlte die parentRequirements-GUID
+  `{E310B701-4AE7-458E-B618-EC13A1A6F6A8}` (dieselbe Splitter-Schnittstelle, die
+  bereits als DataID in `SendDataToParent()` genutzt wird). Ohne diesen Eintrag zeigt
+  Symcons Konsole am 🔌-Symbol der Instanzkonfiguration gar keine passende
+  Gateway-Instanz an, unabhängig davon, ob eine existiert. Rein deklarativer Fix,
+  keine Laufzeitänderung, keine Auswirkung auf bestehende „Direkt"-Instanzen. Damit ist
+  auch geklärt, wie eine Instanz manuell an ein natives Gateway angebunden wird: über
+  das 🔌-Symbol am Kopf der Instanzkonfiguration, keine Sonderfunktion nötig.
+
+## [0.9.84-beta.1] - 2026-09-18
+
+### Changed
+- Formular-UX für "Symbox-Gateway" korrigiert (Fund MeterHub, 18.09.2026): Host/Port/
+  Unit ID werden jetzt ausgeblendet, statt nur per Warntext auf ihre Wirkungslosigkeit
+  hinzuweisen — sie sahen sonst benutzbar aus, greifen im Symbox-Modus aber gar nicht
+  (die Unit-ID sitzt an der übergeordneten Gateway-Splitter-Instanz, Property
+  „DeviceID"). Eigener Hinweis dazu erscheint stattdessen nur im Symbox-Modus.
+
+## [0.9.83-beta.1] - 2026-09-18
+
+### Added
+- Lesezugriff über den Verbindungsweg „Symbox-Gateway" ist jetzt echt implementiert
+  (SUITE.md 9j) — Function 3/4 über `SendDataToParent`, gegen das offizielle
+  Symcon-Referenzmodul (github.com/symcon/SymconBC EM24-DIN) verifiziert und mit
+  MeterHub abgestimmt, die denselben Weg bereits live haben (0.29.8-beta.1). Parsing-
+  Logik mit einem Kurzsyntax-Harness gegen eine simulierte Antwort geprüft.
+  `CHUB_ModbusGatewayClient` bekommt dafür einen `SendDataToParent`-Callback vom
+  aufrufenden Modul übergeben, da die Client-Klasse selbst keine IPSModule-Instanz ist.
+
+### Changed
+- **Wichtige Architektur-Klarstellung** (live an echter Hardware von MeterHub bestätigt):
+  Die Unit-/Slave-ID steht NICHT im Anfrage-Buffer, sondern ist Property („DeviceID")
+  einer dazwischenliegenden nativen Gateway-Splitter-Instanz. Die eigene „Unit ID"-
+  Property greift im Symbox-Modus daher NICHT — die Instanz muss stattdessen im
+  Objektbaum unter die passende Splitter-Instanz gehängt werden. Formular-Hinweis
+  entsprechend präzisiert.
+
+### Known limitation
+- Schreibzugriffe (Ladefreigabe/Stromlimit) funktionieren über „Symbox-Gateway" weiterhin
+  NICHT — das Referenzmodul deckt nur Lesezugriffe ab, die „Data"-Kodierung für Function
+  16 ist nicht belegt. Bleibt Stub, bis MeterHub/InverterHub das anhand eines eigenen
+  Tests bestätigen.
+
+## [0.9.82-beta.1] - 2026-09-18
+
+### Added
+- Neuer Verbindungsweg „Symbox-Gateway" (SUITE.md 9j, verbundweite Abstimmung mit
+  InverterHub/MeterHub) als ZUSÄTZLICHE Option neben dem bestehenden direkten
+  Socket-Weg — für Nutzer mit eingebautem Symbox-RS485-Port, die Symcons natives
+  Modbus-Gateway-Modul (`SendDataToParent`/`ForwardData`) statt einer eigenen
+  TCP-Verbindung nutzen möchten. Neue Property „Verbindungsweg" (Direkt/
+  Symbox-Gateway), `GetModbusClient()` wählt danach die passende Client-Klasse.
+  **Bewusst nur als Fassade/Stub**: Das Payload-Schema des nativen Gateway-Moduls ist
+  nirgends öffentlich dokumentiert (unabhängig von MeterHub und dieser Sitzung
+  recherchiert, gleiches Ergebnis) — `CHUB_ModbusGatewayClient` liefert daher
+  kontrolliert null/false zurück und loggt einen klaren Hinweis, bis das Schema
+  geklärt ist (echte Symbox-Hardware zum Mitschneiden oder eine Symcon-
+  Entwickler-Antwort). Formular warnt entsprechend deutlich. Interface
+  (`readHolding`/`readInput`/`writeSingle`/`writeMultiple`) ist mit InverterHub und
+  MeterHub abgestimmt und identisch — kein bestehender Treiber musste geändert
+  werden. Modbus ASCII (ABL) bleibt unabhängig vom gewählten Verbindungsweg immer
+  beim direkten Socket-Weg, da Symcons natives Modul laut eigener Doku kein
+  ASCII-Framing kennt.
+
+## [0.9.81-beta.1] - 2026-09-16
+
+### Changed
+- Warnhinweise zu den beiden 0.9.80-Neuerungen direkt ins Formular ergänzt (Dietmars
+  Einwand: gehört nicht nur in die Forum-Antwort) — sowohl bei „Archivierung
+  deaktivieren" als auch im Doku-Panel zur Profil-Schutzlogik steht jetzt der Hinweis,
+  dass beides andere NRG-Stack-Module (MeterHub-Zählersuche, Dashboard-Verlaufsgrafiken,
+  EMS-Skalierungsannahmen) beeinträchtigen kann, wenn ChargerHub nicht eigenständig läuft.
+
+## [0.9.80-beta.1] - 2026-09-16
+
+### Added
+- Neue Option „Archivierung deaktivieren" (Forum-Wunsch sieckendieck/Mike, 16.09.2026):
+  Standardverhalten bleibt unverändert (Archivierung an, wie bei InverterHub/MeterHub) —
+  wer sie nicht möchte, kann sie jetzt gezielt für die ganze Instanz abschalten.
+  Nachträgliches Aktivieren schaltet auch schon aktiv archivierte Variablen wieder ab
+  (bisherige Historie bleibt im Archiv erhalten).
+
+### Fixed
+- Manuell in der Konsole geändertes Variablenprofil wurde bei jedem Übernehmen
+  stillschweigend wieder auf das Modul-Profil zurückgesetzt (0.9.11-Fix für Hersteller-/
+  Typwechsel war zu pauschal). Neuer Merker je Ident (`LastSetProfiles`) erkennt jetzt,
+  ob der Nutzer das Profil seit dem letzten Übernehmen selbst geändert hat, und lässt es
+  in dem Fall in Ruhe — außer ein echter Hersteller-/Typwechsel verlangt jetzt ein anderes
+  Profil als beim letzten Mal, dann hat die technische Notwendigkeit weiterhin Vorrang.
+  Mit einem Kurzsyntax-Harness gegen alle fünf relevanten Fallkombinationen geprüft.
+
+## [0.9.79-beta.1] - 2026-09-15
+
+### Added
+- DaheimLader: neue Steuerung „Automatische Phasenumschaltung" (Register 0x300A) —
+  Auftrag Dietmar über EMS nach einer Forum-Rückmeldung (sieckendieck/Mike, 15.09.2026):
+  manuelle Phasenumschaltung über ChargerHub zeigte keine Wirkung, obwohl derselbe
+  Befehl direkt per Modbus funktionierte. Register 0x300A ist laut Doku werkseitig
+  aktiviert und schaltet die Phasen selbstständig anhand der Ladeleistung um — Hypothese:
+  das überschreibt einen manuellen Befehl kurz danach wieder. Neuer Schalter erlaubt es,
+  diese Automatik gezielt abzuschalten, bevor man selbst manuell umschaltet. Anders als
+  die eigentliche Phasenumschaltung (Register 184/186/188) ist 0x300A laut Doku NICHT auf
+  die PRO-Serie beschränkt, daher im allgemeinen Steuerungs-Panel statt im
+  PRO-Phasenumschaltungs-Panel platziert.
+
+## [0.9.78-beta.1] - 2026-09-15
+
+### Added
+- Neuer Hersteller: **Fox ESS EV Charger** (Modelle A/L/C), aus einer weiteren Forum-Anfrage
+  entstanden (15.09.2026, strigi). Ganz normales binäres Modbus TCP (Standard-MBAP, FC
+  0x03/0x06/0x10), läuft über den bestehenden `CHUB_ModbusTcpClient`. Registeradressen aus
+  dem öffentlichen Hersteller-PDF „Fox ESS EV Charger Modbus TCP Protocol 1.6"
+  (12.08.2024): Ladestatus, Spannung/Strom je Phase, Leistung, Energie (gesamt +
+  aktuelle Sitzung), Systemfehler-Bitmaske, Geräteinfo (Modell/Seriennummer/Firmware),
+  Steuerung (Ladefreigabe, Stromlimit), optionale Phasenumschaltung (nur mit externer
+  Phasenumschalt-Box). Fund beim Umsetzen: Das PDF widerspricht sich selbst beim Register
+  „Current Phase Sequence" (Fließtext nennt UINT32, die in sich widerspruchsfreie
+  Registerliste weist ihm nur 1 Register zu) — der Registerliste gefolgt, nicht dem
+  vermutlich fehlerhaften Fließtext. Register-Offset-Berechnung mit einem Fake-Client
+  gegen ein 16A/11kW/230V-Szenario durchgetestet, alle Werte korrekt. Ungetestet an
+  echter Hardware.
+- ChargerHubDiscovery (Netzwerksuche) erkennt jetzt auch Fox ESS (EVC Status + Max
+  Supported Current plausibel).
+
+## [0.9.77-beta.1] - 2026-09-15
+
+### Added
+- ChargerHubDiscovery (Netzwerksuche) erkennt jetzt auch **DaheimLader** und **ABL**
+  (Nutzer-Nachfrage nach den beiden neuen Treibern). DaheimLader läuft über die
+  bestehende binäre Modbus-TCP-Prüfung (Ladezustand + Max. Strom EVSE plausibel).
+  ABL braucht eine eigene, unabhängige Modbus-ASCII-Hilfsfunktion (`asciiReadHolding()`,
+  bewusst keine gemeinsame Klasse mit ChargerHub — siehe Dateikopf) mit einem stärkeren
+  Erkennungskriterium als bei den binären Herstellern: beide geprüften ABL-Register
+  echoen laut PDF ihre eigene Nummer im High-Byte zurück, ein exakter Bit-Treffer statt
+  nur eines Wertebereichs.
+
+## [0.9.76-beta.1] - 2026-09-15
+
+### Fixed
+- DaheimLader-Phasenumschaltung (`ctl_phase_mode`) hatte fälschlich die Gruppen-Kennung
+  `'phaseswitch'` statt `'control'` — dadurch band weder `RegisterVar()` noch
+  `SetControlActions()` eine Aktion an den Ident, der Schalter fehlte komplett in
+  Konsole/WebFront (per Skript wäre der Ident zwar schreibbar gewesen, aber ohne
+  Bedienelement). Fund aus dem Forum (sieckendieck/Mike, echte Touch-PRO-Hardware,
+  15.09.2026: „Phasenwechsel funktioniert nicht") — die Wallbox selbst war nicht die
+  Ursache. `phase_status` (reine Anzeige) läuft jetzt unter der bestehenden Kategorie
+  „Gerät" statt einer neuen, nie ins Deutsche übersetzten Kategorie „Phaseswitch".
+
+## [0.9.75-beta.1] - 2026-09-15
+
+### Added
+- ABL bekommt jetzt einen geschätzten `energy_total` — Auftrag Dietmar direkt nach dem
+  ABL-Treiber, da das API-Subset kein Energiezählerregister kennt. Neue generische
+  Instanzfunktion `IntegrateEnergyWh()` (in ChargerHub, nicht nur AblDriver, damit künftige
+  Treiber ohne Zählerregister sie mitnutzen können): integriert die vom Treiber gelieferte
+  Momentanleistung über die seit dem letzten Poll vergangene Zeit auf, gedeckelt auf 1 h pro
+  Schritt (verhindert einen Sprung nach einer längeren Pause/einem Neustart). Bleibt
+  ausdrücklich eine Schätzung — sowohl die zugrunde liegende Leistung als auch die
+  Integration selbst sind keine Gerätemessung, entsprechend in Variable und Formular
+  gekennzeichnet.
+
+## [0.9.74-beta.1] - 2026-09-15
+
+### Added
+- Neuer Hersteller: **DaheimLader** (Smart V1/V2, Touch, Smart PRO, Touch PRO, Business PRO),
+  aus einer weiteren Forum-Anfrage entstanden (15.09.2026, sieckendieck). Ganz normales
+  binäres Modbus TCP (Standard-MBAP, FC 0x03/0x10) — läuft über den bestehenden
+  `CHUB_ModbusTcpClient`, kein neuer Transport nötig. Registeradressen aus dem öffentlichen
+  Hersteller-PDF „DaheimLader Modbus/TCP-Spezifikation" (28.07.2026): Ladestatus,
+  Kabelstatus, Fehlercode, Strom/Leistung/Spannung je Phase, Zählerstand, Sitzungsenergie,
+  Ladezeit, Steuerung (Ladefreigabe über Start/Stopp-Befehl, Stromlimit). Phasenumschaltung
+  und RFID-Kartenauslesung sind laut Doku PRO-exklusiv, entsprechend als eigene optionale
+  Gruppe abgebildet. Ungetestet an echter Hardware, aber ein deutlich saubereres/
+  vollständigeres Protokoll als bei den anderen aus Doku abgeleiteten Treibern — mit
+  synthetischen Registerwerten gegen die Offset-Berechnung durchgetestet.
+
+## [0.9.73-beta.1] - 2026-09-15
+
+### Added
+- Neuer Hersteller: **ABL** (eMH1/eMH2/eMH3), aus einer konkreten Forum-Anfrage entstanden
+  (15.09.2026, tissenm/Michael). Anders als alle bisherigen Treiber spricht ABL kein binäres
+  Modbus TCP, sondern **Modbus ASCII** über einen reinen RS485-zu-Ethernet-Wandler — dafür ein
+  komplett neuer Transport-Client `CHUB_ModbusAsciiClient` (Hex-Text-Framing mit LRC-Prüfsumme,
+  gegen die offiziellen PDF-Beispiele des Herstellers exakt nachgerechnet). Ladefreigabe läuft
+  über das dokumentierte Icmax-Register (100 % Duty-Cycle = „kein Strom erlaubt" laut
+  ABL-Doku) statt über das riskantere, nicht implementierte Zustandsmaschinen-Register
+  0x0005 — ein falscher Zustandswechsel ohne Testhardware wäre ein echtes Sicherheitsrisiko,
+  nicht nur ein falscher Messwert. Kein Energiezähler in diesem API-Auszug; „Ladeleistung"
+  ist daher eine Schätzung aus den drei Phasenströmen (230 V angenommen), keine echte Messung.
+  Ungetestet an echter Hardware — Zustandswerte stammen aus einem community-erstellten
+  Symcon-Template, nicht aus dem Hersteller-PDF selbst.
+
+## [0.9.72-beta.1] - 2026-09-15
+
+### Changed
+- Echter Symcon-Forum-Thread ist jetzt veröffentlicht — Forum-Hinweis in ChargerHub UND
+  ChargerHubDiscovery verweist ab sofort direkt dorthin statt auf den bisherigen
+  GitHub-Platzhalter.
+
+## [0.9.71-beta.1] - 2026-09-14
+
+### Added
+- Panel „🧡 Über dieses Modul" (Lizenz-/Spenden-Hinweis, SUITE.md-Wortlaut, Dietmars Auftrag
+  01.09.2026) fehlte bisher in ChargerHub UND ChargerHubDiscovery komplett — EMS-Nachprüfung.
+  Ganz unten im Formular, immer sichtbar, nicht wegklickbar.
+- Forum-Hinweis in ChargerHubDiscovery nachgezogen — fehlte dort bisher ganz.
+
+### Changed
+- ChargerHubs Forum-Hinweis auf das aktuelle Verbund-Muster umgestellt (MeterHub-Referenz):
+  eigenes dismissibles ExpansionPanel „💬 Feedback im Symcon-Forum" statt des alten RowLayout
+  mit reinem GitHub-Verweis. Eigener Forum-Thread ist noch nicht veröffentlicht — Panel
+  verweist bis dahin weiter auf GitHub, mit explizitem Platzhalter-Hinweis.
+
+## [0.9.70-beta.1] - 2026-09-14
+
+### Changed
+- Doku-Panel um einen Absatz zu `CHUB_SetActive()`/`CHUB_ClearForceLock()` ergänzt (Auftrag
+  Dietmar über EMS, Vollständigkeitsprüfung der Hilfe-Texte vor dem Store-Launch) — beide
+  Funktionen waren bisher nur in einem Feldhinweis erwähnt bzw. gar nicht im Formular
+  auffindbar, obwohl `ClearForceLock()` genau die Funktion ist, die beim bekannten
+  go-e-FORCE_STATE-Hänger weiterhilft.
+- Forum-Ankündigungsentwurf (`.forum/ankuendigung.md`) aktualisiert: die Regler-Kennzeichnung
+  war dort noch als einfache Checkbox beschrieben, ist inzwischen aber das mehrwertige
+  „Wer regelt?"-Auswahlfeld; `duplicateOf`/`CHUB_SetActive()`/`CHUB_ClearForceLock()`,
+  Vorführmodus und RFID-Kartenzähler fehlten komplett. Veralteten Verweis auf
+  `github.com/DG65/NRGEMS/blob/main/SUITE.md` entfernt (dieser Pfad existiert seit der
+  SUITE.md-Bereinigung vom 31.08.2026 nicht mehr öffentlich).
+
+## [0.9.69-beta.1] - 2026-09-14
+
+### Added
+- Panel „👋 Wozu dieses Modul?" jetzt auch in ChargerHubDiscovery (EMS-Nachprüfung: beim
+  0.9.68-Rollout am Hauptmodul übersehen — gleicher Fehlertyp wie bei Tessie/
+  TessieConfigurator, Search-/Discovery-Zweitmodule werden leicht vergessen). Gleiches
+  Muster wie im Hauptmodul, hier vereinfacht (nur ein dismissibler Hinweis statt mehrerer,
+  daher `PropagateDismiss()`/`AdoptDismissState()` ohne `$what`/`$value`-Umschalten).
+
+## [0.9.68-beta.1] - 2026-09-14
+
+### Added
+- Panel „👋 Wozu dieses Modul?" ganz oben im Formular, noch vor dem News-Banner — fehlte bei
+  der Store-Konventionsprüfung (Auftrag Dietmar über EMS, SUITE.md Formular-Konvention
+  Punkt 0, Referenzimplementierung MeterHub). Aufgeklappt, einmalig ausblendbar, erklärt
+  WOFÜR/WARUM (nicht WIE) inkl. Verweis auf ChargerHubDiscovery für die Ersteinrichtung.
+
+### Changed
+- Das instanzübergreifende Ausblenden aus 0.9.67 auf das MeterHub-Referenzmuster
+  umgestellt: statt gegenseitiger Aufrufe der vollen `AckNews()`/`DismissReviewHint()` mit
+  Prozessmerker gegen Ping-Pong gibt es jetzt einen reinen Übernahme-Schritt
+  `AdoptDismissState()`, der selbst nie weiterpropagiert — einfacher und ganz ohne
+  Prozesszustand. Die Übernahme durch neu hinzukommende Instanzen läuft jetzt bei jedem
+  `ApplyChanges()` (`AdoptDismissFromSibling()`, günstiger Früh-Ausstieg für längst
+  abgeglichene Instanzen) statt nur einmalig bei `Create()`.
+
+## [0.9.67-beta.1] - 2026-09-14
+
+### Added
+- Ausblenden von „Was ist neu?"/„Wozu dieses Modul" (Review-Hinweis) wirkt jetzt über alle
+  ChargerHub-Instanzen desselben Systems hinweg (Auftrag Dietmar über EMS, Verbund-Muster
+  „Ausblenden über mehrere Instanzen desselben Moduls teilen", SUITE.md): `AckNews()`/
+  `DismissReviewHint()` reichen den Stand an alle Geschwister-Instanzen weiter (direkter
+  Aufruf der öffentlichen Funktion, kein `RequestAction`-Umweg nötig, da keine `SetValue`-
+  Aktion dahintersteckt; ein statischer Prozessmerker verhindert Ping-Pong zwischen den
+  Instanzen). Neu angelegte Instanzen übernehmen zusätzlich den Stand einer bereits
+  vorhandenen Geschwister-Instanz beim Anlegen (neue interne Funktion `GetDismissState()`).
+  Wer bei WB 1 schon weggeklickt hat, sieht den Hinweis bei WB 2 nicht erneut.
+
+## [0.9.66-beta.1] - 2026-09-14
+
+### Changed
+- `Manufacturer` hat keinen vorbelegten Hersteller mehr (Fund der InverterHub-Sitzung im
+  Rahmen der Store-Review-Selbstprüfung, Punkt 12 „Neuinstallations-Simulation"): der
+  bisherige Default `keba` war ein reiner Listen-Platzhalter, keine bewusste Wahl — wer
+  nur den Host einträgt und den Hersteller-Select übersieht, hätte scheinbar eine
+  funktionierende Verbindung (Modbus TCP antwortet meist geräteunabhängig), aber
+  Register/Werte des falschen Fabrikats gelesen bzw. geschrieben. Neuer Default `''` mit
+  Options-Eintrag „— bitte wählen —"; die Instanz bleibt bis zur expliziten Auswahl in
+  Status 104 (Text jetzt „Bitte Wallbox-Hersteller wählen und IP-Adresse oder Hostname
+  eintragen.").
+
+## [0.9.65-beta.1] - 2026-09-13
+
+### Added
+- Sicherheitsnetz zu `duplicateOf` (EMS-Auftrag, Regel 9f): Da `duplicateOf` bewusst nicht
+  übers Schreibrecht entscheidet (siehe 0.9.64), kann eine als Dublette markierte Instanz
+  gleichzeitig aktiver Regler sein — eine versehentliche Markierung könnte aber unbemerkt zu
+  zwei gleichzeitigen Reglern an derselben Wallbox führen. Neue Prüfung `CheckDuplicateManagedByConflict()`,
+  läuft bei jedem Poll: ist `duplicateOf` gesetzt, wird der `managedBy`-Wert der Zielinstanz
+  abgefragt (`CHUB_GetFunctions`/`OHUB_GetFunctions`, Letzteres `function_exists`-abgesichert).
+  Haben beide Seiten `managedBy` `none`/`ems`, zeigt die Instanz Instanzstatus 206 plus eine
+  neue Variable „Dubletten-Warnung" („⚠️ Zwei Regler an einer Wallbox — bei einer Anbindung
+  „Wer regelt?" auf „Anderer" stellen."). Rein sichtbar, keine automatische Sperre — die
+  Entscheidung bleibt beim Nutzer.
+
+## [0.9.64-beta.1] - 2026-09-13
+
+### Fixed
+- **Korrektur zu `duplicateOf` (0.9.63):** Die Schreibsperre bei gesetztem Dubletten-Marker
+  wurde zurückgebaut — EMS-Korrektur nach einem Einwand von OCPPHub: Zählen und Steuern sind
+  zwei verschiedene Fragen. `duplicateOf` betrifft NUR die Zählung (Summen/Sitzungen/
+  Leistung); wer ans Gerät schreiben darf, entscheidet weiterhin ausschließlich `managedBy`,
+  unverändert wie vor 0.9.63. Grund: bei Dietmar zählt WB1 künftig über OCPPHub (dort als
+  Dublette markiert), geregelt wird sie aber weiterhin von ChargerHub (`managedBy` hier
+  „none") — mit der ursprünglichen Fassung hätte `duplicateOf` WB1 ihren einzigen Regler
+  genommen. `RequestAction()`/`SurplusChargeControl()` weisen Schreibversuche bei gesetztem
+  `duplicateOf` also NICHT mehr zurück, die Aktionsbindung in Konsole/WebFront bleibt davon
+  unberührt (nur noch vom Vorführmodus abhängig). Das Vertragsfeld selbst, die Property und
+  das Formular-Auswahlfeld bleiben unverändert bestehen — nur die Bedeutung ist jetzt korrekt
+  auf „zählt nicht" statt „schreibt nicht" begrenzt.
+
+## [0.9.63-beta.1] - 2026-09-13
+
+### Added
+- Weicher Dubletten-Marker `duplicateOf` in `CHUB_GetFunctions()` (`contractVersion`
+  1.4→1.5, additiv) — Ergänzung zum harten `CHUB_SetActive()` aus 0.9.62 (EMS/MeterHub-
+  Abstimmung, 13.09.2026, auf Dietmars Entscheidung: beide Wege kommen). Neue Property
+  `DuplicateOfKey`, per Auswahlfeld im Formular gesetzt (Liste aus anderen
+  ChargerHub-Instanzen und OCPPHub-Ladepunkten) — ausschließlich Nutzerentscheidung, nie
+  automatisch geraten. Gesetzt heißt: diese Instanz schreibt nicht mehr — sowohl
+  `RequestAction()` (externe Schreibversuche, z. B. vom EMS) als auch
+  `SurplusChargeControl()` (unsere eigene Regelung) weisen sich selbst zurück, dieselbe
+  FORCE_STATE-Hardlock-Lehre wie am 01.09.2026. Messen bleibt für die Fehlersuche aktiv.
+  Aktionsbindung in Konsole/WebFront wird wie beim Vorführmodus deaktiviert (Ist-Werte
+  bleiben sichtbar, keine Schalter/Schieberegler mehr). Konsumenten (EMS, Dashboard,
+  MeterHub) überspringen markierte Einträge beim Messen/Summieren/Schalten.
+
+## [0.9.62-beta.1] - 2026-09-13
+
+### Added
+- `CHUB_GetFunctions()`: neue Felder `deviceSerial`, `deviceHost`, `manufacturer`
+  (`contractVersion` 1.3→1.4, additiv). Anlass: MeterHub-Anfrage — bei Dietmar hängt jede
+  Wallbox doppelt (ChargerHub UND OCPPHub am selben physischen Gerät), MeterHubVirtual
+  soll das erkennen und den Nutzer fragen, welcher Kanal aktiv bleibt. `deviceHost`
+  (IP/Hostname) ist bei jedem Hersteller vorhanden und damit der zuverlässigere
+  Abgleichspunkt als `deviceSerial` (fehlt bei Alfen/Heidelberg).
+- Neue öffentliche Methode `CHUB_SetActive($InstanceID, bool): string` — deaktiviert
+  (oder reaktiviert) Messung UND Steuerung einer Instanz vollständig, mit sichtbarer
+  Rückmeldung, zum gezielten Abschalten der überflüssigen Anbindung nach der
+  Dubletten-Erkennung. Beim Deaktivieren zusätzlich: eine zuvor gesetzte
+  go-e-Zwangs-Aus-Sperre wird automatisch freigegeben (sonst der WB2-Vorfall vom
+  01.09.2026 erneut), und steht „Wer regelt?" noch auf dem Default „Niemand", wird es
+  automatisch auf „Anderer" gestellt (ein bewusst gesetzter anderer Wert bleibt
+  unangetastet) — schließt damit auch die Lücke, die beim separat gefundenen, zeitweise
+  unbemerkten WB1-Konflikt sichtbar wurde. Eine laufende Ladung wird nicht unterbrochen,
+  nur die eigene Beobachtung/Steuerung endet.
+
+## [0.9.61-beta.1] - 2026-09-13
+
+### Fixed
+- Store-Review-Checkliste durchgegangen (Punkte 9b/9c/9d, siehe SUITE.md, auf Anstoß der
+  InverterHub-Sitzung im Rahmen der Store-Vorbereitung). 9b (deutsches Datumsformat, echte
+  Umlaute): bereits konform, keine Änderung nötig. 9d (keine "vorbereitet, aber inaktiv"
+  geparkten Instanzen mit Status > 200): bereits konform, wir nutzen nur 102/104. 9c
+  (`ReadAttributeXXX()` ungecastet an `json_decode()` — liefert `false` statt String,
+  solange die Instanz lädt/Kernel nicht `KR_READY` ist, dreimal unabhängig bei
+  Tibber/OCPPHub/Dashboard aufgetreten): vier Stellen in ChargerHubDiscovery gefunden
+  (`json_decode($this->ReadAttributeString(...))` für `ResultsJSON`/`PreparedTargets`),
+  jetzt mit `(string)`-Cast abgesichert.
+
+## [0.9.60-beta.1] - 2026-09-12
+
+### Added
+- `CHUB_GetFunctions()`: neues Feld `lastSeenAt` (Unix-Timestamp des letzten erfolgreichen
+  Lesezyklus, 0 = noch nie), `contractVersion` 1.2→1.3. Anlass: EMS-Vorfall vom
+  12.09.2026 — Grid Rewards bestellte den Stromeinkauf anhand von `powerID`, das bei
+  einer deaktivierten/hängenden Instanz unbemerkt den letzten bekannten Wert (0 W)
+  weiterreichte, statt als veraltet erkennbar zu sein. Symcons eigenes
+  `VariableUpdated` half nicht, da es sich bei jedem Poll aktualisiert, auch wenn der
+  WERT unverändert bleibt (`VariableChanged` bleibt dagegen stehen). Gesetzt zentral in
+  `SetVarBool()` bei `'connected'=true`, treiberunabhängig. Additiv: fehlt das Feld
+  (Vertrag < 1.3), unverändertes Verhalten.
+- README-Vertragstabelle nachgezogen (war noch auf 1.1 stehengeblieben, `vehicleNameID`
+  aus 1.2 fehlte ganz).
+
+## [0.9.59-beta.1] - 2026-09-12
+
+### Fixed
+- `CHUB_ModbusTcpClient::modbusRead()` prüfte die Transaktions-ID (MBAP-Header) der Antwort
+  nie gegen die zuletzt gestellte Anfrage — Fund der InverterHub-Sitzung an ihrer eigenen,
+  unabhängigen Modbus-Basisklasse: im Batch-Modus (eine wiederverwendete Verbindung für
+  mehrere Reads pro Zyklus) konnte die verspätet eintreffende Antwort eines bereits als
+  Timeout gewerteten Reads dem nächsten Read untergeschoben werden — zwei fremde
+  Registerhälften könnten so als High-/Low-Wort eines 32-Bit-Werts zusammengesetzt werden
+  (bei InverterHub real beobachtet: 261,5 MW PV-Leistung nachts). Bei uns ist der
+  Batch-Modus (`beginBatch()`/`endBatch()`) aktuell nirgends verdrahtet — jeder Read bekam
+  bisher ohnehin eine frische Verbindung, das Loch war also bislang inaktiv, nicht aber
+  ausgeschlossen. TID wird jetzt geprüft, ein Nichttreffer wird verworfen statt verwertet —
+  schützt für den Fall, dass der Batch-Modus künftig genutzt wird, kostet im Normalfall
+  nichts.
+
+## [0.9.58-beta.1] - 2026-09-12
+
+### Changed
+- Anzeigename im Modulbaum von „NRG-Stack ChargerHub for IP-Symcon" auf „NRG-Stack
+  ChargerHub" gekürzt (`library.json`, rein kosmetisch — betrifft nur die Modulverwaltung,
+  nicht `module.json`/den PHP-Klassennamen).
+
+## [0.9.57-beta.1] - 2026-09-02
+
+### Added
+- Neuer **Vorführmodus** (`DemoMode`-Property): Anlass war eine Anfrage der Dashboard-
+  Sitzung wegen einer geplanten öffentlichen Modulvorstellungs-Instanz mit eigenem
+  WebFront-Login — ChargerHubs Steuervariablen (`ctl_enable`, `ctl_curr_limit`, …) sind
+  live über `EnableAction()` gebunden, ein Besucher hätte damit unkontrolliert echte
+  Wallboxen schalten können. Zwei Verteidigungslinien: (1) `SetControlActions()`
+  deaktiviert bei aktivem Vorführmodus die Aktionsbindung für ALLE Steuer-Idents (Basis-
+  UND optionale Gruppen — Basis-Idents banden ihre Aktion bisher nur einmalig bei
+  Neuanlage, ein späteres Umschalten von `DemoMode` hätte sie sonst nie erreicht), (2)
+  `RequestAction()` weist Steuerbefehle zusätzlich serverseitig zurück, falls die
+  Aktionsbindung doch umgangen wird (Skript, fremdes Modul, API). Messwerte bleiben im
+  Vorführmodus normal sichtbar, nur die Steuerung ist deaktiviert.
+
+## [0.9.56-beta.1] - 2026-09-01
+
+### Added
+- Neue öffentliche Methode `CHUB_ClearForceLock($InstanceID)`: setzt beim go-eCharger
+  `FORCE_STATE` aktiv auf 0 (Neutral) zurück — unabhängig von `ManagedBy`/`Active`. Für
+  externe Regler (z. B. OCPPHub), die dieselbe Wallbox parallel per anderem Protokoll
+  ansteuern und wiederholt an einem stillen ChargerHub-Hard-Lock scheitern (siehe
+  0.9.55, Root Cause des WB2-Vorfalls). Vorschlag/Kooperationsanfrage der OCPPHub-Sitzung
+  (01.09.2026): dort als automatischer Ausweichweg vorgesehen, sobald deren
+  RemoteStartTransaction wiederholt abgelehnt wird UND eine ChargerHub-Instanz für
+  dieselbe IP existiert (Cross-Hub-IP-Abgleich läuft bei OCPPHub bereits). Bei jedem
+  anderen Hersteller ein wirkungsloses No-Op (kein FORCE_STATE-Äquivalent bekannt),
+  bewusst kein Fehler. `ReleaseForceLockOnHandoff()` (0.9.55) nutzt jetzt dieselbe
+  Methode intern, statt den Schreibzugriff zu duplizieren.
+
+## [0.9.55-beta.1] - 2026-09-01
+
+### Fixed
+- **Live-Vorfall** (gemeldet von der OCPPHub-Sitzung, 31.08./01.09.2026): WB2 war
+  gleichzeitig über ChargerHub (Modbus) und OCPPHub (OCPP) angebunden. OCPP-seitig sah
+  alles korrekt aus (Authorize/RemoteStart akzeptiert), die Wallbox blieb aber
+  stundenlang blockiert — selbst über die go-e-App ließ sich nichts starten. Ursache:
+  unser `ctl_enable=false` schreibt beim go-eCharger `FORCE_STATE=1` („Aus, erzwungen")
+  statt `0` („Neutral, Gerät/App/Backend entscheidet"). `FORCE_STATE=1` ist laut
+  go-e-Firmware ein GERÄTESEITIGER Hard-Lock mit Vorrang vor jedem anderen Kanal (App,
+  OCPP-Backend, alles) — ein Wechsel von „Wer regelt?" auf einen anderen Wert gab diese
+  Sperre bisher nicht frei, der neue Regler kannte/schrieb das FORCE_STATE-Register ja
+  gar nicht.
+- Neue `ReleaseForceLockOnHandoff()`: erkennt den Übergang „Niemand" → ein anderer Wert
+  bei „Wer regelt diesen Ladepunkt?" und schreibt beim go-eCharger automatisch
+  `FORCE_STATE=0` zurück, falls die Ladefreigabe gerade auf „aus" stand — die
+  Kontrollübergabe hinterlässt dadurch keine stille Blockade mehr für den neuen Regler.
+- Zwei-Regler-Warnung (Formular + README) erweitert: nennt jetzt explizit OCPPHub/andere
+  OCPP-Backends als gleichwertig gefährliche Kombination (nicht nur go-e Controller/EMS)
+  und erklärt den FORCE_STATE-Mechanismus, damit das nicht erneut unbemerkt auftritt.
+
+## [0.9.54-beta.1] - 2026-08-31
+
+### Fixed
+- `Update()` (FastTimer-Callback) warf beim Systemstart vereinzelt „InstanceInterface is
+  not available" / „InstanceManager: Kann Schnittstellen-Instanz nicht erstellen" (Fund
+  der OCPPHub-Sitzung beim Systemlog-Review, zeitgleich bei MeterHub/MigrationsHub
+  beobachtet). Ursache: reines Kernel-Boot-Timing — der Timer feuert bereits, bevor der
+  Kernel alle Instanzen fertig angebunden hat, jeder `ReadPropertyX()`-Aufruf in diesem
+  kurzen Fenster wirft die Warnung. Neue Wache `IPS_GetKernelRunlevel() !== KR_READY` als
+  allererste Zeile in `Update()`, vor jedem Property-Zugriff — der Timer feuert kurz
+  danach ohnehin erneut, sobald der Kernel bereit ist.
+
+## [0.9.53-beta.1] - 2026-08-29
+
+### Fixed
+- Archivierung funktionierte auf keinem System: `SetArchive()` suchte das Archive-Control-Modul
+  unter einer falschen GUID ({018EF6B5-…} statt der korrekten {43192F0B-135B-4CE7-A0A7-1475603F3060}),
+  fand daher nie eine Instanz und brach kommentarlos ab — es wurde trotz gesetzter Archiv-Flags
+  KEINE einzige Variable archiviert (von Dietmar im Dashboard bemerkt: „bei den Wallboxen liegen
+  keine Archivdaten vor"). Zusätzlich prüft `SetArchive()` jetzt per `AC_GetLoggingStatus`, ob
+  die Variable schon archiviert wird, bevor es das teure `IPS_ApplyChanges` am Archiv auslöst.
+
+### Changed
+- Die regelungsrelevanten Steuer-Datenpunkte `ctl_enable`, `ctl_curr_limit`, `ctl_phase_mode`
+  und `ctl_energy_limit` werden jetzt ebenfalls archiviert (alle Treiber) — für Wartung und
+  Fehlersuche (z. B. Nachvollziehen der Überschussregelung oder des go-e-Energie-Limit-Rücksprungs)
+  muss sichtbar sein, WANN sich Freigabe/Limit/Phasenzahl geändert haben. Sie ändern sich nur bei
+  echten Schaltvorgängen und erzeugen daher kaum Archivlast. Weiterhin bewusst NICHT archiviert:
+  `dev_serial`/`dev_firmware` (statisch), `ctl_led`/`ctl_access`/`ctl_cable_lock` (kosmetisch/selten)
+  und `surplus_status` (ändert den Text bei jedem Poll — würde das Archiv fluten).
+
+## [0.9.52-beta.1] - 2026-08-28
+
+### Fixed
+- Die Variable „Fahrzeug verbunden" (`vehicle_plugged`) nutzte bisher das
+  Standardprofil `~Switch` (Assoziationen „An"/„Aus"). Ein generischer
+  Downstream-Renderer (NRGDashboardTile, Energiefluss-Kachel) zeigt
+  Variablenname + formatierten Wert automatisch zusammen an — das ergab
+  „Fahrzeug verbunden … An", grammatikalisch unpassend für einen
+  Verbindungsstatus. Neues eigenes Profil `CHB.Connected` mit „Ja"/„Nein"
+  statt „An"/„Aus". Der Ident `vehicle_plugged` selbst bleibt unverändert
+  (Vertrag/API, siehe CLAUDE.md Punkt 4) — nur das angezeigte Profil ändert
+  sich, bestehende Verknüpfungen/Skripte sind nicht betroffen.
+
+## [0.9.51-beta.1] - 2026-08-27
+
+### Added
+- Die Beobachtungszeit vorm Phasenwechsel während laufender Ladung ist jetzt variabel
+  (Dietmar: „Vielleicht kannst Du auch die 'Zuschaltdauer' variabel gestalten, je nachdem
+  ob es einen Speicher gibt, nach Speichergröße und dem SOC des Speichers?"). Neue
+  Property „Speicherkapazität (kWh)" (`BatteryCapacityKWh`, 0 = kein Speicher/unbekannt) —
+  der InverterHub-Contract liefert SOC, aber keine kWh-Kapazität, daher manuell hinterlegbar.
+  `GetStorageHeadroomKWh()` errechnet daraus die freie Pufferkapazität (Kapazität ×
+  (100 % − SOC)); je mehr davon übrig ist, desto länger darf beobachtet werden (+1 Poll je
+  angefangene 5 kWh, gedeckelt bei 10 Polls) — ein Wechsel kostet dann effektiv nichts, der
+  Überschuss lädt in der Zwischenzeit einfach den Speicher weiter. Ohne Speicher/Kapazität
+  bleibt es bei der bisherigen festen Grund-Wartezeit (3 Polls) — die Anti-Pendel-Untergrenze
+  wird nie unterschritten.
+
+## [0.9.50-beta.1] - 2026-08-27
+
+### Fixed
+- Überschussladen hat sich live selbst zum Pendeln gebracht (Dietmar: „Im Moment schaltest
+  Du hin und her, vermutlich auch deshalb weil Du bei der Überschussberechnung Dich selbst
+  vergisst"). Ursache: die eigene aktuelle Ladeleistung steckt schon im Netzzähler-Wert
+  drin (zieht den gemessenen Überschuss künstlich runter) und wurde nirgends
+  zurückaddiert — jede Erhöhung des Ladestroms ließ den nächsten Poll sofort "weniger
+  Überschuss" sehen und wieder drosseln, klassische Selbstregelschwingung. Der
+  treiberübergreifende Ist-Leistungs-Ident `power` wird jetzt zum Überschuss
+  zurückaddiert, bevor irgendetwas berechnet wird. Status zeigt bei laufender Ladung
+  jetzt zusätzlich „eigene Ladung X W" in der Aufschlüsselung.
+
+### Added
+- Phasenumschaltung während laufender Ladung braucht jetzt zusätzlich zur
+  Hysterese (+2 A) einen Beobachtungszähler: `PHASE_SWITCH_STABLE_POLLS` (3)
+  aufeinanderfolgende Update()-Polls mit derselben Umschalt-Tendenz, bevor tatsächlich
+  geschaltet wird — verhindert, dass eine einzelne kurze Schwankung schon einen
+  Relais-Wechsel auslöst.
+
+## [0.9.49-beta.1] - 2026-08-27
+
+### Changed
+- Überschussladen schaltet die Phasenzahl jetzt auch WÄHREND einer laufenden Ladung
+  selbstständig um, nicht mehr nur beim Start (Dietmar: „Wenn er den ganzen Tag lädt, dann
+  soll er zwangsläufig in den 3-phasigen Betrieb gehen und dann Richtung Abend muss er auch
+  selbstständig wieder in den 1-Phasen Betrieb gehen um die letzten Sonnenstrahlen ausnutzen
+  zu können."). Hysterese von +2 A beim Hochschalten verhindert Pendeln direkt an der
+  Schaltschwelle — ein Wechsel bedeutet einen kurzen Relais-Schaltvorgang. Treiberunabhängig:
+  greift für jede Wallbox mit `ctl_phase_mode`-Ident, nicht nur go-e (aktuell einziger
+  Treiber mit dieser Fähigkeit, aber die Logik ist generisch).
+
+## [0.9.48-beta.1] - 2026-08-27
+
+### Fixed
+- Energie-Limit-Bug erneut aufgetreten (27.08.2026): das go-e-Register stand wieder auf
+  echtem 0 Wh und blockierte das Laden komplett (go-e-App: „Dein Limit von 0 kWh wurde
+  erreicht"), obwohl unser eigener Schreibpfad das nicht ausgelöst hatte — unsere Oberfläche
+  lässt eine echte 0 als Limit gar nicht zu (0/negativ bedeutet bei uns immer
+  "deaktivieren" → schreibt Inf). Der go-e fällt also selbstständig auf sein Werks-Default
+  zurück (Neustart o. ä.). `Update()` erkennt jetzt ein gelesenes echtes 0 Wh automatisch als
+  Geräte-Rücksprung (nie gewollter Nutzerwert) und schreibt sofort wieder Inf zurück, statt
+  nur die eigene Anzeige zu korrigieren.
+
+### Added
+- Überschussladen startet jetzt bevorzugt 1-phasig, wenn der Überschuss für einen 3-phasigen
+  Start nicht reicht (Dietmar: „Du kannst doch auch 1-phasig mit dem laden starten, damit
+  wird die Überschuss-Mindestgrenze drastisch reduziert"). Senkt die Start-Schwelle von
+  3×230×6=4140 W auf 230×6=1380 W. Die Phasenzahl wird nur beim Start gewählt und während
+  einer laufenden Ladung nicht mehr gewechselt (Relais-Schaltvorgang würde den Ladevorgang
+  kurz unterbrechen).
+
+## [0.9.47-beta.1] - 2026-08-26
+
+### Changed
+- Überschussladen bezieht jetzt zusätzlich die Speicher-Ladeleistung über
+  `IHUB_GetFunctions()` (`batPowerID`, InverterHub-Contract 1.0, function_exists-abgesichert)
+  mit ein. Hintergrund (Dietmar, 26.08.2026): der Wechselrichter bedient erst alle lokalen
+  Verbraucher — inkl. Wallbox, die für ihn ein ganz normaler AC-Verbraucher ist — und lädt
+  ERST DANACH den Speicher mit dem Rest. Was die Batterie gerade zieht, taucht am
+  NAP-Zähler nie auf, ist aber Überschuss, den mehr Wallbox-Strom automatisch von der
+  Batterie abziehen würde, ohne Netzbezug auszulösen. Bisher zählte nur der NAP-Zähler,
+  wodurch echter Überschuss unsichtbar blieb, solange die Batterie ihn komplett
+  abgegriffen hat. `StorageSharePercent` reserviert weiterhin zusätzlich einen Anteil vom
+  jetzt größeren Gesamt-Überschuss. Status zeigt bei Batterie-Beitrag die Aufteilung
+  „(Netz X W + Speicher Y W)" an. Ohne InverterHub bleibt das Verhalten wie zuvor
+  (nur Netzzähler).
+
+## [0.9.46-beta.1] - 2026-08-26
+
+### Added
+- Der Status „Überschussladen" nennt jetzt den Namen des gefundenen MeterHub-Zählers (z. B.
+  „Aktiv (Messgerät am NAP) — Überschuss …"), statt nur die Wattzahl zu zeigen. Dietmars
+  Frage „Welcher Zähler wurde gefunden?" ließ sich bisher nur live per Introspektion
+  beantworten — jetzt steht es direkt in der Statusvariable.
+
+## [0.9.45-beta.1] - 2026-08-26
+
+### Added
+- Neue Einstellung „Anteil für Speicher (%)" (`StorageSharePercent`, 0-100) im
+  Überschussladen-Panel. Der eingestellte Anteil des Netz-Überschusses bleibt dem Speicher
+  vorbehalten und wird VOR der Ampere-Berechnung für die Wallbox abgezogen (0 % = kompletter
+  Überschuss geht in die Wallbox, 100 % = nichts). Dietmars Hinweis: der Speicher war zuvor
+  wieder unreflektiert in die Berechnung eingerechnet worden, obwohl er ausdrücklich verlangt
+  hatte, den Speicheranteil separat regelbar zu machen statt ihn einfach mit zu verplanen.
+  Der Status „Überschussladen" zeigt bei aktivem Anteil zusätzlich den reservierten
+  Speicheranteil in Watt an.
+
+## [0.9.44-beta.1] - 2026-08-26
+
+### Changed
+- Überschussladen-Eigenregelung: die Prüfung „darf nur bei genau einer aktiven
+  ChargerHub-Instanz laufen" zählt jetzt nur noch andere Instanzen mit, bei denen auch
+  wirklich ein Fahrzeug angesteckt ist (`vehicle_plugged`). Dietmars Einwand: „Du kannst doch
+  selbst feststellen, dass an der anderen Wallbox kein Auto hängt und kannst von dieser
+  Regelung solange Abstand nehmen, bis jemand versucht die andere Wallbox mit angeschlossenem
+  Auto einzuschalten." Eine zweite, aktive aber leere Wallbox blockiert die Eigenregelung
+  damit nicht mehr — erst wenn dort tatsächlich ein Auto steckt, tritt Konkurrenz um den
+  Überschuss ein und die Eigenregelung pausiert.
+
+## [0.9.43-beta.1] - 2026-08-26
+
+### Added
+- Sichtbare Rückmeldung für das Überschussladen (Dietmars Frage: „Sehe ich, ob ein Zähler
+  gefunden wurde?" — Antwort war bisher nein). Neue Variable „Überschussladen" (nur wenn
+  „Überschussladen selbst regeln" aktiv ist) zeigt live, ob/warum die Eigenregelung gerade
+  (nicht) eingreift — z. B. „EMS ist aktiv und hat Vorrang", „Kein passender MeterHub-Zähler
+  gefunden", oder „Überschuss 2822 W → 12 A (1-phasig)".
+- Neue Property „NAP-Zähler" (`SurplusMeterID`, `SelectInstance` auf MeterHub-Instanzen) als
+  manueller Rückfall, falls die automatische Zähler-Auswahl über den MeterHub-Vertrag keinen
+  oder den falschen Zähler findet (z. B. bei mehreren realtime-Grid-Zählern). Leer = weiterhin
+  automatisch.
+
+## [0.9.42-beta.1] - 2026-08-26
+
+### Fixed
+- `FindGridSurplusW()`: `MHUB_GetFunctions()` liefert (anders als unser eigenes
+  `CHUB_GetFunctions()`) einen JSON-**String**, keinen nativen PHP-Array — mit MeterHub live
+  abgeglichen. `json_decode()` ergänzt, den bisherigen defensiven Fallback-Zweig (Rückgabewert
+  selbst als Liste behandeln) entfernt, da die Struktur jetzt bestätigt und stabil ist
+  (`assignments` immer ein eigener Schlüssel im obersten Objekt).
+
+## [0.9.41-beta.1] - 2026-08-26
+
+### Added
+- Neue Option „Überschussladen selbst regeln" (Property `EnableSurplusCharging`, Standard aus).
+  ChargerHub kann jetzt eigenständig per PV-Überschuss laden — aber ausdrücklich NUR als
+  Fallback, wenn EMS nicht vorhanden oder nicht aktiv ist (Dietmars Vorgabe). Greift nur, wenn
+  ALLE Bedingungen erfüllt sind: `managedBy` = „Niemand", EMS installiert+aktiv? nein
+  (`IsEmsActive()`, Statusvariable `EMS_Active_State`, GUID mit EMS-Sitzung abgestimmt), GENAU
+  eine aktive ChargerHub-Instanz insgesamt (Koordination mehrerer Wallboxen bleibt EMS
+  vorbehalten — sonst würden zwei Instanzen um denselben Überschuss konkurrieren), ein
+  MeterHub-Zähler am Netzanschlusspunkt liefert einen Echtzeit-Wert (`FindGridSurplusW()`, neuer
+  Verbund-Vertrag mit MeterHub: `MHUB_GetFunctions()`-Zuordnung mit `function==='grid'` UND
+  `latency==='realtime'`, `authority==='billing'` nur als Tiebreaker — NIE über den frei
+  wählbaren Instanznamen, und Vorzeichen `max(0, -powerValue)`, da MeterHub `+` als Bezug
+  zählt). Automatisches Umschalten der Phasenzahl ist bewusst NICHT Teil dieser ersten Fassung.
+
+## [0.9.40-beta.1] - 2026-08-26
+
+### Fixed
+- Live entdeckt (Ladung an WB2 komplett blockiert, go-e-App zeigte „Dein Limit von 0 kWh wurde
+  erreicht"): Die Anzeige von „Energie-Limit Ladevorgang" konnte „kein Limit" (Modbus-Wert `Inf`,
+  laut go-e-Doku der korrekte Weg, das Limit zu deaktivieren) nicht von einem ECHTEN, ladungs-
+  blockierenden 0-Wh-Limit unterscheiden — beide Zustände zeigten „0,0 kWh". Anzeige-Sentinel auf
+  `-1` umgestellt (mit eigener Profil-Textassoziation „Kein Limit"), Beschriftung entsprechend
+  angepasst. Schreibseite war bereits korrekt (0/negativ eingeben → schreibt `Inf`).
+
+## [0.9.39-beta.1] - 2026-08-20
+
+### Added
+- Neue, herstellerunabhängige Variable „Zugeordnetes Fahrzeug" (`vehicle_name`, String,
+  archiviert) je Instanz. Bleibt leer, bis ein externes Fahrzeug-Modul (z. B. Tessie, oder ein
+  beliebiges anderes bei einem anderen Nutzer) `CHUB_SetVehicleName($id, $name)` aufruft.
+  ChargerHub errät selbst nicht, welches Fahrzeug angesteckt ist (kennt weder Marke noch Name,
+  keine GPS-/Zeitfenster-Heuristik) — das würde die Eigenständigkeitsregel verletzen (kein Modul
+  setzt ein anderes voraus). Wird automatisch geleert, sobald `vehicle_plugged` (falls vom
+  Treiber geliefert) auf „kein Fahrzeug" wechselt, damit nach einem Fahrzeugwechsel nicht der
+  alte Name stehen bleibt. `CHUB_GetFunctions()` liefert die Variablen-ID neu als
+  `vehicleNameID` (Vertragsversion 1.1 → 1.2, additiv).
+
+## [0.9.38-beta.1] - 2026-08-20
+
+### Added
+- Neuer Button „🔄 Übernehmen erzwingen (ohne Formularänderung)" in ChargerHub UND
+  ChargerHub Suche — ruft direkt `IPS_ApplyChanges($id)` mit Bestätigungs-Popup auf. Praktisch,
+  wenn nach einem Modul-Update der reguläre Weg (Modulverwaltung → Aktualisieren → Übernehmen)
+  einmal nicht greift (EMS-Vorschlag).
+
+## [0.9.37-beta.1] - 2026-08-20
+
+### Fixed
+- Alle Formular-Buttons gegen SUITE.md "Sichtbare Rückmeldung bei jeder Aktion" (verbindlich seit
+  20.08.2026) durchgeprüft. Ein Fund: „Verbindung testen / Daten sofort lesen" rief bisher
+  direkt `CHUB_Update()` auf — ohne jede sichtbare Reaktion im Formular. Neuer Wrapper
+  `CHUB_TestConnection()` liest wie bisher, zeigt danach aber ✅/❌ mit Uhrzeit in einem neuen
+  Label an. `Update()` selbst bleibt unverändert der reine Timer-Callback (kein UpdateFormField
+  bei jedem FastTimer-Tick). Alle anderen Buttons (Netzwerksuche, Abbrechen, Migration
+  vorbereiten, News/Review-Hinweis ausblenden) hatten bereits sichtbares Feedback.
+
+## [0.9.36-beta.1] - 2026-08-20
+
+### Fixed
+- `ChargerHubDiscovery`: SUITE.md-Stolperfalle 12 defensiv abgedeckt — `GetConfigurationForm()`
+  läuft nach einem `RequestAction`-Button nicht immer automatisch neu (bei EMS live beobachtet:
+  Kopfzeile blieb im bereits offenen Formular stehen, obwohl die Suche serverseitig lief). Wir
+  hatten bereits `ReloadForm()`, das deckt es normalerweise ab — zusätzlich jetzt ein expliziter
+  `UpdateFormField()`-Aufruf auf die neue Kopfzeile direkt nach der Suche.
+
+## [0.9.35-beta.1] - 2026-08-20
+
+### Changed
+- `ChargerHubDiscovery`: Verbund-Konvention „Einheitliche Verbund-Status-Kopfzeile" (SUITE.md,
+  Referenz EMS `getDiscoverySummaryLine()`) übernommen. Direkt unter dem „Netzwerk
+  durchsuchen"-Button erscheint jetzt eine Zeile „✅/⚠️/ℹ️ N Wallbox(en) gefunden (zuletzt
+  HH:MM:SS Uhr)." statt nur des flüchtigen Fortschrittsbalkentexts während der Suche.
+
+## [0.9.17-beta.1] - 2026-07-27
+
+### Changed
+- Usability-Nachschärfung nach Dietmars EMS-Feedback (irreführendes "Pflicht"-Panel dort):
+  Panel „Verbindung" macht jetzt explizit, dass Host/Port/UnitId normalerweise von der
+  ChargerHub-Suche automatisch befüllt werden — manuelle Eingabe war zuvor unkommentiert und
+  wirkte wie der einzige/erwartete Weg.
+
+## [0.9.23-beta.1] - 2026-08-02
+
+### Changed
+- `ChargerHubDiscovery`: Bei mehreren Alt-Instanz-Treffern zeigt die Ergebnisliste jetzt den von
+  MigrationsHub gelieferten Kategorie-Pfad je Kandidat an (z. B. „WB 1 (#19716) [Geräte /
+  Module / Wallboxen / API]" vs. „WB 1 (#48730) [Sicherung]") — damit lässt sich die richtige
+  Alt-Instanz vor der manuellen Verknüpfung erkennen, statt nur „mehrere gefunden" zu sehen.
+
+## [0.9.22-beta.1] - 2026-08-02
+
+### Fixed
+- `ChargerHubDiscovery`: Bei mehreren Alt-Instanz-Treffern an derselben IP (live gefunden: zwei
+  goeCharger-Fremdinstanzen unter derselben IP, eine davon eine Sicherungs-Kopie — das
+  goeCharger-Modul speichert keine Unit-ID, das Matching lief nur über die IP) wählte
+  `LegacyCandidateFor()` bisher stillschweigend den ersten Treffer — Risiko, die Historie der
+  physisch falschen Wallbox zu verknüpfen. Bei Mehrdeutigkeit wird jetzt NICHTS automatisch
+  gewählt (`ambiguous`-Flag), die Ergebnisliste zeigt „Mehrere Alt-Instanzen — bitte manuell
+  verknüpfen" statt eines einzelnen Vorschlags, und „Migration vorbereiten" bricht für diese
+  Zeile mit einer erklärenden Meldung ab statt still gar nichts zu tun.
+
+## [0.9.34-beta.1] - 2026-08-04
+
+### Changed
+- Alle statistisch sinnvollen Datenpunkte werden jetzt standardmäßig archiviert (Dietmars
+  Wunsch, orientiert an der go-e-API-Kategorisierung "Status" vs. "Config"): Verbindung,
+  Ladestatus, Fahrzeug verbunden, Ladeleistung inkl. je Phase, Energie (Sitzung/gesamt),
+  Spannung/Strom je Phase, genutzte Phasen, Fehlercode, Adapter, RFID-Kartenzähler, Kabel-Status/
+  -Strombegrenzung, PCB-Temperatur. Bewusst weiterhin NICHT archiviert: Seriennummer/
+  Firmware-Version (statische Kennungen, kein Zeitreihenwert) sowie alle `ctl_*`-Steuer-Sollwerte
+  (entsprechen go-es "Config"-Kategorie — Einstellungen, keine Messwerte). Betrifft alle vier
+  Treiber (KEBA/Alfen/Heidelberg/go-eCharger) einheitlich. Greift automatisch beim nächsten
+  „Übernehmen" auch für bereits bestehende Instanzen.
+
+## [0.9.33-beta.1] - 2026-08-03
+
+### Changed
+- `CHUB_GetIdentMapping()` auf den finalen, verbundweit abgestimmten 3-Parameter-Vertrag
+  umgestellt: `($foreignModuleGUID, array $foreignIdents): array`, Rückgabe jetzt keyed nach
+  Alt-Ident mit `['ident' => neuIdent, 'type' => VARIABLETYPE_*]` (int-Konstante statt
+  String-Label), gefiltert auf die tatsächlich übergebenen `$foreignIdents` — reines
+  GUID-Matching würde bei firmwareabhängig unterschiedlich benannten Feldern ins Leere laufen.
+
+## [0.9.32-beta.1] - 2026-08-03
+
+### Added
+- `CHUB_GetIdentMapping($foreignModuleID): array` — schmale Auskunftsfunktion für
+  MigrationsHub (Verbund-Konvention, Alternative zu einer vollen "AdoptFromLegacyInstance" in
+  jedem Hub-Modul, um Reparent-/Prune-Logik nicht zu duplizieren). Liefert für das
+  go-eCharger-Fremdmodul (IPSCoyote/GO-eCharger) die bereits am Quellcode verifizierte
+  Ident+Typ-Zuordnung (30 Paare, siehe README) — MigrationsHub kann damit vor einem
+  `AC_ChangeVariableID()`-Aufruf auf Typgleichheit prüfen, statt sie per Preflight-Sonde zu
+  erraten (Ursache des heutigen `AC_ChangeVariableID`-Crashs: unerkannter Typ-Mismatch).
+
+## [0.9.31-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: „Migration vorbereiten" verarbeitet pro Klick bewusst nur eine Zeile
+  (kehrt nach dem ersten Treffer sofort zurück), merkte sich aber nicht, welche bereits erledigt
+  war — bei mehreren Treffern landete jeder weitere Klick wieder bei der ersten passenden Zeile,
+  spätere Zeilen (live beobachtet: WB1) waren so nie erreichbar. Neues Attribut
+  `PreparedTargets` merkt sich bereits vorbereitete Ziel-Instanzen und überspringt sie beim
+  nächsten Klick, damit der Nutzer sich wirklich Zeile für Zeile durcharbeiten kann. Wird bei
+  einem neuen Suchlauf zurückgesetzt.
+
+## [0.9.30-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: `LegacyCandidateFor()` las die Felder aus `MIGHUB_FindLegacyCandidates()`
+  als `instanceID`/`name` (lowercase), MigrationsHub liefert aber `InstanceID`/`Name`
+  (PascalCase) — case-sensitiver PHP-Array-Zugriff, dadurch wurde `$id` immer `0` und der
+  0.9.28-Defensivfilter (`$id > 0`) hat dadurch JEDEN Treffer verworfen, nicht nur die eigene
+  Instanz. Live reproduziert: MigrationsHub meldete #27208 korrekt als Treffer, bei uns kam
+  „keine passende Kombination" an. Liest jetzt beide Schreibweisen (PascalCase zuerst).
+
+## [0.9.29-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: Live-Absturz beim Formular-Aufbau ("Too few arguments to function
+  MIGHUB_FindLegacyCandidates(), 4 passed ... exactly 5 expected") — MigrationsHub hat den
+  neuen 5. Parameter `$excludeInstanceID` entgegen der Ankündigung ohne Default-Wert
+  eingeführt, kein Bug bei uns, aber wir rufen die Funktion jetzt ohnehin mit allen 5 Parametern
+  auf (nutzt gleich den neuen Ausschluss-Parameter, siehe 0.9.28-Motivation — serverseitig statt
+  nur clientseitig gefiltert).
+
+## [0.9.28-beta.1] - 2026-08-03
+
+### Fixed
+- `ChargerHubDiscovery`: `MIGHUB_FindLegacyCandidates()` konnte eine frisch angelegte, EIGENE
+  ChargerHub-Instanz als vermeintliche "Alt-Instanz" zurückgeben (live beobachtet bei einer IP,
+  an der gar keine echte Fremd-Instanz mehr existierte). "Migriere von dir selbst" wäre
+  sinnlos und im Extremfall (Quelle=Ziel) schädlich. `LegacyCandidateFor()` filtert Kandidaten
+  jetzt zusätzlich defensiv nach `ModuleID`, akzeptiert keine Treffer mit der eigenen
+  `CHARGERHUB_GUID` — zusätzlich zu einem entsprechenden Fix bei MigrationsHub selbst, nicht als
+  Ersatz dafür.
+
+## [0.9.27-beta.1] - 2026-08-03
+
+### Fixed
+- Live-Test: Nach korrekten Zugangsdaten kamen weiterhin keine Kartendaten an — Ursache war das
+  fest einprogrammierte Topic-Präfix `go-eCharger/<Seriennummer>`. go-e erlaubt ein eigenes
+  Präfix (API-Key `mtp`), Dietmar nutzt `WB1`/`WB2` statt der Seriennummer — bestätigt über den
+  MQTT-Server-Konfigurator, dort liefen die Topics unter `WB1/c0e`, `WB1/c0n` usw. Neue Property
+  „MQTT-Topic-Präfix" (leer = weiterhin Standard `go-eCharger/Seriennummer`).
+
+## [0.9.26-beta.1] - 2026-08-03
+
+### Fixed
+- Live-Test (erster echter MQTT-Verbindungsversuch): `CONNACK fehlgeschlagen oder Broker
+  abgelehnt` — Symcons MQTT-Server verlangt Zugangsdaten, `CHUB_MqttMiniClient` schickte bisher
+  keine mit. Neue Properties „MQTT-Benutzername"/„MQTT-Passwort" im Panel, `CONNECT`-Paket
+  setzt jetzt bei Bedarf Username-/Password-Flags. CONNACK-Fehlercode wird zudem im Klartext
+  geloggt (z. B. „Benutzername/Passwort falsch", „nicht autorisiert") statt einer pauschalen
+  Meldung.
+
+## [0.9.25-beta.1] - 2026-08-02
+
+### Changed
+- RFID-Kartenzähler (0.9.24) auf einen eigenen, rohen MQTT-Client (`CHUB_MqttMiniClient`)
+  umgestellt statt einer Symcon-Splitter-Anbindung (Kind-Instanz einer fremden MQTT-Client-
+  Instanz). Dietmars Feedback: das gehört direkt ins Modul, kein Verlass auf eine korrekt
+  konfigurierte fremde Instanz — passt außerdem zum bestehenden Prinzip von
+  `CHUB_ModbusTcpClient` (eigener roher Socket statt Symcon-Configurator-Abhängigkeit).
+  `module.json` `parentRequirements`/`implemented` wieder entfernt. Neue Properties
+  „MQTT-Broker"/„MQTT-Port" im Panel „RFID-Kartenzähler". Verbindung wird bei jedem Poll neu
+  aufgebaut (kein Zustand über Timer-Aufrufe hinweg, wie beim Modbus-Client) — unproblematisch,
+  da go-e seine Werte als retained Topics veröffentlicht und der Broker sie beim SUBSCRIBE
+  sofort erneut liefert.
+
+## [0.9.24-beta.1] - 2026-08-02
+
+### Added
+- Neu: RFID-Kartenzähler (Name + Energie je Karte, 0–9) für go-eCharger über MQTT. Die
+  offizielle go-e-Modbus-Registertabelle enthält diese Werte nicht — nur die HTTP/MQTT-API bietet
+  sie an (`c0n`…`c9n` Kartenname, `c0e`…`c9e` Energie in Wh). Modul deklariert jetzt
+  `parentRequirements`/`implemented` für die native IP-Symcon-MQTT-Client-Schnittstelle
+  (`{043EA491-0325-4ADD-8FC2-A30C8EEB4D3F}`/`{7F7632D9-FA40-4F38-8DEA-C83CD4325A32}`, gegen ein
+  reales, gepflegtes Referenzmodul verifiziert, nicht geraten). Neue Property
+  „RFID-Kartenzähler per MQTT abbilden" (nur go-eCharger). `ReceiveData()` filtert per
+  `SetReceiveDataFilter()` gezielt auf Topics der EIGENEN Seriennummer — bei mehreren
+  go-e-Geräten am selben Broker (wie bei Dietmars zwei Wallboxen) würde ein Topic-Filter ohne
+  Seriennummer sonst die Kartendaten der jeweils anderen Wallbox übernehmen.
+
+## [0.9.21-beta.1] - 2026-07-29
+
+### Fixed
+- `ChargerHubDiscovery`: `LegacyCandidateFor()` übergab an `MIGHUB_FindLegacyCandidates()`
+  fälschlich `$this->InstanceID` (die eigene Discovery-Instanz) statt einer
+  MigrationsHub-Instanz-ID — live abgestürzt beim Formular-Aufbau ("Instance does not
+  implement this function", Testfall `#19716` von MigrationsHub). Sucht jetzt wie
+  `PerformMigration()` über `IPS_GetInstanceListByModuleID()` nach einer vorhandenen
+  MigrationsHub-Instanz; ohne eine solche gibt es „nichts gefunden" statt eines Fatal Errors —
+  legt dabei selbst keine Instanz an (das bleibt dem expliziten „Migration vorbereiten"-Klick
+  vorbehalten).
+
+## [0.9.20-beta.1] - 2026-07-29
+
+### Added
+- `ChargerHubDiscovery`: MigrationsHub-Anbindung nach Verbund-Konvention (mit MigrationsHub,
+  InverterHub, MeterHub abgestimmt, Referenz `MeterHubDiscovery` 0.21.0-beta.1). Beim Suchlauf
+  wird je Fund über `MIGHUB_FindLegacyCandidates($id, $host, $port, $unitId)` geprüft, ob eine
+  Alt-Instanz eines anderen Moduls an derselben IP/Unit-ID existiert (Matching NIE über den
+  Namen). Erkennt die Suche eine Alt-Instanz: neue ChargerHub-Instanz kommt mit „Kommunikation
+  aktiv" = aus, ein neuer Button „Migration vorbereiten" verknüpft Alt-/Neu-Instanz über
+  `MIGHUB_PrefillMigration()` (legt bei Bedarf eine MigrationsHub-Instanz an), ein
+  `OpenObjectButton` führt direkt dorthin. Alles hinter `function_exists('MIGHUB_...')`
+  abgesichert — ohne MigrationsHub verhält sich die Suche wie bisher. MQTT-/OCPP-Altbestände
+  (z. B. go-e per MQTT, OCPP-Splitter) sind bewusst außen vor: ChargerHub spricht aktuell nur
+  Modbus TCP, für andere Transportwege gibt es bei uns keine Zielstruktur.
+
+## [0.9.19-beta.1] - 2026-07-27
+
+### Fixed
+- Eine der 0.9.18-Karteileichen (#30324 „Entsperrt durch RFID-Karte") überlebte die Aufräumung:
+  `IPS_DeleteVariable()` scheitert still, wenn unter der Variable noch ein Kind-Objekt hängt —
+  hier ein `Link` (vermutlich aus einer Visualisierung). Neue `DeleteVariableSafely()` entfernt
+  vorher etwaige Link-Kinder.
+
+## [0.9.18-beta.1] - 2026-07-27
+
+### Fixed
+- Karteileichen von Instanzen aufgeräumt, die während des kurzen 0.9.13-Zwischenfalls
+  (ApplyChanges brach mitten im Lauf ab) eine zweite, direkt unter der Instanz hängende Kopie
+  jeder Variable erhalten hatten, während die korrekte, in ihrer Kategorie verschachtelte
+  Variable unangetastet weiterlief (live gefunden bei Dietmars beiden Instanzen, z. B.
+  „Ladestatus" existierte doppelt). `PruneForeignObjects()` erkennt jetzt zusätzlich zum
+  bisherigen „Ident nicht mehr gültig"-Fall auch doppelt vorkommende Idents und löscht gezielt
+  die direkt unter der Instanz hängende Kopie, behält die verschachtelte.
+- Veralteten, seit 0.9.12 widersprüchlichen Kommentar über `RegisterVar()` korrigiert (verwies
+  noch auf das längst abgelöste rohe `IPS_CreateVariable()`-Muster).
+
+## [0.9.17-beta.1] - 2026-07-25
+
+### Changed
+- Formular: Hinweis im „Verbindung"-Panel ergänzt, dass Host/Port/UnitId normalerweise
+  automatisch von der ChargerHub-Suche befüllt werden — manuelle Eingabe ist nur der Fallback
+  für händisch angelegte Instanzen. Gefunden bei einer Selbstprüfung nach dem SUITE.md-Kapitel
+  „keine eigene Anlage als Norm annehmen" (analog zu einem echten Usability-Fund bei EMS).
+
+## [0.9.16-beta.1] - 2026-07-25
+
+### Fixed
+- Eigentliche Ursache für "funktioniert per Skript, aber nicht über die normale Oberfläche"
+  gefunden (unabhängig bestätigt durch denselben Bug bei InverterHub, DG65/NRGInverterHub
+  Commits 2e1c56e→2565450): `IPS_SetVariableCustomAction($vid, 0)` ist die falsche API für
+  Variablen, die eine Instanz per `RegisterVariableX()` selbst angelegt hat — sieht korrekt aus
+  (keine Exception), bleibt aber wirkungslos für WebFront/Konsole (live bestätigt:
+  `VariableAction` blieb `0`). Direkte `IPS_RequestAction()`-Aufrufe funktionierten trotzdem,
+  weil sie nicht über diese Bindung laufen — daher der Widerspruch zwischen EMS' erfolgreichem
+  Skript-Test und Dietmars erfolglosen Versuchen in der eigenen Oberfläche.
+  Ersetzt durch die SDK-eigene `$this->EnableAction($Ident)`, aufgerufen direkt nach der
+  Neuanlage über RegisterVariableX — noch BEVOR die Variable per `IPS_SetParent()` in ihre
+  Kategorie verschoben wird, weil `EnableAction()` den Ident intern über das flache
+  `GetIDForIdent()` auflöst (nur direkte Instanz-Kinder).
+
+## [0.9.15-beta.1] - 2026-07-25
+
+### Fixed
+- Live entdeckt (Dietmar konnte die von EMS bestätigt funktionierenden IDs 31315/55705 danach
+  nicht mehr finden): Die 0.9.14-Migrationsbedingung prüfte `IPS_GetVariable()['VariableAction']`
+  live erneut nach jedem Übernehmen und fand weiterhin `0` — dadurch wurden die
+  Steuervariablen bei **jedem** ApplyChanges neu gelöscht und angelegt, mit jeweils neuer ID,
+  statt nur einmalig zu migrieren. Ersetzt durch ein persistentes Attribut
+  (`ControlActionsMigrated`), das nach der ersten erfolgreichen `RegisterVariables()`-Runde
+  dauerhaft auf `true` gesetzt wird — unabhängig davon, was `VariableAction` live zurückgibt.
+
+## [0.9.14-beta.1] - 2026-07-25
+
+### Fixed
+- 0.9.13 löste den fehlenden VariableAction-Eintrag, brach aber `ApplyChanges()` live komplett
+  (`IPS_ApplyChanges()` gab `false` zurück, Log voller „Ident muss für jede Ebene eindeutig
+  sein" + „Kann Schnittstellen-Instanz nicht erstellen", Instanz #30324 nicht mehr sauber
+  durchlaufbar, live reproduziert während ein Fahrzeug angesteckt war). Ursache:
+  `RegisterVariableX()` registriert den Ident instanzweit, nicht nur bei den direkten Kindern —
+  ein erneuter Aufruf, NACHDEM die Variable längst per `IPS_SetParent()` in eine
+  Kategorie-Unterordner verschoben wurde, kollidierte dort mit sich selbst. Das war exakt der
+  Grund, warum eine frühere Version überhaupt von `RegisterVariableX` auf rohes
+  `IPS_CreateVariable()` umgestiegen war — dieser Kollisionsmechanismus wurde beim 0.9.12-Fix
+  übersehen.
+  - `RegisterVariableX()` läuft jetzt nur noch bei echter Neuanlage (`!$vid`), nicht mehr bei
+    jedem `ApplyChanges()`. Die dabei gesetzte Kernel-Standardaktion bleibt über das spätere
+    `IPS_SetParent()` in die Kategorie hinweg erhalten.
+  - Für "control"-Variablen, die noch vor dem 0.9.12-Fix per rohem `IPS_CreateVariable()`
+    erzeugt wurden (`VariableAction` weiterhin `0`), läuft einmalig eine gezielte
+    Migration: löschen und über `RegisterVariableX()` neu anlegen — nur für diese betroffenen
+    Variablen, nicht für alle. Die IDs von `ctl_enable`/`ctl_curr_limit` ändern sich dadurch
+    einmalig; `CHUB_GetFunctions()` liefert die neuen IDs beim nächsten Aufruf automatisch.
+
+## [0.9.13-beta.1] - 2026-07-25
+
+### Fixed
+- Live bestätigt (EMS-Sitzung, Fahrzeug an WB1 angesteckt): 0.9.12 reichte bei bereits
+  bestehenden Steuervariablen (Ident/ID unverändert, ursprünglich vor dem Fix per rohem
+  IPS_CreateVariable() erzeugt) nicht — ein erneuter RegisterVariableX()-Aufruf trägt die
+  Standardaktion für schon existierende Objekte offenbar nicht nachträglich nach.
+  `RegisterVar()` ruft jetzt zusätzlich unconditional `IPS_SetVariableCustomAction($vid, 0)`
+  für alle Variablen der Gruppe „control" auf, unabhängig vom Neu-/Bestandsstatus.
+
+## [0.9.12-beta.1] - 2026-07-25
+
+### Fixed
+- Root Cause für "Ladefreigabe/Stromlimit lassen sich nicht bedienen" endlich gefunden (Live-
+  Diagnose der EMS-Sitzung an Instanz #30324, während ein Fahrzeug real angesteckt war):
+  `RegisterVar()` erzeugte Steuervariablen bisher über rohes `IPS_CreateVariable()` +
+  `IPS_SetIdent()`. Damit trägt der Symcon-Kernel **keine Standardaktion** ein, die die
+  Variable an diese Instanz (`RequestAction()`) bindet — `IPS_SetVariableCustomAction($vid, 0)`
+  lief dadurch immer ohne Fehler durch, änderte aber nachweislich nichts
+  (`VariableAction`/`VariableCustomAction` blieben beide `0`). Variablen werden jetzt über
+  `RegisterVariableBoolean()`/`Integer()`/`Float()`/`String()` erzeugt (wie beim SDK
+  vorgesehen) und danach wie bisher per `IPS_SetParent()` in die passende Kategorie
+  verschoben — das ändert nichts an der Kernel-Standardaktions-Zuordnung.
+- Ident-Kollisionsrisiko aus einer früheren Version (Grund für den ursprünglichen Wechsel weg
+  von `RegisterVariableX`) betraf laut Analyse nur den mehrstufigen Instanz-Anlage-Ablauf über
+  die Discovery — dort bitte nach diesem Update einmal eine Testinstanz neu anlegen, um das zu
+  bestätigen.
+
+## [0.9.11-beta.1] - 2026-07-25
+
+### Fixed
+- Live-Vergleich mit der funktionierenden Referenzinstanz „go-e Controller" (anderes Modul, selbes
+  System) zeigte: dessen Schalter-Variable trägt korrekt `~Switch` als Profil, unsere Instanz
+  dagegen bei JEDER Variable — auch reinen Anzeigevariablen wie „Ladeleistung", nicht nur den
+  Steuervariablen — kein Profil, trotz bestätigtem Code-Update, Kern-Neustart UND explizitem
+  „Übernehmen". Die in 0.9.10 eingeführte Bedingung „nur setzen, wenn `$created` oder aktuell
+  leer" verhinderte das Setzen offenbar unabhängig vom eigentlichen Zustand der Variable.
+  `RegisterVar()` setzt das Profil jetzt unconditional bei jedem Übernehmen, ohne Sonderfall.
+
+### Changed
+- Globale Klasse `ModbusTcpClient` in `CHUB_ModbusTcpClient` umbenannt (Verbund-Fund von der
+  EMS-Sitzung: MeterHub deklariert ebenfalls eine globale Klasse `ModbusTcpClient` — sobald ein
+  Konsument beide Module im selben PHP-Prozess lädt, kollidiert das mit `Fatal error: Cannot
+  redeclare class ModbusTcpClient`). InverterHub/MeterHub ziehen denselben Präfix-Ansatz nach.
+
+## [0.9.10-beta.1] - 2026-07-25
+
+### Fixed
+- Live-Check an Instanz #30324 (Konsole zeigte weiterhin kein Schalter-Icon, keinen
+  „Schalten/Simulieren"-Dialog, geschriebene Werte sprangen nach wenigen Sekunden zurück)
+  ergab zwei getrennte Ursachen:
+  - `RegisterVar()` setzte das Variablenprofil (`~Switch` etc.) bisher nur bei echter
+    Neuanlage der Variable (`$created === true`). Bei dieser Instanz blieb das Profil dadurch
+    dauerhaft leer — kein Schalter-Icon, kein Schalten/Simulieren-Dialog. Wird jetzt zusätzlich
+    nachgetragen, wenn die Variable aktuell kein Profil trägt; ein bewusst vom Nutzer gesetztes
+    eigenes Profil bleibt unangetastet.
+  - `ModbusTcpClient::writeSingle()`/`writeMultiple()` gaben bei einer Modbus-Exception-Antwort
+    vom Gerät (oder Timeout/Verbindungsfehler) stillschweigend `false` zurück. Der Treiber
+    schreibt den neuen Wert nur bei Erfolg in die Variable — bei einem stillen Fehlschlag blieb
+    der alte Gerätewert bestehen und die Konsole sprang beim nächsten Poll sichtbar zurück, ohne
+    dass irgendwo ein Grund protokolliert wurde. Jetzt wertet `CheckWriteResponse()` die Antwort
+    aus (Timeout, zu kurze Antwort, oder Modbus-Exception-Code mit Klartext-Bedeutung) und
+    `RequestAction()` schreibt den Grund ins Meldungen-Log unter „ChargerHub-Schreibfehler".
+
+## [0.9.9-beta.1] - 2026-07-25
+
+### Fixed
+- Steuer-Variablen (Ladefreigabe, Stromlimit (A) etc.) waren in der Konsole nicht bedienbar
+  (nicht fett dargestellt), Klick auf „Übernehmen" bzw. der `EnableActionsTimer` warfen
+  `Warning: Skript #<InstanceID> existiert nicht`. Ursache: `IPS_SetVariableCustomAction()`
+  erwartet als zweiten Parameter laut Doku **keine** Instanz-ID, sondern 0 (Standardaktion
+  aktivieren), 1 (deaktivieren) oder eine echte Skript-ID (>1). Es wurde durchgängig
+  `$this->InstanceID` übergeben — Symcon deutete diese Zahl als Skript-ID und meldete
+  zurecht, dass kein Skript mit dieser Nummer existiert. Ersetzt durch die dokumentierte
+  Konstante `0`.
+
+## [0.9.8-beta.1] - 2026-07-24
+
+### Changed
+- Diagnose-Experiment aus 0.9.7 zurückgebaut (Testvariable `DiagTestAction` samt A/B-Vergleich
+  entfernt) — die Objekt-ID-Änderung der Instanz zwischen zwei Tests stellte sich als manuelle
+  Neuanlage durch den Nutzer heraus, nicht als Nebeneffekt unseres Codes. `SetControlActions()`
+  bleibt auf dem einfachen Diagnose-Stand aus 0.9.6 (Log je Steuer-Ident), Ursache des
+  `IPS_SetVariableCustomAction`-Fehlers weiterhin offen.
+
+## [0.9.7-beta.1] - 2026-07-24
+
+### Changed
+- **Diagnose erweitert (A/B-Test)**: Der "Skript #<InstanceID> existiert nicht"-Fehler tritt
+  laut Log auch über den `TimerPool`-Weg auf (nicht nur synchron aus `ApplyChanges()`) — die
+  Transaktions-Theorie aus 0.9.6 ist damit widerlegt. Neue temporäre Testvariable
+  `🧪 Diagnose Testaktion`, ganz normal über `RegisterVariableBoolean()` angelegt (statt
+  unseres bisherigen rohen `IPS_CreateVariable()`-Wegs für Steuer-Variablen), bekommt in
+  `SetControlActions()` versuchsweise ebenfalls eine Custom Action. Klärt, ob die
+  Anlage-Methode der Variable der Unterschied ist.
+
+## [0.9.6-beta.1] - 2026-07-24
+
+### Fixed
+- **Ursache des "Ladefreigabe/Stromlimit nicht bedienbar"-Bugs live bestätigt und behoben.**
+  Der in 0.9.4 ergänzte synchrone `SetControlActions()`-Aufruf am Ende von `ApplyChanges()`
+  war der eigentliche Fehler: `IPS_SetVariableCustomAction($vid, $this->InstanceID)`,
+  aus der EIGENEN laufenden `ApplyChanges()`-Transaktion heraus aufgerufen, schlägt mit
+  `Warning: Skript #<InstanceID> existiert nicht` fehl (live reproduziert — Symcon
+  behandelt die eigene Instanz während der eigenen Transaktion als ungültiges Aktionsziel,
+  nicht nur bei der Instanz-Erstellung, sondern bei jedem "Übernehmen"). Der synchrone
+  Aufruf ist wieder entfernt; einziger Weg ist jetzt wie ursprünglich vorgesehen der
+  200-ms-`EnableActionsTimer`, der außerhalb der Transaktion feuert.
+- Diagnose-Log (`IPS_LogMessage('ChargerHub-Diagnose', …)`) bleibt vorerst zur Bestätigung
+  bestehen, dass der Timer-Weg jetzt fehlerfrei durchläuft.
+
+## [0.9.4-beta.1] - 2026-07-24
+
+### Fixed
+- **Steuer-Variablen (Ladefreigabe, Stromlimit, Phasenumschaltung, …) blieben nicht
+  bedienbar** — echter Fund aus dem Live-Test: `IPS_SetVariableCustomAction` lief bislang
+  nur über einen 200-ms-Timer nach `ApplyChanges`, der bei bestehenden Instanzen (nach
+  einem Modul-Update, ohne dass "Übernehmen" die Timing-Kette erneut anstößt) nicht
+  zuverlässig griff — die Variablen blieben reine Anzeige (kein fett dargestelltes
+  Bedienelement in der Konsole), Schreibversuche liefen ins Leere. Jetzt zusätzlich
+  **synchron am Ende von `ApplyChanges()`** versucht (`SetControlActions()`, mit `@`
+  gegen die bekannte Erstellungs-Transaktions-Race abgesichert); der Timer bleibt als
+  Rückfallebene für die Instanz-Neuanlage bestehen. **Bestehende Instanzen brauchen nach
+  dem Update einmal "Übernehmen".**
+
+## [0.9.3-beta.1] - 2026-07-24
+
+### Changed
+- **Layout-Nachbesserung** (Verbund-Konvention „logische Gruppierung", Pflicht-Prüfung bei
+  jedem Fix): `ManagedBy` (Regler-Hoheit) und `MaxCurrent` (Anschlussstrom) waren
+  sachfremd verstreut — `MaxCurrent` unter „Verbindung", `ManagedBy` unter „Datenpunkte".
+  Beides sind Steuer-/Sicherheitsfelder, jetzt gemeinsam im neuen Panel
+  „🛡️ Steuerungshoheit & Sicherheit" zwischen Polling und Datenpunkte.
+
+## [0.9.2-beta.1] - 2026-07-24
+
+### Added
+- **Einheitliche Formular-Optik** (Verbund-Konvention, SUITE.md, Referenz InverterHub):
+  „🆕 Neu in Version …"-Banner (aufgeklappt, je Version einmalig ausblendbar über ein
+  Attribut, erscheint bei neuer Version automatisch wieder), Versionsnummer im
+  „📖 Dokumentation & Hilfe"-Panel, `🆕`-Präfix am neuen Auswahlfeld „Wer regelt diesen
+  Ladepunkt?", sowie ein einmalig ausblendbarer Rückmeldungs-Hinweis nach den
+  Haupteinstellungen (noch ohne Forum-Link, da noch nicht gepostet — verweist vorerst auf
+  GitHub). Muster: `UpdateFormField` + Attribut, nie `IPS_SetProperty`+`ApplyChanges`.
+
+## [0.8.1-beta.1] - 2026-07-22
+
+### Changed
+- **Sprachregel des Verbunds umgesetzt** (Anweisung Dietmar): Nutzersichtbare Texte auf
+  Deutsch, vermeidbare Anglizismen ersetzt — „Scan abbrechen" → „Suche abbrechen",
+  „Portscan" → „Port-Prüfung", „Bug"/„Byte-Order-Bug" → deutsche Formulierung, „Test:" →
+  „zum Prüfen im Browser aufrufen". Idents, Property-Namen und die
+  `CHUB_GetFunctions`-Feldnamen bleiben unverändert (sind API).
+- CLAUDE.md: Sprachregel und der Grundsatz „Idents sind API" als Verbund-Regeln festgehalten.
+
+## [0.9.1-beta.1] - 2026-07-24
+
+### Changed
+- **Migration auf gemeinsame `NRG.*`-Variablenprofile** (Verbund-Konvention, SUITE.md):
+  `CHB.Watt`/`CHB.kWh`/`CHB.Ampere`/`CHB.Volt`/`CHB.Celsius` → `NRG.Watt`/`NRG.kWh`/
+  `NRG.Ampere`/`NRG.Volt`/`NRG.Celsius`. Anlage bleibt idempotent und ohne Eigentümer-Modul:
+  ein bereits vorhandenes `NRG.*`-Profil wird nicht mehr überschrieben, nur bei Fehlen angelegt.
+  `NRG.kWh`-Wertebereich vereinheitlicht (0–9.999.999 kWh).
+  Modulspezifische Steuer-/Status-Profile (`CHB.Ampere6to32`, `CHB.Ampere10to63`,
+  `CHB.kWhSession`, `CHB.kWhLimit`, `CHB.Led255`, alle `CHB.*State`/`CHB.*Mode`-Enums) bleiben
+  bewusst unter `CHB.*` — sie tragen keine austauschbare physikalische Einheit oder haben eine
+  Sonderbedeutung (z. B. `CHB.kWhSession`, damit die MeterHub-Zählersuche den je Ladevorgang
+  zurückspringenden Sitzungswert nicht als Energiezähler aufnimmt).
+  Reine Anzeige-Migration, keine Vertrags-/Ident-Änderung.
+
+## [0.9.0-beta.1] - 2026-07-23
+
+### Changed
+- **Lizenz: MIT → PolyForm Noncommercial 1.0.0** (verbundweit, nur nach vorn wirkend;
+  ältere Versionen bleiben MIT).
+- **Regler-Kennzeichnung `managedBy`** (Vertrag `contractVersion` → **1.1**, additiv): Aus der
+  Checkbox „extern geregelt" wird ein Auswahlfeld „Wer regelt diesen Ladepunkt?" mit dem
+  Verbund-Vokabular `none`/`ems`/`goe-controller`/`tibber`/`p14a`/`marketer`/`other`. Je
+  Hersteller nur die passende Teilmenge (`goe-controller` nur beim go-eCharger). `managedBy`
+  kommt neu in `CHUB_GetFunctions`; `externallyManaged` bleibt und wird daraus abgeleitet
+  (true außer bei `none`/`ems`). Alt-Property `ExternallyManaged` wird als Migrationsrückfall
+  weitergelesen (alter Haken → `other`), ein für den Hersteller ungültiger gespeicherter Wert
+  wird konservativ auf `other` abgebildet (EMS bleibt dann read-only).
+
+## [0.8.1-beta.1] - 2026-07-23
+
+### Added
+- **Vertragsversionierung** (Verbund-Konvention, [SUITE.md](https://github.com/DG65/NRGEMS/blob/main/SUITE.md)):
+  `CHUB_GetFunctions` liefert additiv `contractVersion => '1.0'`. Konsumenten prüfen die
+  Major-Version; additive Felder erhöhen künftig nur die Minor, ein Bruch die Major.
+- README: Hinweis auf die DG65 Energie-Suite und SUITE.md (welche Modulstände zusammenpassen).
+
+## [0.8.0-beta.1] - 2026-07-22
+
+### Added
+- **go-eCharger: deutlich mehr Datenpunkte, v. a. Steuerung** (Rückmeldung aus dem
+  Live-Betrieb an zwei V3-Chargern — das Einlesen selbst lief fehlerfrei):
+  - Steuerung neu: **Phasenumschaltung** (Auto/1-/3-phasig, Reg 332 `psm` — wichtig fürs
+    Überschussladen), **Zugangskontrolle** (Offen/RFID/Strompreis/Scheduler, Reg 201),
+    **Kabelverriegelung** (Reg 204), **Energie-Limit je Ladevorgang** (Reg 333-336 `dwo`,
+    Float64 Wh, 0 = kein Limit → schreibt Inf), **LED-Helligkeit** (Reg 206).
+  - Steuerwerte werden jetzt **vom Gerät zurückgelesen** — die ctl_*-Variablen zeigen
+    damit auch Änderungen aus App/Cloud/anderen Reglern.
+  - Status neu: Leistung je Phase (146-151), Spannung N (144), **aktiv genutzte Phasen
+    nach dem Schütz** (Bitmaske Reg 205), Adapter-Erkennung (202), entsperrende
+    RFID-Karte (203).
+  - `ModbusTcpClient::writeDouble64()` (Float64 Big-Endian über FC 0x16).
+
+## [0.7.0-beta.1] - 2026-07-22
+
+### Added
+- **`CHUB_GetFunctions`-Vertrag v1 — mit dem EMS abgestimmt und final umgesetzt:**
+  - Neu `plugStateID`: Variablen-ID „Fahrzeug verbunden" (Bool) — KEBA (Kabelstatus ≥ 5),
+    go-eCharger (CAR_STATE 2/3/4) und Heidelberg (Status 3–8 ohne Fehler) liefern sie;
+    Alfen hat kein dokumentiertes Steckerkennungs-Register → 0.
+  - Neu `minCurrent`/`maxCurrent` als **Werte** (keine IDs): min immer 6 A;
+    max = min(Hardware-Limit des Herstellers [KEBA 63 / Alfen 32 / Heidelberg 16 /
+    go-e 32 A], neue Property „Maximaler Anschlussstrom").
+  - Neue Property/Formularfeld **„Maximaler Anschlussstrom (A)"** (Default 16): harter
+    Clamp in JEDEM Treiber-Schreibzugriff — letzte Verteidigungslinie, egal was ein EMS
+    anfordert.
+- README: vollständige Feldtabelle des Vertrags; Abschnitt zum go-e-Eco-Modus-Alternativpfad
+  (`ids`-Feed + `fup`/`lpsc`-Erkennung, HTTP/MQTT — dokumentiert, bewusst nicht implementiert).
+- CLAUDE.md: Vertrag als abgestimmt (v1) festgeschrieben.
+
+### Fixed
+- Heidelberg: Stromlimit-Clamp auf das reale Hardware-Maximum 16 A statt 32 A.
+
+## [0.6.1-beta.1] - 2026-07-22
+
+### Fixed
+- **Füllwert-Schutz** (MeterHub-Befund am echten go-e Controller): go-e-Firmware
+  beantwortet unbelegte Register mit 0xFF-Füllwerten statt einer Modbus-Exception.
+  go-e-U32-Werte mit 0xFFFFFFFF und U16-Werte mit 0xFFFF werden jetzt verworfen
+  (sonst landete z. B. eine Leistung von 42.949.672,95 W im Archiv); KEBA-Helfer
+  ebenso abgesichert; `SetVarFloat` verwirft generell NaN/Inf (schützt auch die
+  Float32-Treiber wie Alfen).
+
+### Changed
+- README: Verweis auf MeterHub für den go-e Controller (dort ab 0.14.0 unterstützt).
+
+## [0.6.0-beta.1] - 2026-07-22
+
+### Added
+- **Zwei-Regler-Schutz** (Hinweis vom EMS): Der go-e Controller kann Wallboxen selbst per
+  Lastmanagement/Überschussladen regeln — parallele EMS-Steuerung würde sich mit ihm
+  gegenseitig überschreiben. Neue Kennzeichnung „Ladepunkt wird bereits extern geregelt"
+  in der Instanz, gemeldet über `CHUB_GetFunctions` als neues Feld `externallyManaged`
+  (bool), damit das EMS solche Ladepunkte automatisch von der eigenen Steuerung ausnimmt.
+  Automatische Erkennung ist per Modbus nicht möglich (die Lastmanagement-Zustände
+  `loe`/`loa` existieren nur in der HTTP/MQTT-API) — daher manuelle Kennzeichnung.
+  Warnhinweise in Formular und README ergänzt.
+
+## [0.5.0-beta.1] - 2026-07-22
+
+### Removed
+- **go-e Controller wieder ausgebaut** (war in 0.3.0 dazugekommen): Als reine
+  Energiemess-Zentrale gehört er fachlich zu MeterHub, nicht zu ChargerHub — dorthin
+  wird er umgezogen (Registerkarte und Erkennungssignatur wurden an die
+  MeterHub-Entwicklung übergeben). `ModbusTcpClient::readDouble64()` bleibt als
+  generischer Helfer erhalten.
+
+## [0.4.0-beta.1] - 2026-07-22
+
+### Fixed
+- **KEBA-Treiber gegen die evcc-Referenzimplementierung korrigiert** (charger/keba-modbus.go,
+  an realer Hardware erprobt) — mehrere echte Fehler: Alle KEBA-Werte sind U32 über
+  2 Register (der bisherige 1-Register-Read des Ladestatus hätte immer 0 geliefert);
+  gelesen wird per FC 0x03 (Holding), nicht FC 0x04; Kabelstatus liegt auf 1004 (nicht
+  1002); 1036 ist die GESAMT-Energie, die Sitzungsenergie liegt auf 1502; Ladefreigabe
+  auf Holding 5014 (nicht 5004 — dort liegt das Stromlimit); Status-Enum beginnt bei 0.
+  Kein Block-Read über Wertegrenzen (KEBA lehnt das ab) — jeder Datenpunkt einzeln.
+  Neu dabei: Energie gesamt, Spannungen je Phase, Firmware-Version, Kabelstatus-Enum.
+- Discovery-Sonde für KEBA entsprechend auf U32/FC 0x03 umgestellt (bisher hätte sie
+  echte KEBAs praktisch nie erkannt).
+
+### Changed
+- **Abstimmung mit MeterHub umgesetzt** (Zählersuche matcht auf Profil-Suffix):
+  Sitzungsenergie (`energy_session`) trägt jetzt bei KEBA und go-eCharger ein eigenes
+  Profil `CHB.kWhSession` mit Suffix „ kWh (Sitzung)" — damit nimmt die
+  MeterHubVirtual-Zählersuche nur noch den kumulativen Gesamtzähler (`energy_total`,
+  Suffix „ kWh") auf und nicht den je Ladevorgang zurückspringenden Sitzungswert.
+- `CHUB_GetFunctions`: `energyImportID` liefert bevorzugt `energy_total` (kumulativ),
+  Fallback `energy_session`; Hinweis ergänzt, dass die Steuer-IDs fürs EMS bestimmt
+  sind, nicht für Anzeigemodule.
+
+## [0.3.0-beta.1] - 2026-07-22
+
+### Added
+- **Neuer Gerätetyp: go-e Controller** (Energiemess-Zentrale, nur lesend) — Spannungen
+  L1/L2/L3/N, 6 Stromsensoren (Strom + Leistung), Kategorien Home/Netz/Fahrzeug/Relais/
+  Solar/Batterie mit Leistung und Energiezählern In/Out (Float64 Wh → kWh). Register gemäß
+  offizieller Doku ([go-eController-API](https://github.com/goecharger/go-eController-API),
+  modbus-de.md). Auch in der Discovery (Spannungs-Signatur auf Input 1000/1002).
+- `ModbusTcpClient::readDouble64()` (Float64 Big-Endian, wie PAC2200 in MeterHub).
+
+### Changed
+- Discovery-Hilfetext: Hinweis, dass go-e-Geräte bei nicht (wirklich) laufendem
+  Modbus-Server Port 502 geschlossen halten und damit für den Scan unsichtbar sind —
+  inkl. Prüf-URL (`/api/status?filter=men`). Real beobachtet: Auch bei gespeichertem
+  „aktiviert" lief der Server erst nach Aus-/Einschalten der Einstellung bzw. Neustart.
+
+## [0.2.1-beta.1] - 2026-07-22
+
+### Fixed
+- **go-eCharger-Treiber komplett neu**, gegen die offizielle Herstellerdoku
+  ([go-eCharger-API-v2](https://github.com/goecharger/go-eCharger-API-v2), modbus-de.md)
+  geprüft — der bisherige Registersatz (Platzhalter, Register 1000ff.) war frei erfunden und
+  falsch. Neu: korrekte Input-/Holding-Register (CAR_STATE @100, POWER_TOTAL @120,
+  ENERGY_CHARGE @132, Phasenspannungen/-ströme, Fehlercode, Seriennummer/Firmware),
+  Ladefreigabe über FORCE_STATE (Holding 337, nicht das rein informative ALLOW-Register),
+  Stromlimit über AMPERE_VOLATILE (Holding 299, EEPROM-schonend). Schreibzugriffe laufen
+  jetzt über FC 0x16 (writeMultiple) statt FC 0x06, da go-e Einzelregister-Schreiben laut
+  Doku nicht unterstützt. Neuer Schalter „Byte-Reihenfolge getauscht" für den dokumentierten
+  Firmware-60.3-Bug (behoben mit 60.4).
+- `ModbusTcpClient::u32sw()` ergänzt (wortgetauschte 32-Bit-Werte, analog zu MeterHub).
+- Discovery-Sonde für go-eCharger auf die echten Register (Input 100, Holding 201) umgestellt.
+
+## [0.2.0-beta.1] - 2026-07-22
+
+### Added
+- **Vier Wallbox-Treiber**: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line,
+  Heidelberg Energy Control, go-eCharger Gemini/HOME+ — je mit Ladestatus, Ladeleistung,
+  optionalen Datenpunkt-Gruppen (Strom/Spannung je Phase, Geräteinfo) sowie Steuerung
+  (Ladefreigabe, Stromlimit) über `RequestAction`.
+- `ModbusTcpClient` und `ChargerDriverInterface` als treiberunabhängiges Grundgerüst,
+  analog zu InverterHub/MeterHub.
+- Variablen-Registrierung inkl. automatischem Aufräumen verwaister Variablen beim
+  Herstellerwechsel oder Abwählen einer Datenpunkt-Gruppe.
+- `CHUB_GetFunctions($id)` — erster Vorschlag für den Partnermodul-Vertrag (powerID,
+  energyImportID, chargeEnableID, currentLimitID); der Schreib-Teil ist laut CLAUDE.md
+  noch mit der EMS-Sitzung abzustimmen und daher noch nicht als stabil zu betrachten.
+- **Neues Modul: ChargerHubDiscovery** — durchsucht einen IP-Bereich nach den vier
+  unterstützten Wallbox-Typen und legt gefundene Geräte per Klick als ChargerHub-Instanz
+  an, strukturell wie InverterHubDiscovery/MeterHubDiscovery.
+
+### Fixed
+- `PruneForeignObjects` prüfte nur die direkten Kinder der Instanz, in denen aber nur
+  Kategorien liegen (die eigentlichen Variablen stecken darunter) — verwaiste Variablen
+  eines abgewählten Herstellers oder einer deaktivierten Gruppe wurden dadurch nie entfernt.
+  Jetzt rekursiv wie bei InverterHub.
+
+### Known Issues
+- **Registeradressen aller vier Treiber sind noch nicht an echter Hardware verifiziert**,
+  nur aus den öffentlichen Hersteller-Dokumentationen abgeleitet. Vor Produktiveinsatz,
+  insbesondere der Schreibfunktionen, bitte gegen ein reales Gerät prüfen und Rückmeldung
+  geben (Modell + betroffenes Register).
+
+## [0.1.0] - 2026-07-21
+
+### Added
+- Repo-Gerüst angelegt: Modul-Skelett (`ChargerHub/module.php`, `module.json`), `library.json`,
+  README, LICENSE, CLAUDE.md, `.tools/check-standalone.php`
+- Noch kein konkreter Wallbox-Treiber implementiert
