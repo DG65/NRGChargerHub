@@ -361,6 +361,16 @@ $pt4 = new ChargerHub(779);
 $pt4->prop = ['Manufacturer' => 'alfen', 'PlugTimes' => true];
 check('Zeiten: Alfen hat kein „Fahrzeug verbunden“ -> Funktion nicht aktiv', (new ReflectionMethod($pt4, 'PlugTimesActive'))->invoke($pt4) === false);
 
+// Vertrag 1.7: Zeit-Referenzfelder (0 = Variable nicht vorhanden).
+$GLOBALS['objs'][40010] = ['ObjectIdent' => 'plugged_in_at',        'ObjectType' => 2, 'ParentID' => 780];
+$GLOBALS['objs'][40011] = ['ObjectIdent' => 'ladezeit_sek',         'ObjectType' => 2, 'ParentID' => 780];
+$gf = new ChargerHub(780);
+$gf->prop = ['Manufacturer' => 'charx'];
+$gf->RegisterAttributeInteger('LastSeenAt', 0);
+$fn7 = $gf->GetFunctions()[0];
+check('Vertrag 1.7: contractVersion 1.7', $fn7['contractVersion'] === '1.7');
+check('Vertrag 1.7: vorhandene Zeit-Variablen als ID, fehlende als 0', $fn7['pluggedInAtID'] === 40010 && $fn7['chargeTimeSecID'] === 40011 && $fn7['pluggedOutAtID'] === 0 && $fn7['connectionTimeSecID'] === 0);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

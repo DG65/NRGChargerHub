@@ -5,6 +5,13 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.113-beta.1] - 2026-10-06
+
+### Added
+- `CHUB_GetFunctions`, Vertrag 1.7 (Anfrage Dashboard, abgestimmt mit EMS): optionale Referenzfelder
+  `pluggedInAtID`, `pluggedOutAtID`, `chargeTimeSecID`, `connectionTimeSecID` (Variablen-IDs der
+  Zeit-Variablen, 0 = nicht vorhanden). Rein additiv.
+
 ## [0.9.112-beta.1] - 2026-10-06
 
 ### Added

@@ -4259,8 +4259,10 @@ class ChargerHub extends IPSModule
             // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
             // 1.1: managedBy ergänzt. 1.3: lastSeenAt ergänzt. 1.4: deviceSerial/
             // deviceHost/manufacturer ergänzt. 1.5: duplicateOf ergänzt. 1.6: phases/
-            // phasesSwitchable ergänzt (optional, fehlt = unbekannt).
-            'contractVersion'    => '1.6',
+            // phasesSwitchable ergänzt (optional, fehlt = unbekannt). 1.7: pluggedInAtID/
+            // pluggedOutAtID/chargeTimeSecID/connectionTimeSecID ergänzt (Referenzfelder, 0 =
+            // Variable nicht vorhanden; Dashboard-Anfrage 06.10.2026).
+            'contractVersion'    => '1.7',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -4323,6 +4325,15 @@ class ChargerHub extends IPSModule
             // überspringen als Dublette markierte Einträge beim Messen/
             // Summieren/Sitzungen.
             'duplicateOf'        => $this->GetDuplicateOf(),
+            // 1.7: Zeit-Variablen für die Ladesitzungs-Übersicht (Referenzfelder wie powerID/
+            // plugStateID: Variablen-ID, 0 = nicht vorhanden). plugged_*_at nur mit Property
+            // PlugTimes und Hersteller mit „Fahrzeug verbunden“; Wert 0 = noch nie gewechselt
+            // (unbekannt), das behandelt der Konsument. chargeTimeSec/connectionTimeSec liefert
+            // nur, wer die Zeit selbst meldet (CHARX; DaheimLader nur die Ladezeit).
+            'pluggedInAtID'       => $this->FindVarByIdent('plugged_in_at') ?: 0,
+            'pluggedOutAtID'      => $this->FindVarByIdent('plugged_out_at') ?: 0,
+            'chargeTimeSecID'     => $this->FindVarByIdent('ladezeit_sek') ?: 0,
+            'connectionTimeSecID' => $this->FindVarByIdent('connection_time_sek') ?: 0,
         ];
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
@@ -4536,7 +4547,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.112-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.113-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
