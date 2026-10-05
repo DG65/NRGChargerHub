@@ -203,7 +203,8 @@ $mb = new FakeMb(); $ch = new FakeHub(); $drv = new CharxDriver();
 $b = 2000;
 $mb->set($b + 299, [(ord('C') << 8) | ord('2')]);
 $mb->set($b + 244, [0x0000, 0x2B67]);          // 11111 mW
-$mb->set($b + 250, [0x0001, 0x86A0]);          // 100000 Wh
+$mb->set($b + 250, [0x0000, 0x0000, 0x0001, 0x86A0]); // 100000 Wh (INT64 über 4 Register)
+$mb->set($b + 285, [0, 5430]); $mb->set($b + 287, [0, 3600]);
 $mb->set($b + 289, [0, 0, 0x0000, 0x0BB8]);    // 3000 Wh
 $mb->set($b + 232, [3, 33392, 3, 34392, 3, 35392]); // 230000/231000/232000 mV (MSW, LSW)
 $mb->set($b + 238, [0, 10500, 0, 10600, 0, 10700]);
@@ -213,6 +214,8 @@ $mb->set($b + 293, [0, 0x0040]);
 check('CHARX lesen: Status/Leistung/Energie', $drv->readValues($mb, $ch) === true && $ch->v['state'] === 31 && $ch->v['vehicle_plugged'] === true && abs($ch->v['power'] - 11.111) < 0.001 && $ch->v['energy_total'] === 100.0 && $ch->v['energy_session'] === 3.0);
 check('CHARX lesen: Spannung/Strom je Phase, Freigabe, Limit', $ch->v['voltage_l2'] === 231.0 && abs($ch->v['current_l3'] - 10.7) < 1e-9 && $ch->v['ctl_enable'] === true && $ch->v['ctl_curr_limit'] === 13 && $ch->v['release_mode'] === 5);
 check('CHARX lesen: angewandtes Limit x297 = 7 A', ($ch->v['actual_curr'] ?? null) === 7.0);
+check('CHARX lesen: Energie gesamt als INT64 (Hochwort 0, Tiefwort 100000 Wh)', $ch->v['energy_total'] === 100.0);
+check('CHARX lesen: Verbindungszeit x285 / Ladezeit x287', ($ch->v['connection_time_sek'] ?? null) === 5430 && ($ch->v['ladezeit_sek'] ?? null) === 3600);
 check('CHARX lesen: UID/Fehlercode', $ch->v['dev_serial'] === 'ABCDEF' && $ch->v['error_code'] === 0x40);
 $drv->writeControl($mb, $ch, 'ctl_curr_limit', 4);
 check('CHARX schreiben: Limit auf x301, mind. 6 A', $mb->w === [2301 => 6]);

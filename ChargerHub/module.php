@@ -2759,7 +2759,9 @@ class CharxDriver implements ChargerDriverInterface
     const OFF_VOLTAGE      = 232; // je 2 Register (MSW zuerst), mV, L1/L2/L3 = 232/234/236
     const OFF_CURRENT      = 238; // je 2 Register, mA, L1/L2/L3 = 238/240/242
     const OFF_POWER        = 244; // 2 Register, mW
-    const OFF_ENERGY       = 250; // 2 Register, Wh (Zählerstand Wirkenergie)
+    const OFF_ENERGY       = 250; // 4 Register (INT64), Wh (Zählerstand Wirkenergie) — Handbuch nennt 2, Adressabstand zu x254 und der Praxistest sprechen für 4
+    const OFF_CONN_TIME    = 285; // 2 Register, s (Verbindungszeit in Status B/C/D)
+    const OFF_CHARGE_TIME  = 287; // 2 Register, s (Ladedauer in Status C/D, zurückgesetzt bei B->A)
     const OFF_ENERGY_SESS  = 289; // 4 Register, Wh (aktueller Ladevorgang)
     const OFF_APPLIED_CURR = 297; // 1 Register, A (aktuell von der Steuerung vorgegebener Ladestrom)
     const OFF_ERROR        = 293; // 2 Register (MSB zuerst)
@@ -2809,6 +2811,8 @@ class CharxDriver implements ChargerDriverInterface
                 ['dev_firmware',  'Software-Version',     'S', '', false, 'device', 'Register 110 ff. (ASCII)'],
                 ['release_mode',  'Freigabe-Art',         'I', 'CHB.CharxReleaseMode', true, 'device', 'x120'],
                 ['error_code',    'Fehlercode',           'I', '', true, 'device', 'x293-x294 (Bitfeld)'],
+                ['connection_time_sek', 'Verbindungszeit (Sek.)', 'I', '', true, 'device', 'x285 (s, Zeit in Status B/C/D)'],
+                ['ladezeit_sek',        'Ladezeit (Sek.)',        'I', '', true, 'device', 'x287 (s, Ladedauer in Status C/D)'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
                 ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',           true, 'control', 'RW x300 (nur mit Freigabe-Art „Modbus")'],
@@ -2868,9 +2872,13 @@ class CharxDriver implements ChargerDriverInterface
         if ($pw !== null) {
             $hub->SetVarFloat('power', $mb->u32($pw, 0) / 1000.0);
         }
-        $en = $mb->readHolding($base + self::OFF_ENERGY, 2);
+        // Zählerstand Wirkenergie als INT64 über 4 Register (wie die Sitzungsenergie x289): das
+        // Handbuch führt x250 mit 2 Worten, der Adressabstand zum nächsten Zähler (x254) beträgt aber 4.
+        // Mit nur 2 Worten wurde das höherwertige Wort gelesen und „Energie gesamt“ blieb bei 0
+        // (Fund Mstaudi, 05.10.2026: eigene Abfrage über Register 1250 zeigte 2317,6 kWh).
+        $en = $mb->readHolding($base + self::OFF_ENERGY, 4);
         if ($en !== null) {
-            $hub->SetVarFloat('energy_total', $mb->u32($en, 0) / 1000.0);
+            $hub->SetVarFloat('energy_total', (($mb->u32($en, 0) << 32) | $mb->u32($en, 2)) / 1000.0);
         }
         // Aktuell vorgegebener Ladestrom: zeigt, ob ein gesetztes Limit tatsächlich gilt oder ob die
         // Steuerung (z. B. durch Rückfallstrom/Watchdog) davon abweicht.
@@ -2900,6 +2908,14 @@ class CharxDriver implements ChargerDriverInterface
             $rm = $mb->readHolding($base + self::OFF_RELEASE_MODE, 1);
             if ($rm !== null) {
                 $hub->SetVarInt('release_mode', $mb->u16($rm, 0));
+            }
+            $ct = $mb->readHolding($base + self::OFF_CONN_TIME, 2);
+            if ($ct !== null) {
+                $hub->SetVarInt('connection_time_sek', $mb->u32($ct, 0));
+            }
+            $lt = $mb->readHolding($base + self::OFF_CHARGE_TIME, 2);
+            if ($lt !== null) {
+                $hub->SetVarInt('ladezeit_sek', $mb->u32($lt, 0));
             }
             $er = $mb->readHolding($base + self::OFF_ERROR, 2);
             if ($er !== null) {
@@ -4507,7 +4523,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.110-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.111-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
