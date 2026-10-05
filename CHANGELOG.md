@@ -5,6 +5,13 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.110-beta.1] - 2026-10-05
+
+### Added
+- CHARX: Variable „Angewandtes Limit“ (Register x297, Ampere, aktuell von der Steuerung vorgegebener
+  Ladestrom). Zeigt, ob ein gesetztes Stromlimit wirklich gilt oder ob die Steuerung davon
+  abweicht (z. B. Rückfallstrom/Watchdog). Anlass: Rückfrage von Mstaudi zum Watchdog (Forum).
+
 ## [0.9.109-beta.1] - 2026-09-28
 
 ### Fixed
