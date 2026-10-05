@@ -35,6 +35,8 @@ function IPS_SetIdent($id, $ident) { if (isset($GLOBALS['objs'][$id])) { $GLOBAL
 function IPS_CreateCategory() { $id = 30000 + count($GLOBALS['objs']); $GLOBALS['objs'][$id] = ['ObjectIdent' => '', 'ObjectType' => 0, 'ParentID' => 0]; return $id; }
 function IPS_SetVariableCustomProfile($id, $p) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['VariableCustomProfile'] = $p; } }
 function IPS_SetInfo($id, $s) {}
+function SetValueBoolean($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
+function SetValueInteger($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function IPS_DeleteVariable($id) { unset($GLOBALS['objs'][$id]); }
 function IPS_GetName($id) { return 'Name' . $id; }
 function IPS_SemaphoreEnter($n, $ms) { return true; }
@@ -58,6 +60,10 @@ class IPSModule {
     public function RegisterAttributeBoolean($n, $d) { if (!isset($this->attrb[$n])) $this->attrb[$n] = $d; }
     public function ReadAttributeBoolean($n) { return $this->attrb[$n] ?? false; }
     public function WriteAttributeBoolean($n, $v) { $this->attrb[$n] = $v; }
+    public $attri = [];
+    public function RegisterAttributeInteger($n, $d) { if (!isset($this->attri[$n])) $this->attri[$n] = $d; }
+    public function ReadAttributeInteger($n) { return $this->attri[$n] ?? 0; }
+    public function WriteAttributeInteger($n, $v) { $this->attri[$n] = $v; }
     public function EnableAction($ident) {}
     public $formFields = [];
     public function UpdateFormField($name, $prop, $value) { $this->formFields[$name][$prop] = $value; }
@@ -322,6 +328,38 @@ $dcHub->RequestAction('DuplicateOfKeyChanged', 'ocpphub:999'); // Auswahl im For
 check('DuplicateOfKeyChanged: Zeile folgt der Auswahl (⚠️ fehlendes Ziel), nicht der gespeicherten Property (ℹ️)', ($dcHub->formFields['LinkDuplicateStatus']['caption'] ?? '') !== '' && strpos($dcHub->formFields['LinkDuplicateStatus']['caption'], '⚠️') === 0);
 $dcHub->RequestAction('DuplicateOfKeyChanged', '');
 check('DuplicateOfKeyChanged: Auswahl zurück auf leer -> ℹ️-Zeile', strpos($dcHub->formFields['LinkDuplicateStatus']['caption'], 'ℹ️') === 0);
+
+// Angesteckt-/Abgesteckt-Zeit (Wunsch Mstaudi): aus dem Wechsel von „Fahrzeug verbunden“ abgeleitet.
+$GLOBALS['objs'][40001] = ['ObjectIdent' => 'vehicle_plugged', 'ObjectType' => 2, 'ParentID' => 779];
+$GLOBALS['objs'][40002] = ['ObjectIdent' => 'plugged_in_at',  'ObjectType' => 2, 'ParentID' => 779, 'Value' => 0];
+$GLOBALS['objs'][40003] = ['ObjectIdent' => 'plugged_out_at', 'ObjectType' => 2, 'ParentID' => 779, 'Value' => 0];
+$pt = new ChargerHub(779);
+$pt->prop = ['Manufacturer' => 'peblar', 'PlugTimes' => true];
+$pt->RegisterAttributeInteger('PlugState', -1);
+$pt->SetVarBool('vehicle_plugged', false);
+check('Zeiten: erster gesehener Zustand setzt KEINEN Zeitstempel', $GLOBALS['objs'][40002]['Value'] === 0 && $GLOBALS['objs'][40003]['Value'] === 0);
+$pt->SetVarBool('vehicle_plugged', true);
+$inAt = $GLOBALS['objs'][40002]['Value'];
+check('Zeiten: Wechsel auf angesteckt setzt „Angesteckt um“ (jetzt)', abs($inAt - time()) <= 5 && $GLOBALS['objs'][40003]['Value'] === 0);
+$GLOBALS['objs'][40002]['Value'] = 123;
+$pt->SetVarBool('vehicle_plugged', true);
+check('Zeiten: gleicher Zustand beim nächsten Poll ändert nichts', $GLOBALS['objs'][40002]['Value'] === 123);
+$pt->SetVarBool('vehicle_plugged', false);
+check('Zeiten: Wechsel auf abgesteckt setzt „Abgesteckt um“, „Angesteckt um“ bleibt', abs($GLOBALS['objs'][40003]['Value'] - time()) <= 5 && $GLOBALS['objs'][40002]['Value'] === 123);
+$pt2 = new ChargerHub(779);
+$pt2->prop = ['Manufacturer' => 'peblar', 'PlugTimes' => true];
+$pt2->RegisterAttributeInteger('PlugState', -1);
+$GLOBALS['objs'][40002]['Value'] = 0; $GLOBALS['objs'][40003]['Value'] = 0;
+$pt2->SetVarBool('vehicle_plugged', true);
+check('Zeiten: nach Neustart/Einschalten (Zustand unbekannt) steckendes Fahrzeug bekommt keine Zeit', $GLOBALS['objs'][40002]['Value'] === 0);
+$pt3 = new ChargerHub(779);
+$pt3->prop = ['Manufacturer' => 'peblar', 'PlugTimes' => false];
+$pt3->RegisterAttributeInteger('PlugState', 0);
+$pt3->SetVarBool('vehicle_plugged', true);
+check('Zeiten: Option aus -> nie Zeitstempel', $GLOBALS['objs'][40002]['Value'] === 0);
+$pt4 = new ChargerHub(779);
+$pt4->prop = ['Manufacturer' => 'alfen', 'PlugTimes' => true];
+check('Zeiten: Alfen hat kein „Fahrzeug verbunden“ -> Funktion nicht aktiv', (new ReflectionMethod($pt4, 'PlugTimesActive'))->invoke($pt4) === false);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
