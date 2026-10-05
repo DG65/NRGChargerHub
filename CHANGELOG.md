@@ -5,6 +5,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.114-beta.1] - 2026-10-06
+
+### Fixed
+- CHARX: Ladefreigabe und Stromlimit laufen jetzt wie bei evcc (charger/phoenix-charx.go, bei
+  evcc-Nutzern an echter Hardware erprobt) beide über Register x301 per FC 0x10: Freigabe =
+  Stromvorgabe (mindestens 6 A), Sperre = 0; „Ladefreigabe“ wird aus x301 zurückgelesen (ungleich 0).
+  Bisher wurde die Freigabe über x300 per FC 0x06 geschrieben. x300 ist laut Handbuch nur
+  schreibbar, wenn die Freigabe-Art im WBM auf „Modbus“ steht; bei Mstaudi scheiterte die Aktion
+  („Unerwartete Antwort“), und ein gesetztes Stromlimit änderte die tatsächliche Leistung nicht.
+  Ob die Änderung das behebt, ist an echter Hardware noch offen.
+
 ## [0.9.113-beta.1] - 2026-10-06
 
 ### Added

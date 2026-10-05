@@ -2815,7 +2815,7 @@ class CharxDriver implements ChargerDriverInterface
                 ['ladezeit_sek',        'Ladezeit (Sek.)',        'I', '', true, 'device', 'x287 (s, Ladedauer in Status C/D)'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
-                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',           true, 'control', 'RW x300 (nur mit Freigabe-Art „Modbus")'],
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',           true, 'control', 'RW x301 (Freigabe = Stromvorgabe, Sperre = 0, wie evcc)'],
                 ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to80',   true, 'control', 'RW x301 (6-80 A)'],
             ]],
         ];
@@ -2937,14 +2937,17 @@ class CharxDriver implements ChargerDriverInterface
         }
 
         // Steuerwerte zurücklesen, damit Änderungen aus WBM/anderen Reglern sichtbar sind.
+        // Freigabe und Stromvorgabe laufen wie bei evcc (charger/phoenix-charx.go) beide über x301:
+        // Freigabe = Stromvorgabe ungleich 0, Sperre = 0 (laut Handbuch wird die Freigabe entzogen,
+        // wenn der Wert außerhalb 6-80 A liegt). x300 ist laut Handbuch nur schreibbar, wenn die
+        // Freigabe-Art im WBM auf „Modbus" steht, und scheiterte bei Mstaudi (05.10.2026).
         if ($hub->GroupActive('GroupControl')) {
-            $e = $mb->readHolding($base + self::OFF_ENABLE, 1);
-            if ($e !== null) {
-                $hub->SetVarBool('ctl_enable', $mb->u16($e, 0) === 1);
-            }
             $l = $mb->readHolding($base + self::OFF_CURR_LIMIT, 1);
-            if ($l !== null && $mb->u16($l, 0) >= 6 && $mb->u16($l, 0) <= 80) {
-                $hub->SetVarInt('ctl_curr_limit', $mb->u16($l, 0));
+            if ($l !== null) {
+                $hub->SetVarBool('ctl_enable', $mb->u16($l, 0) !== 0);
+                if ($mb->u16($l, 0) >= 6 && $mb->u16($l, 0) <= 80) {
+                    $hub->SetVarInt('ctl_curr_limit', $mb->u16($l, 0));
+                }
             }
         }
 
@@ -2956,7 +2959,10 @@ class CharxDriver implements ChargerDriverInterface
         $base = $hub->GetChargePointNo() * 1000;
         switch ($ident) {
             case 'ctl_enable':
-                if ($mb->writeSingle($base + self::OFF_ENABLE, ((bool)$value) ? 1 : 0)) {
+                // Wie evcc: Freigabe = zuletzt gewählte Stromvorgabe (mindestens 6 A) nach x301,
+                // Sperre = 0 nach x301; mit FC 0x10 (WriteMultipleRegisters) wie dort.
+                $amp = (bool)$value ? max(6, min($hub->GetMaxCurrentA(), max(6, (int)$hub->GetVarValue('ctl_curr_limit')))) : 0;
+                if ($mb->writeMultiple($base + self::OFF_CURR_LIMIT, [$amp])) {
                     $hub->SetVarBool('ctl_enable', (bool)$value);
                 }
                 break;
@@ -2964,7 +2970,13 @@ class CharxDriver implements ChargerDriverInterface
             case 'ctl_curr_limit':
                 // Laut Handbuch wird die Freigabe entzogen, wenn der Wert außerhalb 6-80 A liegt.
                 $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
-                if ($mb->writeSingle($base + self::OFF_CURR_LIMIT, $amp)) {
+                // x301 ist zugleich die Freigabe: bei gesperrter Freigabe (0) nur merken, nicht
+                // schreiben, sonst würde das Limit die Ladung freigeben.
+                if (!$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
+                if ($mb->writeMultiple($base + self::OFF_CURR_LIMIT, [$amp])) {
                     $hub->SetVarInt('ctl_curr_limit', $amp);
                 }
                 break;
@@ -4547,7 +4559,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.113-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.114-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4558,7 +4570,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
                         ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, „Energie gesamt" eine daraus aufintegrierte Software-Zählung, keine echte Messung (kann von einem echten Zähler abweichen). Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
                         ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer. Laut evcc-Vorlage muss in den Geräteeinstellungen bei der Smart „Nachladen“, bei der Touch „RSDA“ aktiviert sein. Startet die Box über Ladebefehl (Register 95) nicht, hilft ggf. die Ladefreigabe über das Stromlimit (Register 91, wie evcc) im Panel „Steuerungshoheit & Sicherheit“.'],
-                        ['type' => 'Label', 'caption' => '• 🆕🧪 Phoenix Contact CHARX SEC-3xxx (Ladesteuerung): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Unit-ID 1, Port 502. Im WBM der Steuerung Modbus-Server aktivieren, Port 502 freigeben und für Steuerung die Freigabe-Art „Modbus" einstellen. Ein Ladepunkt je Instanz: „Nummer des Ladepunkts" = x der Startadresse (1000 = 1, 2000 = 2 …). Startadressen besser fest im WBM vergeben, „automatisch" kann sich nach einem Neustart ändern.'],
+                        ['type' => 'Label', 'caption' => '• 🆕🧪 Phoenix Contact CHARX SEC-3xxx (Ladesteuerung): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Unit-ID 1, Port 502. Im WBM der Steuerung Modbus-Server aktivieren und Port 502 freigeben. Ladefreigabe und Stromlimit laufen über Register x301 (wie bei evcc: Freigabe = Strom 6-80 A, Sperre = 0). „Maximaler Anschlussstrom" in den Einstellungen unten auf den in der Steuerung eingestellten Maximalstrom setzen, sonst begrenzt der Standardwert. Ein Ladepunkt je Instanz: „Nummer des Ladepunkts" = x der Startadresse (1000 = 1, 2000 = 2 …). Startadressen besser fest im WBM vergeben, „automatisch" kann sich nach einem Neustart ändern.'],
                         ['type' => 'Label', 'caption' => '• 🆕🧪 Peblar Home/Home Plus/Business (auch ChargeLine): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Standard-Unit-ID 255, Port 502. Firmware 1.6 oder neuer; Modbus-Server im Web-Interface des Ladepunkts aktivieren und Smart-Charging-Strategien auf „Standard" stellen. Ladefreigabe „Aus" setzt das Modbus-Stromlimit auf 0 (kein eigenes Freigabe-Register). Phasenumschaltung nur bei Geräten mit unabhängigem Relais.'],
                         ['type' => 'Label', 'caption' => '• 🆕 Fox ESS EV Charger (Modelle A/L/C): Standard-Unit-ID 1, Port 502. Phasenumschaltung nur wirksam, wenn eine externe Phasenumschalt-Box angeschlossen ist.'],
                         ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],

@@ -223,10 +223,19 @@ check('CHARX lesen: angewandtes Limit x297 = 7 A', ($ch->v['actual_curr'] ?? nul
 check('CHARX lesen: Energie gesamt als INT64 (Hochwort 0, Tiefwort 100000 Wh)', $ch->v['energy_total'] === 100.0);
 check('CHARX lesen: Verbindungszeit x285 / Ladezeit x287', ($ch->v['connection_time_sek'] ?? null) === 5430 && ($ch->v['ladezeit_sek'] ?? null) === 3600);
 check('CHARX lesen: UID/Fehlercode', $ch->v['dev_serial'] === 'ABCDEF' && $ch->v['error_code'] === 0x40);
+$ch->v['ctl_enable'] = true;
 $drv->writeControl($mb, $ch, 'ctl_curr_limit', 4);
 check('CHARX schreiben: Limit auf x301, mind. 6 A', $mb->w === [2301 => 6]);
 $mb->w = []; $drv->writeControl($mb, $ch, 'ctl_curr_limit', 60); check('CHARX schreiben: Limit gedeckelt (Max 16 A)', $mb->w === [2301 => 16]);
-$mb->w = []; $drv->writeControl($mb, $ch, 'ctl_enable', false); check('CHARX schreiben: Freigabe x300', $mb->w === [2300 => 0]);
+$mb->w = []; $ch->v['ctl_curr_limit'] = 13; $drv->writeControl($mb, $ch, 'ctl_enable', false); check('CHARX schreiben: Sperre = 0 nach x301 (wie evcc), nicht x300', $mb->w === [2301 => 0] && $ch->v['ctl_enable'] === false);
+$mb->w = []; $drv->writeControl($mb, $ch, 'ctl_curr_limit', 10);
+check('CHARX: Limit bei gesperrter Freigabe nur gemerkt, nicht geschrieben', $mb->w === [] && $ch->v['ctl_curr_limit'] === 10);
+$mb->w = []; $drv->writeControl($mb, $ch, 'ctl_enable', true);
+check('CHARX schreiben: Freigabe = gemerktes Limit (10 A) nach x301', $mb->w === [2301 => 10] && $ch->v['ctl_enable'] === true);
+$rb2 = new FakeMb(); $rh2 = new FakeHub();
+$rb2->set(2299, [(ord('B') << 8) | ord('1')]); $rb2->set(2301, [0]);
+$drv->readValues($rb2, $rh2);
+check('CHARX lesen: x301 = 0 -> Freigabe aus', $rh2->v['ctl_enable'] === false && !isset($rh2->v['ctl_curr_limit']));
 $mb2 = new FakeMb();
 check('CHARX ohne Antwort: connected false', $drv->readValues($mb2, new FakeHub()) === false);
 
