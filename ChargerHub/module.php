@@ -3091,6 +3091,8 @@ class ChargerHub extends IPSModule
         // Zeitpunkt (Unix-Timestamp) des letzten erfolgreichen Lesezyklus —
         // siehe SetVarBool()/GetFunctions() 'lastSeenAt', contractVersion 1.3.
         $this->RegisterAttributeInteger('LastSeenAt', 0);
+        // -1 = unbekannt (noch nicht beobachtet), 0 = abgesteckt, 1 = angesteckt (siehe SetVarBool()).
+        $this->RegisterAttributeInteger('PlugState', -1);
         // 1.6: vom Gerät gemeldete Phasenangaben, 0 = unbekannt (siehe SetPhaseInfo()).
         $this->RegisterAttributeString('DriverFlags', '{}');
         $this->RegisterAttributeInteger('DevicePhases', 0);
@@ -3183,6 +3185,10 @@ class ChargerHub extends IPSModule
         // ChargerHub häufig pollte, und funktionierten sofort bei sehr langem Intervall. Diese
         // Option hält stattdessen eine Verbindung offen statt für jeden Zugriff neu zu verbinden.
         $this->RegisterPropertyBoolean('PersistentConnection', false);
+        // Herstellerübergreifend (Wunsch Mstaudi, 05.10.2026): „Angesteckt um“/„Abgesteckt um“, vom
+        // Modul beim Lesen aus dem Wechsel von „Fahrzeug verbunden“ abgeleitet (die Wallbox meldet
+        // keine Uhrzeiten). Standard aus, damit die Variablenzahl nicht unbemerkt wächst.
+        $this->RegisterPropertyBoolean('PlugTimes', false);
         // Nur DaheimLader: Ladefreigabe über Ladebefehl (Register 95, Standard) oder über das
         // Stromlimit (Register 91, wie evcc).
         $this->RegisterPropertyString('DaheimEnableVia', 'cmd');
@@ -3250,6 +3256,9 @@ class ChargerHub extends IPSModule
         parent::ApplyChanges();
         // Treiber-Merker („Register nicht vorhanden") bei jedem Übernehmen zurücksetzen.
         $this->WriteAttributeString('DriverFlags', '{}');
+        if (!$this->ReadPropertyBoolean('PlugTimes')) {
+            $this->WriteAttributeInteger('PlugState', -1); // beim erneuten Einschalten neu beobachten
+        }
 
         $this->CreateProfiles();
         $this->RegisterVariables();
@@ -4484,6 +4493,10 @@ class ChargerHub extends IPSModule
                 'caption' => $group['caption'],
             ];
         }
+        if ($this->DriverHasPlugState($driver)) {
+            $groupItems[] = ['type' => 'CheckBox', 'name' => 'PlugTimes', 'caption' => '🆕 Angesteckt-/Abgesteckt-Zeit (vom Modul beim Lesen erkannt)'];
+            $groupItems[] = ['type' => 'Label', 'caption' => 'Die Wallbox meldet keine Uhrzeiten. ChargerHub leitet sie aus dem Wechsel von „Fahrzeug verbunden“ ab (Genauigkeit = Lese-Intervall). Der zuerst gesehene Zustand setzt keine Zeit; bis zum ersten beobachteten Wechsel steht 1970 (leer).'];
+        }
         // Zwei-Regler-Schutz (siehe Create): Auswahlfeld „Wer regelt?", wird
         // über CHUB_GetFunctions als 'managedBy' gemeldet. Nur die für den
         // gewählten Hersteller sinnvollen Werte anbieten. Eigenes Panel
@@ -4523,7 +4536,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.111-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.112-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5048,9 +5061,27 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // Hat der Treiber „Fahrzeug verbunden“ (alle außer Alfen) UND ist die Option an? Nur dann werden
+    // die abgeleiteten Zeitstempel „Angesteckt um“/„Abgesteckt um“ angelegt.
+    private function DriverHasPlugState($driver): bool
+    {
+        foreach ($driver->getBaseVars() as $v) {
+            if ($v[0] === 'vehicle_plugged') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function PlugTimesActive($driver = null): bool
+    {
+        return $this->ReadPropertyBoolean('PlugTimes') && $this->DriverHasPlugState($driver ?? $this->GetDriver());
+    }
+
     private function RegisterVariables()
     {
         $driver = $this->GetDriver();
+        $plugTimesActive = $this->PlugTimesActive($driver);
 
         $valid = [];
         foreach ($driver->getBaseVars() as $v) {
@@ -5079,6 +5110,10 @@ class ChargerHub extends IPSModule
         if ($surplusActive) {
             $valid['surplus_status'] = true;
         }
+        if ($plugTimesActive) {
+            $valid['plugged_in_at']  = true;
+            $valid['plugged_out_at'] = true;
+        }
         $this->PruneForeignObjects($valid);
 
         $pos = 0;
@@ -5096,6 +5131,10 @@ class ChargerHub extends IPSModule
             $this->RegisterMqttCardVars();
         }
         $this->RegisterVar(['vehicle_name', 'Zugeordnetes Fahrzeug', 'S', '', true, 'device', ''], $pos++);
+        if ($plugTimesActive) {
+            $this->RegisterVar(['plugged_in_at',  'Angesteckt um',  'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Ja'], $pos++);
+            $this->RegisterVar(['plugged_out_at', 'Abgesteckt um', 'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Nein'], $pos++);
+        }
         if ($surplusActive) {
             $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);
         }
@@ -5394,6 +5433,23 @@ class ChargerHub extends IPSModule
         $vid = $this->FindVarByIdent($ident);
         if ($vid) {
             SetValueBoolean($vid, $value);
+        }
+        // „Angesteckt um“/„Abgesteckt um“: Wechsel von „Fahrzeug verbunden“ beobachten. Der erste
+        // gesehene Zustand (PlugState = -1) setzt keinen Zeitstempel, sonst stünde nach jedem Neustart
+        // oder Einschalten der Option „jetzt“ als Zeit eines längst steckenden Fahrzeugs. Die Zeit ist
+        // die des Lesezyklus, der den Wechsel bemerkt (Genauigkeit = Lese-Intervall), nicht von der Box.
+        if ($ident === 'vehicle_plugged' && $this->PlugTimesActive()) {
+            $now  = $value ? 1 : 0;
+            $prev = $this->ReadAttributeInteger('PlugState');
+            if ($prev !== $now) {
+                if ($prev !== -1) {
+                    $tid = $this->FindVarByIdent($value ? 'plugged_in_at' : 'plugged_out_at');
+                    if ($tid) {
+                        SetValueInteger($tid, time());
+                    }
+                }
+                $this->WriteAttributeInteger('PlugState', $now);
+            }
         }
         // Jeder Treiber meldet einen erfolgreichen Lesezyklus über
         // 'connected'=true (siehe readValues() der vier Driver-Klassen) —

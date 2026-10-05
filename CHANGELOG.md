@@ -5,6 +5,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.112-beta.1] - 2026-10-06
+
+### Added
+- Herstellerübergreifend: optionale Variablen „Angesteckt um“ (`plugged_in_at`) und „Abgesteckt um“
+  (`plugged_out_at`, Profil `~UnixTimestamp`), einschaltbar im Panel „Datenpunkte“ („🆕 Angesteckt-/
+  Abgesteckt-Zeit“, Standard aus, damit die Variablenzahl nicht unbemerkt wächst). Die Wallbox meldet
+  keine Uhrzeiten: ChargerHub leitet sie aus dem Wechsel von „Fahrzeug verbunden“ ab, mit der
+  Genauigkeit des Lese-Intervalls. Der zuerst gesehene Zustand (nach Neustart oder Einschalten der
+  Option) setzt keine Zeit, bis zum ersten beobachteten Wechsel steht 1970 (leer). Gilt für alle
+  Hersteller mit „Fahrzeug verbunden“ (alle außer Alfen). Wunsch Mstaudi.
+
 ## [0.9.111-beta.1] - 2026-10-05
 
 ### Fixed
