@@ -5,6 +5,19 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.111-beta.1] - 2026-10-05
+
+### Fixed
+- CHARX: „Energie gesamt“ blieb bei 0,0 kWh. Der Zählerstand Wirkenergie (x250) wurde nur über 2
+  Register gelesen, also nur das höherwertige Wort. Er wird jetzt als INT64 über 4 Register gelesen
+  (wie die Sitzungsenergie x289); das Handbuch führt x250 mit 2 Worten, der Adressabstand zum
+  nächsten Zähler (x254) beträgt aber 4. Fund Mstaudi (eigene Abfrage über Register 1250 zeigte
+  2317,6 kWh).
+
+### Added
+- CHARX: Variablen „Verbindungszeit (Sek.)“ (x285) und „Ladezeit (Sek.)“ (x287) in „Geräteinformation“,
+  für eine einfache Ladesitzungs-Übersicht (Wunsch Mstaudi).
+
 ## [0.9.110-beta.1] - 2026-10-05
 
 ### Added
