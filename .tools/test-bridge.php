@@ -207,11 +207,12 @@ $mb->set($b + 250, [0x0001, 0x86A0]);          // 100000 Wh
 $mb->set($b + 289, [0, 0, 0x0000, 0x0BB8]);    // 3000 Wh
 $mb->set($b + 232, [3, 33392, 3, 34392, 3, 35392]); // 230000/231000/232000 mV (MSW, LSW)
 $mb->set($b + 238, [0, 10500, 0, 10600, 0, 10700]);
-$mb->set($b + 300, [1]); $mb->set($b + 301, [13]); $mb->set($b + 120, [5]);
+$mb->set($b + 300, [1]); $mb->set($b + 301, [13]); $mb->set($b + 120, [5]); $mb->set($b + 297, [7]);
 $mb->set($b + 113, [0x4142, 0x4344, 0x4546]); $mb->set(110, [0x312E, 0x3900, 0, 0]);
 $mb->set($b + 293, [0, 0x0040]);
 check('CHARX lesen: Status/Leistung/Energie', $drv->readValues($mb, $ch) === true && $ch->v['state'] === 31 && $ch->v['vehicle_plugged'] === true && abs($ch->v['power'] - 11.111) < 0.001 && $ch->v['energy_total'] === 100.0 && $ch->v['energy_session'] === 3.0);
 check('CHARX lesen: Spannung/Strom je Phase, Freigabe, Limit', $ch->v['voltage_l2'] === 231.0 && abs($ch->v['current_l3'] - 10.7) < 1e-9 && $ch->v['ctl_enable'] === true && $ch->v['ctl_curr_limit'] === 13 && $ch->v['release_mode'] === 5);
+check('CHARX lesen: angewandtes Limit x297 = 7 A', ($ch->v['actual_curr'] ?? null) === 7.0);
 check('CHARX lesen: UID/Fehlercode', $ch->v['dev_serial'] === 'ABCDEF' && $ch->v['error_code'] === 0x40);
 $drv->writeControl($mb, $ch, 'ctl_curr_limit', 4);
 check('CHARX schreiben: Limit auf x301, mind. 6 A', $mb->w === [2301 => 6]);

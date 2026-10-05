@@ -2761,6 +2761,7 @@ class CharxDriver implements ChargerDriverInterface
     const OFF_POWER        = 244; // 2 Register, mW
     const OFF_ENERGY       = 250; // 2 Register, Wh (Zählerstand Wirkenergie)
     const OFF_ENERGY_SESS  = 289; // 4 Register, Wh (aktueller Ladevorgang)
+    const OFF_APPLIED_CURR = 297; // 1 Register, A (aktuell von der Steuerung vorgegebener Ladestrom)
     const OFF_ERROR        = 293; // 2 Register (MSB zuerst)
     const OFF_VEHICLE      = 299; // 1 Register, 2 ASCII-Zeichen (A1..IN)
     const OFF_ENABLE       = 300; // R/(W wenn Modbus-Freigabe): 0/1
@@ -2788,6 +2789,7 @@ class CharxDriver implements ChargerDriverInterface
             ['power',           'Ladeleistung',         'F', 'NRG.Watt',        true, 'device', 'x244 (INT32, mW)'],
             ['energy_total',    'Energie gesamt',       'F', 'NRG.kWh',         true, 'device', 'x250 (INT32, Wh)'],
             ['energy_session',  'Energie akt. Sitzung', 'F', 'CHB.kWhSession',  true, 'device', 'x289 (INT64, Wh)'],
+            ['actual_curr',     'Angewandtes Limit',    'F', 'NRG.Ampere',      true, 'device', 'x297 (A, aktuell vorgegebener Ladestrom)'],
         ];
     }
 
@@ -2869,6 +2871,12 @@ class CharxDriver implements ChargerDriverInterface
         $en = $mb->readHolding($base + self::OFF_ENERGY, 2);
         if ($en !== null) {
             $hub->SetVarFloat('energy_total', $mb->u32($en, 0) / 1000.0);
+        }
+        // Aktuell vorgegebener Ladestrom: zeigt, ob ein gesetztes Limit tatsächlich gilt oder ob die
+        // Steuerung (z. B. durch Rückfallstrom/Watchdog) davon abweicht.
+        $ac = $mb->readHolding($base + self::OFF_APPLIED_CURR, 1);
+        if ($ac !== null) {
+            $hub->SetVarFloat('actual_curr', (float)$mb->u16($ac, 0));
         }
         $es = $mb->readHolding($base + self::OFF_ENERGY_SESS, 4);
         if ($es !== null) {
@@ -4499,7 +4507,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.109-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.110-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
