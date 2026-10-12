@@ -588,6 +588,11 @@ class CHUB_ModbusGatewayClient extends CHUB_ModbusTcpClient
 
     private static bool $writeStubLoggedOnce = false;
 
+    // Vom aufrufenden Modul gesetzter Log-Callback (diese Klasse hat kein $this->LogMessage):
+    // function (string $text). Store-Review-Konvention 12.10.2026: Logging nur über die
+    // Modulklasse, nie direkt über die globale Log-Funktion.
+    public $logger = null;
+
     public function __construct($host, $port, $unitId, ?callable $sendDataToParent = null)
     {
         parent::__construct($host, $port, $unitId);
@@ -600,12 +605,13 @@ class CHUB_ModbusGatewayClient extends CHUB_ModbusTcpClient
             return;
         }
         self::$writeStubLoggedOnce = true;
-        IPS_LogMessage(
-            'ChargerHub-Symbox-Gateway',
-            'Schreibzugriffe über "Symbox-Gateway" sind noch nicht implementiert — das ' .
-            'offizielle Symcon-Referenzmodul deckt nur Lesezugriffe ab (siehe SUITE.md 9j). ' .
-            'Ladefreigabe/Stromlimit funktionieren über diesen Verbindungsweg noch nicht.'
-        );
+        if ($this->logger !== null) {
+            ($this->logger)(
+                'Symbox-Gateway: Schreibzugriffe über "Symbox-Gateway" sind noch nicht implementiert — das ' .
+                'offizielle Symcon-Referenzmodul deckt nur Lesezugriffe ab (siehe SUITE.md 9j). ' .
+                'Ladefreigabe/Stromlimit funktionieren über diesen Verbindungsweg noch nicht.'
+            );
+        }
     }
 
     private function gatewayRead(int $function, $startReg, int $count): ?array
@@ -3468,7 +3474,7 @@ class ChargerHub extends IPSModule
                     'no_response'     => 'Keine Antwort über das Gateway — Unit-ID („DeviceID") am Gateway und Verkabelung prüfen.',
                 ];
                 $reason = $this->ReadAttributeString('LastBridgeError');
-                $hint = $hints[$reason] ?? 'Brücke/Gateway prüfen (Meldungsprotokoll „ChargerHub-Symbox-Gateway").';
+                $hint = $hints[$reason] ?? 'Brücke/Gateway prüfen (Meldungen-Log, Einträge mit „Symbox-Gateway").';
             }
             @$this->UpdateFormField('ConnTestResult', 'caption', "❌ Verbindung fehlgeschlagen ({$ts} Uhr) — {$hint}");
         }
@@ -3768,7 +3774,7 @@ class ChargerHub extends IPSModule
             $this->ReadPropertyString('MqttPassword')
         );
         if ($messages === [] && $client->getLastError() !== '') {
-            IPS_LogMessage('ChargerHub-MQTT', 'Instanz ' . $this->InstanceID . ': ' . $client->getLastError());
+            $this->LogMessage('MQTT: ' . $client->getLastError(), KL_WARNING);
             return;
         }
         foreach ($messages as $msg) {
@@ -3823,7 +3829,7 @@ class ChargerHub extends IPSModule
         // RequestAction()-Aufruf (Skript, fremdes Modul, API) würde das
         // umgehen — hier zusätzlich serverseitig zurückweisen.
         if ($this->ReadPropertyBoolean('DemoMode')) {
-            IPS_LogMessage('ChargerHub-Vorführmodus', "Instanz {$this->InstanceID}: Steuerbefehl '$Ident' im Vorführmodus zurückgewiesen.");
+            $this->LogMessage("Vorführmodus: Steuerbefehl '$Ident' zurückgewiesen.", KL_WARNING);
             return;
         }
         // `duplicateOf` betrifft NUR die Zählung, NICHT das Schreibrecht
@@ -3840,13 +3846,13 @@ class ChargerHub extends IPSModule
         // (siehe Treiber) — schlägt der Modbus-Zugriff fehl, bleibt der Wert in
         // der Konsole unverändert (springt nach dem nächsten Poll sichtbar
         // zurück) und blieb bisher ohne jede Fehlermeldung. Jetzt sichtbar im
-        // Meldungen-Log unter "ChargerHub-Schreibfehler".
+        // Meldungen-Log, Eintrag „Schreibfehler …“ dieser Instanz.
         if ($mb->lastWriteError !== '') {
-            IPS_LogMessage('ChargerHub-Schreibfehler', 'Instanz ' . $this->InstanceID . ', ' . $Ident . ': ' . $mb->lastWriteError);
+            $this->LogMessage('Schreibfehler ' . $Ident . ': ' . $mb->lastWriteError, KL_ERROR);
         }
         if ($this->ReadPropertyBoolean('WriteLog') && !empty($mb->writeTrace)) {
             foreach ($mb->writeTrace as $line) {
-                IPS_LogMessage('ChargerHub-Schreibprotokoll', 'Instanz ' . $this->InstanceID . ', ' . $Ident . ': ' . $line);
+                $this->LogMessage('Schreibprotokoll ' . $Ident . ': ' . $line, KL_MESSAGE);
             }
         }
     }
@@ -4435,7 +4441,7 @@ class ChargerHub extends IPSModule
         }
         $this->WriteAttributeString('LastBridgeError', $reason);
         if ($reason !== '') {
-            IPS_LogMessage('ChargerHub-Symbox-Gateway', 'Instanz ' . $this->InstanceID . ': Gateway-Weg nicht verfügbar (' . $reason . ').');
+            $this->LogMessage('Symbox-Gateway: Gateway-Weg nicht verfügbar (' . $reason . ').', KL_WARNING);
         }
     }
 
@@ -4456,12 +4462,14 @@ class ChargerHub extends IPSModule
             // CHUB_ModbusGatewayClient ist keine IPSModule-Instanz und kann
             // SendDataToParent() daher nicht selbst aufrufen — Callback aus
             // diesem (IPSModule-)Kontext übergeben.
-            return new CHUB_ModbusGatewayClient(
+            $gw = new CHUB_ModbusGatewayClient(
                 $this->ReadPropertyString('Host'),
                 $this->ReadPropertyInteger('Port'),
                 $this->ReadPropertyInteger('UnitId'),
                 fn ($payload) => $this->ForwardViaBridge($payload)
             );
+            $gw->logger = fn (string $text) => $this->LogMessage($text, KL_WARNING);
+            return $gw;
         }
         $client = new CHUB_ModbusTcpClient(
             $this->ReadPropertyString('Host'),
@@ -4559,7 +4567,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.114-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.115-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

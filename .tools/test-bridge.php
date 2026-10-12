@@ -8,6 +8,7 @@
 define('VARIABLETYPE_FLOAT', 2); define('VARIABLETYPE_INTEGER', 1);
 define('VARIABLETYPE_BOOLEAN', 0); define('VARIABLETYPE_STRING', 3);
 define('KR_READY', 10103);
+define('KL_MESSAGE', 10201); define('KL_WARNING', 10204); define('KL_ERROR', 10205); define('KL_DEBUG', 10206);
 
 $GLOBALS['inst'] = []; $GLOBALS['props'] = []; $GLOBALS['parentReply'] = ''; $GLOBALS['log'] = [];
 function IPS_GetInstance($id) { return $GLOBALS['inst'][$id] ?? []; }
@@ -64,6 +65,8 @@ class IPSModule {
     public function RegisterAttributeInteger($n, $d) { if (!isset($this->attri[$n])) $this->attri[$n] = $d; }
     public function ReadAttributeInteger($n) { return $this->attri[$n] ?? 0; }
     public function WriteAttributeInteger($n, $v) { $this->attri[$n] = $v; }
+    public $logs = [];
+    public function LogMessage($text, $type) { $this->logs[] = [$type, $text]; }
     public function EnableAction($ident) {}
     public $formFields = [];
     public function UpdateFormField($name, $prop, $value) { $this->formFields[$name][$prop] = $value; }
@@ -379,6 +382,27 @@ $gf->RegisterAttributeInteger('LastSeenAt', 0);
 $fn7 = $gf->GetFunctions()[0];
 check('Vertrag 1.7: contractVersion 1.7', $fn7['contractVersion'] === '1.7');
 check('Vertrag 1.7: vorhandene Zeit-Variablen als ID, fehlende als 0', $fn7['pluggedInAtID'] === 40010 && $fn7['chargeTimeSecID'] === 40011 && $fn7['pluggedOutAtID'] === 0 && $fn7['connectionTimeSecID'] === 0);
+
+// Store-Review-Konvention (12.10.2026): Logging nur über $this->LogMessage(), nie über die globale
+// Log-Funktion. Strukturtest über alle Moduldateien + Funktionstest für den Callback der Bibliotheksklasse.
+$logFree = true;
+foreach (['ChargerHub/module.php', 'ChargerHubBridge/module.php', 'ChargerHubDiscovery/module.php'] as $f) {
+    if (strpos(file_get_contents(__DIR__ . '/../' . $f), 'IPS_LogMessage' . '(') !== false) {
+        $logFree = false;
+        echo "  Fundstelle: $f\n";
+    }
+}
+check('Logging: kein IPS_LogMessage( in den Moduldateien (nur $this->LogMessage)', $logFree);
+$lg = new CHUB_ModbusGatewayClient('', 0, 1, fn ($p) => '');
+$captured = [];
+$lg->logger = function (string $m) use (&$captured) { $captured[] = $m; };
+$lg->writeMultiple(95, [1]);
+$lg->writeMultiple(95, [1]);
+check('Logging: Gateway-Client meldet den Schreib-Hinweis über den Callback (einmal)', count($captured) === 1 && strpos($captured[0], 'Symbox-Gateway') === 0);
+$lh = new ChargerHub(781);
+$lh->prop = ['Active' => true, 'DemoMode' => true];
+$lh->RequestAction('ctl_enable', true);
+check('Logging: Vorführmodus loggt per LogMessage (KL_WARNING)', ($lh->logs[0][0] ?? null) === KL_WARNING && strpos($lh->logs[0][1], 'Vorführmodus') === 0);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

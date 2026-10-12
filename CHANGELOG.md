@@ -5,6 +5,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.115-beta.1] - 2026-10-12
+
+### Changed
+- Logging nur noch über `$this->LogMessage()` mit Log-Stufe (KL_WARNING/KL_ERROR/KL_MESSAGE) statt der
+  globalen Log-Funktion (Symcon-Store-Review-Konvention 12.10.2026, Verbund-Checkliste Punkt 15).
+  Meldungen erscheinen jetzt mit Absender der Instanz; die Texte beginnen mit „Schreibfehler …“,
+  „Schreibprotokoll …“, „Vorführmodus: …“, „MQTT: …“, „Symbox-Gateway: …“ (vorher Absender
+  „ChargerHub-Schreibfehler“ usw.). Die Bibliotheksklasse für den Symbox-Gateway-Weg meldet über einen
+  Log-Callback an die Modulklasse. Prüfstand: Strukturtest auf die globale Log-Funktion in allen
+  drei Moduldateien.
+
 ## [0.9.114-beta.1] - 2026-10-06
 
 ### Fixed
