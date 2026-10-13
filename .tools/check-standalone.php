@@ -26,7 +26,7 @@
 // Präfixe der Partnermodule. CHUB/CHUBD sind die EIGENEN Präfixe dieses Repos
 // und gehören daher NICHT in die Liste — sonst meldet das Skript die eigenen
 // Funktionen als ungeschützte Fremdaufrufe.
-const FOREIGN_PREFIXES = ['IHUB', 'IHUBD', 'IHUBNRG', 'IHUBMON', 'IHUBTILE', 'MHUB', 'MHUBD', 'PVF', 'HEISHA', 'SGW', 'TIBBERGR', 'TESSIE', 'EMS', 'GWET', 'CHUBB'];
+const FOREIGN_PREFIXES = ['IHUB', 'IHUBD', 'IHUBNRG', 'IHUBMON', 'IHUBTILE', 'MHUB', 'MHUBD', 'PVF', 'HEISHA', 'SGW', 'TIBBERGR', 'TESSIE', 'EMS', 'GWET', 'CHUBB', 'GTAUSCH', 'MIGHUB'];
 
 $root = dirname(__DIR__);
 $rx   = '/\b((' . implode('|', FOREIGN_PREFIXES) . ')_[A-Za-z_][A-Za-z0-9_]*)\s*\(/';
