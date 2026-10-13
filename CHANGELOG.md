@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.116-beta.1] - 2026-10-13
+
+### Changed
+- Netzwerksuche (ChargerHubDiscovery): Aufrufe an das Gerätetausch-Modul (vormals MigrationsHub)
+  auf den neuen Funktionspräfix umgestellt: `GTAUSCH_FindLegacyCandidates` und
+  `GTAUSCH_PrefillMigration` zuerst, `MIGHUB_…` als Rückfall (Toolkit-Umbenennung 13.10.2026);
+  Parameter unverändert, jeder Aufruf weiter hinter `function_exists()`. Der Rückfall kann entfallen,
+  sobald das Gerätetausch-Modul im Store ist.
+
 ## [0.9.115-beta.1] - 2026-10-12
 
 ### Changed

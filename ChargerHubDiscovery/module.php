@@ -409,18 +409,18 @@ class ChargerHubDiscovery extends IPSModule
                                 ['caption' => 'IP-Adresse', 'name' => 'ip',           'width' => '150px'],
                                 ['caption' => 'Unit ID',    'name' => 'unitId',       'width' => '100px'],
                                 ['caption' => 'Alt-Instanz gefunden (MigrationsHub)', 'name' => 'legacy', 'width' => '280px',
-                                 'visible' => function_exists('MIGHUB_FindLegacyCandidates')],
+                                 'visible' => $this->hasLegacyFinder()],
                             ],
                             'values' => $values,
                         ],
                         [
                             'type' => 'Label', 'caption' => '🔀 Migration von einer Alt-Instanz (anderes Modul, gleiche IP/Unit-ID): erst oben „Erstellen" klicken — Kommunikation bleibt bei erkannter Alt-Instanz automatisch aus —, dann hier „Migration vorbereiten". Verknüpft die neue mit der alten Instanz in MigrationsHub; Simulation, Bestätigung und Ausführung bleiben dort bewusst manuelle Schritte. Bei mehreren Treffern: nach jeder abgeschlossenen Migration erneut klicken.',
-                            'visible' => function_exists('MIGHUB_FindLegacyCandidates'),
+                            'visible' => $this->hasLegacyFinder(),
                         ],
                         [
                             'type' => 'Button', 'name' => 'BtnPrepareMigration', 'caption' => '🔀  Migration vorbereiten',
                             'onClick' => 'CHUBD_PrepareMigration($id);',
-                            'visible' => function_exists('MIGHUB_FindLegacyCandidates'),
+                            'visible' => $this->hasLegacyFinder(),
                         ],
                         ['type' => 'Label', 'name' => 'MigrationResult', 'caption' => '', 'visible' => false],
                         ['type' => 'OpenObjectButton', 'name' => 'BtnOpenMigration', 'caption' => '→ Zur MigrationsHub-Instanz', 'objectID' => 0, 'visible' => false],
@@ -575,9 +575,23 @@ class ChargerHubDiscovery extends IPSModule
     // vorschlagen (id=0, ambiguous=true) und den Nutzer auf die manuelle
     // Verknüpfung in MigrationsHub verweisen, als eine falsche Historie zu
     // verknüpfen.
+    // Gerätetausch-Schnittstelle (vormals MigrationsHub): Funktionspräfix von MIGHUB_ auf GTAUSCH_
+    // umbenannt (DG65-Toolkit, 13.10.2026). Neuer Präfix zuerst, alter als Rückfall, damit die
+    // Reihenfolge der Veröffentlichungen egal ist; Parameter unverändert.
+    private function hasLegacyFinder(): bool
+    {
+        return function_exists('GTAUSCH_FindLegacyCandidates') || function_exists('MIGHUB_FindLegacyCandidates');
+    }
+
+    private function hasMigrationApi(): bool
+    {
+        return (function_exists('GTAUSCH_FindLegacyCandidates') && function_exists('GTAUSCH_PrefillMigration'))
+            || (function_exists('MIGHUB_FindLegacyCandidates') && function_exists('MIGHUB_PrefillMigration'));
+    }
+
     private function LegacyCandidateFor(string $host, int $unitId, int $excludeInstanceID = 0): array
     {
-        if (!function_exists('MIGHUB_FindLegacyCandidates')) {
+        if (!$this->hasLegacyFinder()) {
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
         // WICHTIG: erster Parameter ist eine MIGRATIONSHUB-Instanz-ID, NICHT
@@ -595,7 +609,13 @@ class ChargerHubDiscovery extends IPSModule
         // 5. Parameter (excludeInstanceID) seit MigrationsHub-Commit f5505c0 —
         // filtert die eigene, gerade angelegte Zielinstanz serverseitig aus,
         // bevor das Host/Port/UnitId-Matching überhaupt läuft.
-        $found = @MIGHUB_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId, $excludeInstanceID);
+        if (function_exists('GTAUSCH_FindLegacyCandidates')) {
+            $found = @GTAUSCH_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId, $excludeInstanceID);
+        } elseif (function_exists('MIGHUB_FindLegacyCandidates')) {
+            $found = @MIGHUB_FindLegacyCandidates($migID, $host, $this->ReadPropertyInteger('Port'), $unitId, $excludeInstanceID);
+        } else {
+            return ['id' => 0, 'name' => '', 'ambiguous' => false];
+        }
         if (!is_array($found)) {
             return ['id' => 0, 'name' => '', 'ambiguous' => false];
         }
@@ -638,7 +658,7 @@ class ChargerHubDiscovery extends IPSModule
      * Verknüpft die erste bereits erstellte ChargerHub-Instanz, für die eine
      * Alt-Instanz gefunden wurde, mit MigrationsHub — legt bei Bedarf eine
      * MigrationsHub-Instanz an (wiederverwendet eine vorhandene) und ruft
-     * MIGHUB_PrefillMigration() auf. Absichtlich nur EIN Treffer je Klick:
+     * GTAUSCH_PrefillMigration() auf (vormals MIGHUB_). Absichtlich nur EIN Treffer je Klick:
      * PrefillMigration setzt Source/Target auf EINER MigrationsHub-Instanz,
      * ein zweiter Aufruf vor Abschluss der ersten Migration würde die noch
      * nicht bestätigte Zuordnung überschreiben.
@@ -649,7 +669,7 @@ class ChargerHubDiscovery extends IPSModule
             $this->UpdateFormField('MigrationResult', 'caption', $m);
             $this->UpdateFormField('MigrationResult', 'visible', true);
         };
-        if (!function_exists('MIGHUB_FindLegacyCandidates') || !function_exists('MIGHUB_PrefillMigration')) {
+        if (!$this->hasMigrationApi()) {
             $say('❌ MigrationsHub ist nicht installiert.');
             return;
         }
@@ -699,7 +719,11 @@ class ChargerHubDiscovery extends IPSModule
             if ($migID <= 0) {
                 $migID = IPS_CreateInstance(self::MIGRATIONSHUB_GUID);
             }
-            MIGHUB_PrefillMigration($migID, $legacy['id'], $targetID);
+            if (function_exists('GTAUSCH_PrefillMigration')) {
+                GTAUSCH_PrefillMigration($migID, $legacy['id'], $targetID);
+            } elseif (function_exists('MIGHUB_PrefillMigration')) {
+                MIGHUB_PrefillMigration($migID, $legacy['id'], $targetID);
+            }
             $prepared[] = $targetID;
             $this->WriteAttributeString('PreparedTargets', json_encode($prepared));
 

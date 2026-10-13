@@ -404,6 +404,25 @@ $lh->prop = ['Active' => true, 'DemoMode' => true];
 $lh->RequestAction('ctl_enable', true);
 check('Logging: Vorführmodus loggt per LogMessage (KL_WARNING)', ($lh->logs[0][0] ?? null) === KL_WARNING && strpos($lh->logs[0][1], 'Vorführmodus') === 0);
 
+// Gerätetausch (vormals MigrationsHub): neuer Präfix GTAUSCH_ wird von der Suche genutzt (13.10.2026).
+function GTAUSCH_FindLegacyCandidates($id, $host, $port = 0, $unitId = 0, $excl = 0)
+{
+    $GLOBALS['gtauschCall'] = [$id, $host, $port, $unitId, $excl];
+    return [['InstanceID' => 51234, 'Name' => 'Alte Wallbox']];
+}
+$GLOBALS['byGuid']['{330717BB-E309-41A2-90A8-FDA3179ED948}'] = [900];
+$GLOBALS['inst'][51234] = ['ModuleInfo' => ['ModuleID' => '{OTHER}']];
+require __DIR__ . '/../ChargerHubDiscovery/module.php';
+$disc = new ChargerHubDiscovery(782);
+$disc->prop = ['Port' => 502];
+$lc = new ReflectionMethod($disc, 'LegacyCandidateFor');
+$res = $lc->invoke($disc, '192.168.1.50', 255, 777);
+check('Gerätetausch: GTAUSCH_FindLegacyCandidates wird mit unveränderten Parametern genutzt', ($GLOBALS['gtauschCall'] ?? null) === [900, '192.168.1.50', 502, 255, 777] && $res['id'] === 51234 && $res['ambiguous'] === false);
+$srcDisc = file_get_contents(__DIR__ . '/../ChargerHubDiscovery/module.php');
+check('Gerätetausch: neuer Präfix zuerst, alter MIGHUB_ als Rückfall (Suche und Vorbereiten)',
+    strpos($srcDisc, "function_exists('GTAUSCH_FindLegacyCandidates')") < strpos($srcDisc, "elseif (function_exists('MIGHUB_FindLegacyCandidates')")
+    && strpos($srcDisc, "function_exists('GTAUSCH_PrefillMigration')") < strpos($srcDisc, "elseif (function_exists('MIGHUB_PrefillMigration')"));
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);
