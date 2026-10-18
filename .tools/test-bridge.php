@@ -423,6 +423,26 @@ check('Gerätetausch: neuer Präfix zuerst, alter MIGHUB_ als Rückfall (Suche u
     strpos($srcDisc, "function_exists('GTAUSCH_FindLegacyCandidates')") < strpos($srcDisc, "elseif (function_exists('MIGHUB_FindLegacyCandidates')")
     && strpos($srcDisc, "function_exists('GTAUSCH_PrefillMigration')") < strpos($srcDisc, "elseif (function_exists('MIGHUB_PrefillMigration')"));
 
+// Store-Review-Funde (EMS, 18.10.2026): (1) Presentation-OPTIONS-Farbschlüssel hängen von der Darstellung ab
+// (Wertanzeige kennt nur ColorActive/ColorValue, ein 'Color' bricht in Symcon 9.1 das Anlegen ab). ChargerHub
+// nutzt klassische Variablenprofile statt Presentation-OPTIONS; der Test hält das fest, bis das jemand ändert.
+// (2) Variablen-Pflege in ApplyChanges darf nicht von Fremdmodul-Abfragen abhängen (löscht sonst beim
+// Symcon-Start, wenn die Fremdinstanz noch nicht instanziiert ist).
+$noPresentation = true;
+foreach (['ChargerHub/module.php', 'ChargerHubBridge/module.php', 'ChargerHubDiscovery/module.php'] as $f) {
+    $src = file_get_contents(__DIR__ . '/../' . $f);
+    if (preg_match("/'(ColorValue|ColorActive|VALUE_PRESENTATION|PRESENTATION_)/", $src) || stripos($src, 'SetVariableCustomPresentation') !== false) {
+        $noPresentation = false;
+        echo "  Fundstelle Presentation: $f\n";
+    }
+}
+check('Presentation: keine Presentation-OPTIONS/Farbschlüssel in den Moduldateien (klassische Profile)', $noPresentation);
+$rvm = new ReflectionMethod('ChargerHub', 'RegisterVariables');
+$rvLines = array_slice(file($rvm->getFileName()), $rvm->getStartLine() - 1, $rvm->getEndLine() - $rvm->getStartLine() + 1);
+$rvBody = implode('', $rvLines);
+check('ApplyChanges-Variablenpflege: RegisterVariables() fragt keine Fremdmodule ab (function_exists/GetFunctions/Instanzliste)',
+    strpos($rvBody, 'function_exists(') === false && strpos($rvBody, '_GetFunctions(') === false && strpos($rvBody, 'IPS_GetInstanceListByModuleID') === false);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);
