@@ -57,6 +57,7 @@ class IPSModule {
     public function ReadPropertyFloat($n) { return $this->prop[$n] ?? 0.0; }
     public function ReadAttributeString($n) { return $this->attr[$n] ?? ''; }
     public function WriteAttributeString($n, $v) { $this->attr[$n] = $v; }
+    public function RegisterAttributeString($n, $d) { if (!isset($this->attr[$n])) $this->attr[$n] = $d; }
     public $attrb = [];
     public function RegisterAttributeBoolean($n, $d) { if (!isset($this->attrb[$n])) $this->attrb[$n] = $d; }
     public function ReadAttributeBoolean($n) { return $this->attrb[$n] ?? false; }
@@ -448,7 +449,8 @@ $rvBody = implode('', $rvLines);
 check('ApplyChanges-Variablenpflege: RegisterVariables() fragt keine Fremdmodule ab (function_exists/GetFunctions/Instanzliste)',
     strpos($rvBody, 'function_exists(') === false && strpos($rvBody, '_GetFunctions(') === false && strpos($rvBody, 'IPS_GetInstanceListByModuleID') === false);
 
-// go-e: Wortreihenfolge der 32-Bit-Werte automatisch an der Netzspannung erkennen (Fund baraka/Adam, 20.10.2026).
+// go-e: vertauschte Wortreihenfolge der 32-Bit-Werte wird an der Netzspannung ERKANNT und gemeldet, aber nicht
+// ausgeglichen (Entscheidung Dietmar, 20.10.2026; Fund baraka/Adam): keine falschen Werte in Variablen/Archiv.
 $goe = new GoeChargerDriver();
 function goeRegs(FakeMb $m, array $volts, bool $swapped) {
     $m->set(100, [2]);
@@ -459,30 +461,39 @@ function goeRegs(FakeMb $m, array $volts, bool $swapped) {
 $gm = new FakeMb(); goeRegs($gm, [224, 223, 225], true);
 $gh = new FakeHub(); $gh->groups['GoeWordSwap'] = false;
 $goe->readValues($gm, $gh);
-check('go-e Automatik: getauschte Wortreihenfolge (Spannung [V, 0]) erkannt, Merker gesetzt, Hinweis einmal', ($gh->flags['goe_word_swap'] ?? false) === true && count($gh->notes) === 1);
-check('go-e Automatik: Spannung/Strom/Gesamtenergie danach richtig (224 V, 6,2 A, 9515,7 kWh)', ($gh->v['voltage_l1'] ?? null) === 224.0 && abs(($gh->v['current_l1'] ?? 0) - 6.2) < 1e-9 && abs(($gh->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+check('go-e: vertauschte Wortreihenfolge (Spannung [V, 0]) erkannt, Merker gesetzt, Hinweis einmal im Log', ($gh->flags['goe_order_mismatch'] ?? false) === true && count($gh->notes) === 1 && strpos($gh->notes[0], 'msr') !== false);
+check('go-e: bei Vertauschung KEINE 32-Bit-Werte in Variablen (keine 14 Mio. V, kein Archiv-Müll), Status weiter gelesen', !isset($gh->v['voltage_l1']) && !isset($gh->v['current_l1']) && !isset($gh->v['energy_total']) && ($gh->v['state'] ?? null) === 2);
 $gh->notes = []; $goe->readValues($gm, $gh);
-check('go-e Automatik: kein erneuter Hinweis bei folgenden Polls', count($gh->notes) === 0);
+check('go-e: kein erneuter Hinweis bei folgenden Polls', count($gh->notes) === 0);
 $gm2 = new FakeMb(); goeRegs($gm2, [224, 223, 225], false);
 $gh2 = new FakeHub(); $gh2->groups['GoeWordSwap'] = false;
 $goe->readValues($gm2, $gh2);
-check('go-e Automatik: Standardreihenfolge ([0, V]) bleibt unverändert, kein Tausch, kein Hinweis', empty($gh2->flags['goe_word_swap']) && count($gh2->notes) === 0 && ($gh2->v['voltage_l1'] ?? null) === 224.0 && abs(($gh2->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+check('go-e: Standardreihenfolge ([0, V]) liest normal (224 V, 6,2 A, 9515,7 kWh), kein Hinweis', empty($gh2->flags['goe_order_mismatch']) && count($gh2->notes) === 0 && ($gh2->v['voltage_l1'] ?? null) === 224.0 && abs(($gh2->v['current_l1'] ?? 0) - 6.2) < 1e-9 && abs(($gh2->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
 $gm3 = new FakeMb(); goeRegs($gm3, [0, 0, 0], false);
 $gh3 = new FakeHub(); $gh3->groups['GoeWordSwap'] = false;
 $goe->readValues($gm3, $gh3);
-check('go-e Automatik: ohne Spannung (0 V) keine Entscheidung', empty($gh3->flags['goe_word_swap']) && count($gh3->notes) === 0);
-$gm4 = new FakeMb(); goeRegs($gm4, [224, 223, 225], false);
-$gh4 = new FakeHub(); $gh4->groups['GoeWordSwap'] = true; // Nutzer hat manuell getauscht gesetzt
-$gm4->reads = []; $goe->readValues($gm4, $gh4);
-check('go-e Automatik: manuell gesetzter Schalter übersteuert, keine Erkennung', empty($gh4->flags['goe_word_swap']) && count(array_filter($gm4->reads, fn ($a) => $a === 108)) === 1);
-
-// Folgt eine später am Gerät umgestellte Einstellung ohne „Übernehmen“: erst getauscht, dann wieder Standard.
+check('go-e: ohne Spannung (0 V) keine Entscheidung und kein Hinweis', empty($gh3->flags['goe_order_mismatch']) && count($gh3->notes) === 0);
+$gm4 = new FakeMb(); goeRegs($gm4, [224, 223, 225], true);
+$gh4 = new FakeHub(); $gh4->groups['GoeWordSwap'] = true; // Nutzer erzwingt „getauscht“
+$goe->readValues($gm4, $gh4);
+check('go-e: erzwungene Option liest vertauschte Werte richtig (224 V, 9515,7 kWh), keine Erkennung/kein Hinweis', empty($gh4->flags['goe_order_mismatch']) && count($gh4->notes) === 0 && ($gh4->v['voltage_l1'] ?? null) === 224.0 && abs(($gh4->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
 $gm5 = new FakeMb(); goeRegs($gm5, [224, 223, 225], true);
 $gh5 = new FakeHub(); $gh5->groups['GoeWordSwap'] = false;
 $goe->readValues($gm5, $gh5);
 $gm6 = new FakeMb(); goeRegs($gm6, [224, 223, 225], false);
 $gh5->notes = []; $goe->readValues($gm6, $gh5);
-check('go-e Automatik: nach Umstellung am Gerät folgt die Erkennung (Merker zurück, Werte wieder richtig, ein Hinweis)', ($gh5->flags['goe_word_swap'] ?? true) === false && count($gh5->notes) === 1 && ($gh5->v['voltage_l1'] ?? null) === 224.0 && abs(($gh5->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+check('go-e: nach Korrektur am Gerät folgt die Erkennung ohne Übernehmen (Merker zurück, Werte wieder da, ein Hinweis)', ($gh5->flags['goe_order_mismatch'] ?? true) === false && count($gh5->notes) === 1 && ($gh5->v['voltage_l1'] ?? null) === 224.0 && abs(($gh5->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+// Sichtbarer Hinweis im Formular
+$hf = new ChargerHub(783);
+$hf->prop = ['Manufacturer' => 'goe'];
+$hi = new ReflectionMethod($hf, 'GoeOrderHintItems');
+check('go-e Formularhinweis: ohne Merker kein Hinweis', $hi->invoke($hf) === []);
+$hf->RegisterAttributeString('DriverFlags', '{}');
+$hf->SetDriverFlag('goe_order_mismatch', true);
+$items = $hi->invoke($hf);
+check('go-e Formularhinweis: bei Vertauschung ⚠️-Zeile mit msr-Anleitung und „NICHT übernommen“', count($items) === 1 && strpos($items[0]['caption'], '⚠️') === 0 && strpos($items[0]['caption'], 'msr') !== false && strpos($items[0]['caption'], 'NICHT übernommen') !== false);
+$hf->prop['GoeWordSwap'] = true;
+check('go-e Formularhinweis: bei erzwungener Option kein Hinweis', $hi->invoke($hf) === []);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
