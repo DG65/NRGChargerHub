@@ -1754,7 +1754,15 @@ class GoeChargerDriver implements ChargerDriverInterface
             }
             $fw = $mb->readInput(self::REG_FWV, 2);
             if ($fw !== null) {
-                $hub->SetVarStr('dev_firmware', $mb->readStr($fw, 0, 2));
+                // Die 4-Byte-Zeichenkette hängt an derselben Wortreihenfolge wie die 32-Bit-Werte: bei
+                // einer go-e mit Firmware 56.2 und vertauschter Reihenfolge kam „.256“ statt „56.2“ an
+                // (Fund baraka/Adam, 20.10.2026). Erzwungene Option: Wörter tauschen; erkannte Vertauschung
+                // ohne Ausgleich: nicht übernehmen (wie die 32-Bit-Werte).
+                if ($hub->GroupActive('GoeWordSwap')) {
+                    $hub->SetVarStr('dev_firmware', $mb->readStr([$mb->u16($fw, 1), $mb->u16($fw, 0)], 0, 2));
+                } elseif (!$hub->GetDriverFlag('goe_order_mismatch')) {
+                    $hub->SetVarStr('dev_firmware', $mb->readStr($fw, 0, 2));
+                }
             }
             $etotR = $mb->readInput(self::REG_ENERGY_TOTAL, 2);
             $etot  = ($etotR !== null) ? $this->u32($mb, $hub, $etotR, 0) : null;
@@ -4646,7 +4654,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.120-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.121-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
