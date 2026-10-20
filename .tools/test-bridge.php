@@ -497,6 +497,14 @@ $fm3 = new FakeMb(); $fm3->set(100, [2]); $fm3->set(105, [0x2E32, 0x3536]);
 $goe->readValues($fm3, $fh3);
 check('go-e Firmware-String: bei erkannter, nicht ausgeglichener Vertauschung nicht übernommen', !isset($fh3->v['dev_firmware']));
 
+// Leistung je Phase: Einheit 0,1 W (Rohwert 40000 = 4000 W), vorher 1000-fach zu groß (4 000 000 W).
+$pm = new FakeMb(); $pm->set(100, [2]);
+$pm->set(146, [0, 40000]); $pm->set(148, [0, 40000]); $pm->set(150, [0, 39000]);
+$pm->set(120, [0x0006, 0x4190 + 0]);                 // Gesamtleistung 0,01 W: 0x00064190 = 410000 = 4100 W
+$ph = new FakeHub(); $ph->groups['GoeWordSwap'] = false;
+$goe->readValues($pm, $ph);
+check('go-e Leistung je Phase: Rohwert 40000 = 4000 W (0,1 W), nicht 4 000 000 W', ($ph->v['power_l1'] ?? null) === 4000.0 && ($ph->v['power_l2'] ?? null) === 4000.0 && ($ph->v['power_l3'] ?? null) === 3900.0);
+
 // Sichtbarer Hinweis im Formular
 $hf = new ChargerHub(783);
 $hf->prop = ['Manufacturer' => 'goe'];
