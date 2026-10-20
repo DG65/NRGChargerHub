@@ -483,6 +483,20 @@ $goe->readValues($gm5, $gh5);
 $gm6 = new FakeMb(); goeRegs($gm6, [224, 223, 225], false);
 $gh5->notes = []; $goe->readValues($gm6, $gh5);
 check('go-e: nach Korrektur am Gerät folgt die Erkennung ohne Übernehmen (Merker zurück, Werte wieder da, ein Hinweis)', ($gh5->flags['goe_order_mismatch'] ?? true) === false && count($gh5->notes) === 1 && ($gh5->v['voltage_l1'] ?? null) === 224.0 && abs(($gh5->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+// Firmware-Version als 4-Byte-Zeichenkette hängt an derselben Wortreihenfolge (Adam: FW 56.2 kam als „.256“).
+$fm = new FakeMb(); $fm->set(100, [2]); $fm->set(105, [0x2E32, 0x3536]); // „.2“ „56“ = vertauscht
+$fh = new FakeHub(); $fh->groups['GoeWordSwap'] = true;
+$goe->readValues($fm, $fh);
+check('go-e Firmware-String: bei erzwungener Option Wörter getauscht -> „56.2“ statt „.256“', ($fh->v['dev_firmware'] ?? null) === '56.2');
+$fm2 = new FakeMb(); $fm2->set(100, [2]); $fm2->set(105, [0x3536, 0x2E32]);
+$fh2 = new FakeHub(); $fh2->groups['GoeWordSwap'] = false;
+$goe->readValues($fm2, $fh2);
+check('go-e Firmware-String: Standardreihenfolge -> „56.2“', ($fh2->v['dev_firmware'] ?? null) === '56.2');
+$fh3 = new FakeHub(); $fh3->groups['GoeWordSwap'] = false; $fh3->flags['goe_order_mismatch'] = true;
+$fm3 = new FakeMb(); $fm3->set(100, [2]); $fm3->set(105, [0x2E32, 0x3536]);
+$goe->readValues($fm3, $fh3);
+check('go-e Firmware-String: bei erkannter, nicht ausgeglichener Vertauschung nicht übernommen', !isset($fh3->v['dev_firmware']));
+
 // Sichtbarer Hinweis im Formular
 $hf = new ChargerHub(783);
 $hf->prop = ['Manufacturer' => 'goe'];
