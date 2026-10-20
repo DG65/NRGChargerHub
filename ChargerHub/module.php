@@ -1505,7 +1505,7 @@ class GoeChargerDriver implements ChargerDriverInterface
     const REG_ENERGY_TOTAL  = 128; // U32, 2 Register, 0,1 kWh (Gesamt seit Inbetriebnahme)
     const REG_ENERGY_CHARGE = 132; // U32, 2 Register, Deka-Wattsekunden (Ws*10) — aktuelle/letzte Ladesitzung
     const REG_VOLT_N      = 144;
-    const REG_POWER_L1    = 146; // U32, 2 Register, 0,1 kW
+    const REG_POWER_L1    = 146; // U32, 2 Register, 0,1 W (die Doku nennt 0,1 kW, die Geräte liefern aber 0,1 W: Archivwerte WB 2 Firmware 60.6 und Rohwerte baraka Firmware 56.2, 20.10.2026)
     const REG_POWER_L2    = 148;
     const REG_POWER_L3    = 150;
     const REG_ADAPTER     = 202; // U16: 0=kein Adapter, 1=16A-Adapter
@@ -1611,9 +1611,9 @@ class GoeChargerDriver implements ChargerDriverInterface
                 ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Input 114-115 (0,1 A)'],
                 ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Input 116-117 (0,1 A)'],
                 ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Input 118-119 (0,1 A)'],
-                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Input 146-147 (0,1 kW)'],
-                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Input 148-149 (0,1 kW)'],
-                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Input 150-151 (0,1 kW)'],
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Input 146-147 (U32, 0,1 W)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Input 148-149 (U32, 0,1 W)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Input 150-151 (U32, 0,1 W)'],
                 ['phases_charging', 'Genutzte Phasen (nach Schütz)', 'I', 'CHB.GoePhaseCount', true, 'phases', 'Input 205 (Bitmaske)'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
@@ -1731,7 +1731,9 @@ class GoeChargerDriver implements ChargerDriverInterface
                 $pr = $mb->readInput(self::REG_POWER_L1 + ($ph - 1) * 2, 2);
                 $pw = ($pr !== null) ? $this->u32($mb, $hub, $pr, 0) : null;
                 if ($pw !== null) {
-                    $hub->SetVarFloat('power_l' . $ph, $pw * 100.0); // 0,1 kW -> W
+                    // Einheit 0,1 W (nicht 0,1 kW wie in der Doku): vorher 1000-fach zu große Werte, z. B.
+                    // 4 000 000 W statt 4 000 W (Archiv Dietmar, Firmware 60.6; Rohwerte baraka, Firmware 56.2).
+                    $hub->SetVarFloat('power_l' . $ph, $pw / 10.0); // 0,1 W -> W
                 }
             }
             $nr = $mb->readInput(self::REG_VOLT_N, 2);
@@ -4654,7 +4656,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.121-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.122-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

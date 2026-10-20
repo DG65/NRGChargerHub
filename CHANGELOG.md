@@ -5,6 +5,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.122-beta.1] - 2026-10-20
+
+### Fixed
+- go-e: „Leistung L1/L2/L3“ kam 1000-fach zu groß an (z. B. 4 000 000 W statt 4 000 W). Die Register 146 bis 151
+  liefern 0,1 W je Einheit, die go-e-Doku nennt 0,1 kW; ChargerHub rechnete mal 100 statt durch 10. Bestätigt an
+  zwei Geräten mit zwei Firmware-Ständen: archivierte Werte einer go-e mit Firmware 60.6 (Maximum je Phase
+  4 000 000 W bei 11 800 W Gesamtleistung) und Rohwerte einer go-e mit Firmware 56.2 (13 000 bei 1,3 kW).
+  **Bereits archivierte Phasenleistungen früherer Versionen bleiben 1000-fach zu groß** (Archiv bei Bedarf
+  nachträglich bereinigen oder die Variablen ab diesem Zeitpunkt neu archivieren). Gesamtleistung
+  („Ladeleistung“) war nie betroffen.
+
 ## [0.9.121-beta.1] - 2026-10-20
 
 ### Fixed
@@ -12,11 +23,6 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   32-Bit-Werte. Mit erzwungener Option kam „.256“ statt „56.2“ an (Fund baraka/Adam, Firmware 56.2).
   Jetzt werden die Wörter bei erzwungener Option getauscht; bei erkannter, nicht ausgeglichener Vertauschung
   wird die Zeichenkette wie die 32-Bit-Werte nicht übernommen.
-
-### Bekannt offen
-- go-e Firmware 56.2: „Leistung L1/L2/L3“ kommt 1000-fach zu groß an (Rohwert 13000 bei 1,3 kW; die Doku nennt
-  0,1 kW je Einheit, das Gerät liefert offenbar 0,1 W). Ob das an der alten Firmware oder an der Doku liegt, ist
-  offen; Nachprüfung an einer go-e mit Firmware 60.x steht aus, bevor die Skalierung geändert wird.
 
 ## [0.9.120-beta.1] - 2026-10-20
 
