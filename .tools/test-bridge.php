@@ -459,22 +459,30 @@ function goeRegs(FakeMb $m, array $volts, bool $swapped) {
 $gm = new FakeMb(); goeRegs($gm, [224, 223, 225], true);
 $gh = new FakeHub(); $gh->groups['GoeWordSwap'] = false;
 $goe->readValues($gm, $gh);
-check('go-e Automatik: getauschte Wortreihenfolge (Spannung [V, 0]) erkannt, Merker gesetzt, Hinweis einmal', ($gh->flags['goe_word_swap'] ?? false) === true && ($gh->flags['goe_swap_checked'] ?? false) === true && count($gh->notes) === 1);
+check('go-e Automatik: getauschte Wortreihenfolge (Spannung [V, 0]) erkannt, Merker gesetzt, Hinweis einmal', ($gh->flags['goe_word_swap'] ?? false) === true && count($gh->notes) === 1);
 check('go-e Automatik: Spannung/Strom/Gesamtenergie danach richtig (224 V, 6,2 A, 9515,7 kWh)', ($gh->v['voltage_l1'] ?? null) === 224.0 && abs(($gh->v['current_l1'] ?? 0) - 6.2) < 1e-9 && abs(($gh->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
 $gh->notes = []; $goe->readValues($gm, $gh);
 check('go-e Automatik: kein erneuter Hinweis bei folgenden Polls', count($gh->notes) === 0);
 $gm2 = new FakeMb(); goeRegs($gm2, [224, 223, 225], false);
 $gh2 = new FakeHub(); $gh2->groups['GoeWordSwap'] = false;
 $goe->readValues($gm2, $gh2);
-check('go-e Automatik: Standardreihenfolge ([0, V]) bleibt unverändert, Entscheidung gemerkt, kein Tausch', empty($gh2->flags['goe_word_swap']) && ($gh2->flags['goe_swap_checked'] ?? false) === true && ($gh2->v['voltage_l1'] ?? null) === 224.0 && abs(($gh2->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+check('go-e Automatik: Standardreihenfolge ([0, V]) bleibt unverändert, kein Tausch, kein Hinweis', empty($gh2->flags['goe_word_swap']) && count($gh2->notes) === 0 && ($gh2->v['voltage_l1'] ?? null) === 224.0 && abs(($gh2->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
 $gm3 = new FakeMb(); goeRegs($gm3, [0, 0, 0], false);
 $gh3 = new FakeHub(); $gh3->groups['GoeWordSwap'] = false;
 $goe->readValues($gm3, $gh3);
-check('go-e Automatik: ohne Spannung (0 V) keine Entscheidung', empty($gh3->flags['goe_word_swap']) && empty($gh3->flags['goe_swap_checked']));
+check('go-e Automatik: ohne Spannung (0 V) keine Entscheidung', empty($gh3->flags['goe_word_swap']) && count($gh3->notes) === 0);
 $gm4 = new FakeMb(); goeRegs($gm4, [224, 223, 225], false);
 $gh4 = new FakeHub(); $gh4->groups['GoeWordSwap'] = true; // Nutzer hat manuell getauscht gesetzt
 $gm4->reads = []; $goe->readValues($gm4, $gh4);
-check('go-e Automatik: manuell gesetzter Schalter übersteuert, keine Erkennung', empty($gh4->flags['goe_word_swap']) && empty($gh4->flags['goe_swap_checked']) && count(array_filter($gm4->reads, fn ($a) => $a === 108)) === 1);
+check('go-e Automatik: manuell gesetzter Schalter übersteuert, keine Erkennung', empty($gh4->flags['goe_word_swap']) && count(array_filter($gm4->reads, fn ($a) => $a === 108)) === 1);
+
+// Folgt eine später am Gerät umgestellte Einstellung ohne „Übernehmen“: erst getauscht, dann wieder Standard.
+$gm5 = new FakeMb(); goeRegs($gm5, [224, 223, 225], true);
+$gh5 = new FakeHub(); $gh5->groups['GoeWordSwap'] = false;
+$goe->readValues($gm5, $gh5);
+$gm6 = new FakeMb(); goeRegs($gm6, [224, 223, 225], false);
+$gh5->notes = []; $goe->readValues($gm6, $gh5);
+check('go-e Automatik: nach Umstellung am Gerät folgt die Erkennung (Merker zurück, Werte wieder richtig, ein Hinweis)', ($gh5->flags['goe_word_swap'] ?? true) === false && count($gh5->notes) === 1 && ($gh5->v['voltage_l1'] ?? null) === 224.0 && abs(($gh5->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

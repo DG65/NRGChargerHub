@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.118-beta.1] - 2026-10-20
+
+### Fixed
+- go-e, Wortreihenfolge-Automatik (0.9.117): Die Erkennung war nach der ersten Entscheidung dauerhaft
+  festgehalten. Wurde die Einstellung am Gerät später geändert (msr), blieben die Werte bis zum nächsten
+  „Übernehmen“ falsch. Die Prüfung läuft jetzt bei jedem Lesezyklus; ein eindeutiges Muster setzt den
+  Merker oder nimmt ihn zurück (je ein Hinweis im Meldungen-Log), 0 V oder gemischte Werte lassen den
+  bisherigen Stand unverändert.
+
 ## [0.9.117-beta.1] - 2026-10-20
 
 ### Added

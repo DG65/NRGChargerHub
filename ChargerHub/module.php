@@ -1541,14 +1541,16 @@ class GoeChargerDriver implements ChargerDriverInterface
 
     // Erkennt automatisch, ob das Gerät 32-Bit-Werte mit vertauschter Wortreihenfolge sendet (Fund
     // baraka/Adam, 20.10.2026: Spannung 224 V erschien als 14 680 064 = 224 x 65 536, Gesamtenergie als
-    // 194 124 185,7 kWh statt 9 515,7 kWh). Die go-e-Doku nennt dafür die Einstellungen msb/msr und
-    // Firmware 60.3. Maßstab ist die Netzspannung (100-300 V): normal [0, V], getauscht [V, 0]. Nur
-    // eindeutige Muster entscheiden; Phase ohne Spannung (0 V) oder andere Werte lassen die Frage offen.
-    // Der Merker gilt bis zum nächsten „Übernehmen“. Hat der Nutzer den Schalter „Byte-Reihenfolge
-    // getauscht“ selbst gesetzt, entscheidet allein der.
+    // 194 124 185,7 kWh statt 9 515,7 kWh). Die go-e-API nennt dafür die Einstellungen msb/msr (Bytes bzw.
+    // Register vertauschen, seit Firmware 60.4 einstellbar; Firmware 60.3 hatte es vertauscht). Maßstab ist
+    // die Netzspannung (100-300 V): normal [0, V], getauscht [V, 0]. Nur eindeutige Muster entscheiden;
+    // Phase ohne Spannung (0 V) oder andere Werte lassen den bisherigen Stand unverändert. Die Prüfung
+    // läuft bei JEDEM Lesezyklus, damit eine später am Gerät umgestellte Einstellung ohne „Übernehmen“
+    // folgt (ein dauerhafter Merker würde nach der Umstellung falsche Werte liefern). Hat der Nutzer den
+    // Schalter „Wortreihenfolge getauscht erzwingen“ selbst gesetzt, entscheidet allein der.
     private function detectWordOrder($mb, $hub): void
     {
-        if ($hub->GroupActive('GoeWordSwap') || $hub->GetDriverFlag('goe_swap_checked')) {
+        if ($hub->GroupActive('GoeWordSwap')) {
             return;
         }
         $vr = $mb->readInput(self::REG_VOLT_L1, 6); // L1, L2, L3 je 2 Register
@@ -1566,12 +1568,13 @@ class GoeChargerDriver implements ChargerDriverInterface
                 $normal++;
             }
         }
-        if ($swapped > 0 && $normal === 0) {
+        $isSwapped = $hub->GetDriverFlag('goe_word_swap');
+        if ($swapped > 0 && $normal === 0 && !$isSwapped) {
             $hub->SetDriverFlag('goe_word_swap', true);
-            $hub->SetDriverFlag('goe_swap_checked', true);
-            $hub->LogNote('go-e: Wortreihenfolge der 32-Bit-Werte automatisch als getauscht erkannt (Spannung als Wert x 65536 geliefert); es wird mit getauschter Reihenfolge gelesen.');
-        } elseif ($normal > 0 && $swapped === 0) {
-            $hub->SetDriverFlag('goe_swap_checked', true);
+            $hub->LogNote('go-e: Wortreihenfolge der 32-Bit-Werte als getauscht erkannt (Spannung als Wert x 65536 geliefert, go-e-Einstellung msr/Firmware 60.3); es wird mit getauschter Reihenfolge gelesen.');
+        } elseif ($normal > 0 && $swapped === 0 && $isSwapped) {
+            $hub->SetDriverFlag('goe_word_swap', false);
+            $hub->LogNote('go-e: Wortreihenfolge der 32-Bit-Werte ist wieder die Standardreihenfolge (go-e-Einstellung geändert); es wird normal gelesen.');
         }
     }
 
@@ -4613,7 +4616,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.117-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.118-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
