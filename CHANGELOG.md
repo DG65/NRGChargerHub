@@ -5,6 +5,19 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.119-beta.1] - 2026-10-20
+
+### Changed
+- go-e, vertauschte Wortreihenfolge (Fund baraka/Adam): Statt die Werte automatisch auszugleichen
+  (0.9.117/0.9.118), wird die Vertauschung nur noch ERKANNT und GEMELDET (Entscheidung Dietmar: Ursache am
+  Gerät beheben, keine Folgeprobleme durch halb korrigierte Werte). Bei erkannter Vertauschung (Netzspannung
+  als Wert x 65536, bei jedem Lesezyklus geprüft) werden die betroffenen 32-Bit-Werte NICHT in Variablen
+  geschrieben, also auch nicht archiviert; Status, Stecker, Seriennummer usw. laufen weiter. Im Formular
+  erscheint ein ⚠️-Hinweis mit der Anleitung (go-e-Einstellung `msr` umstellen, z. B. über die HTTP-API), einmal
+  steht eine Meldung im Meldungen-Log. Korrigiert der Nutzer die Einstellung am Gerät, kehren die Werte ohne
+  „Übernehmen“ zurück. Wer die Einstellung nicht ändern kann, setzt „Wortreihenfolge getauscht erzwingen“; sie
+  hat Vorrang und liest die vertauschte Reihenfolge richtig.
+
 ## [0.9.118-beta.1] - 2026-10-20
 
 ### Fixed

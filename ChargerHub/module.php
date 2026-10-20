@@ -1468,9 +1468,9 @@ class HeidelbergDriver implements ChargerDriverInterface
 //   wie bei den anderen drei Treibern.
 // - Firmware 60.3 hatte laut Doku eine vertauschte Byte-Reihenfolge bei
 //   32-Bit-Werten, seit 60.4 behoben; die API-Doku nennt außerdem die
-//   einstellbaren Optionen msb/msr. Die Wortreihenfolge wird seit 0.9.117
-//   automatisch an der Netzspannung erkannt (detectWordOrder()); die Option
-//   „getauscht erzwingen" bleibt als manuelle Übersteuerung.
+//   einstellbaren Optionen msb/msr. Eine vertauschte Wortreihenfolge wird seit
+//   0.9.119 an der Netzspannung erkannt (detectWordOrder()) und gemeldet, aber nicht
+//   ausgeglichen; die Option „getauscht erzwingen" bleibt als manuelle Übersteuerung.
 // - Ladefreigabe: FORCE_STATE (Register 337) ist laut HTTP-API-Doku (api key
 //   "frc") die für Automatisierung vorgesehene R/W-Steuerung
 //   (Neutral=0, Off=1, On=2) — nicht das ebenfalls vorhandene ALLOW-Register
@@ -1534,20 +1534,31 @@ class GoeChargerDriver implements ChargerDriverInterface
     // 42.949.672,95 W in einer archivierten Variable.
     private function u32($mb, $hub, $regs, $offset)
     {
-        $swap = $hub->GroupActive('GoeWordSwap') || $hub->GetDriverFlag('goe_word_swap');
-        $v = $swap ? $mb->u32sw($regs, $offset) : $mb->u32($regs, $offset);
+        if ($hub->GroupActive('GoeWordSwap')) {
+            $v = $mb->u32sw($regs, $offset);
+        } elseif ($hub->GetDriverFlag('goe_order_mismatch')) {
+            // Gerät sendet die Wörter vertauscht und der Nutzer hat nichts ausgeglichen: keine
+            // Phantasiewerte (Spannung 14 Mio. V) in Variablen und Archiv schreiben, siehe detectWordOrder().
+            return null;
+        } else {
+            $v = $mb->u32($regs, $offset);
+        }
         return ($v === 0xFFFFFFFF) ? null : $v;
     }
 
-    // Erkennt automatisch, ob das Gerät 32-Bit-Werte mit vertauschter Wortreihenfolge sendet (Fund
-    // baraka/Adam, 20.10.2026: Spannung 224 V erschien als 14 680 064 = 224 x 65 536, Gesamtenergie als
-    // 194 124 185,7 kWh statt 9 515,7 kWh). Die go-e-API nennt dafür die Einstellungen msb/msr (Bytes bzw.
-    // Register vertauschen, seit Firmware 60.4 einstellbar; Firmware 60.3 hatte es vertauscht). Maßstab ist
-    // die Netzspannung (100-300 V): normal [0, V], getauscht [V, 0]. Nur eindeutige Muster entscheiden;
-    // Phase ohne Spannung (0 V) oder andere Werte lassen den bisherigen Stand unverändert. Die Prüfung
-    // läuft bei JEDEM Lesezyklus, damit eine später am Gerät umgestellte Einstellung ohne „Übernehmen“
-    // folgt (ein dauerhafter Merker würde nach der Umstellung falsche Werte liefern). Hat der Nutzer den
-    // Schalter „Wortreihenfolge getauscht erzwingen“ selbst gesetzt, entscheidet allein der.
+    // Erkennt, ob das Gerät 32-Bit-Werte mit vertauschter Wortreihenfolge sendet (Fund baraka/Adam,
+    // 20.10.2026: Spannung 224 V erschien als 14 680 064 = 224 x 65 536, Gesamtenergie als
+    // 194 124 185,7 kWh statt 9 515,7 kWh). Die go-e-API nennt dafür die Einstellungen msb/msr (Bytes
+    // bzw. Register vertauschen, seit Firmware 60.4 einstellbar; Firmware 60.3 hatte es vertauscht).
+    // Es wird NICHT automatisch ausgeglichen (Entscheidung Dietmar, 20.10.2026: Ursache am Gerät
+    // beheben, keine Folgeprobleme durch halb korrigierte Werte): bei erkannter Vertauschung werden die
+    // betroffenen 32-Bit-Werte nicht in Variablen geschrieben (u32() liefert null), im Formular steht
+    // ein Hinweis (siehe GoeOrderHintItems()) und einmal ein Eintrag im Meldungen-Log. Maßstab ist die
+    // Netzspannung (100-300 V): normal [0, V], vertauscht [V, 0]. Nur eindeutige Muster entscheiden;
+    // 0 V oder gemischte Werte lassen den bisherigen Stand unverändert. Die Prüfung läuft bei jedem
+    // Lesezyklus, damit eine am Gerät korrigierte Einstellung ohne „Übernehmen“ folgt. Wer die
+    // Einstellung am Gerät nicht ändern kann, setzt die Option „Wortreihenfolge getauscht erzwingen“;
+    // sie hat Vorrang und schaltet die Erkennung ab.
     private function detectWordOrder($mb, $hub): void
     {
         if ($hub->GroupActive('GoeWordSwap')) {
@@ -1568,13 +1579,13 @@ class GoeChargerDriver implements ChargerDriverInterface
                 $normal++;
             }
         }
-        $isSwapped = $hub->GetDriverFlag('goe_word_swap');
-        if ($swapped > 0 && $normal === 0 && !$isSwapped) {
-            $hub->SetDriverFlag('goe_word_swap', true);
-            $hub->LogNote('go-e: Wortreihenfolge der 32-Bit-Werte als getauscht erkannt (Spannung als Wert x 65536 geliefert, go-e-Einstellung msr/Firmware 60.3); es wird mit getauschter Reihenfolge gelesen.');
-        } elseif ($normal > 0 && $swapped === 0 && $isSwapped) {
-            $hub->SetDriverFlag('goe_word_swap', false);
-            $hub->LogNote('go-e: Wortreihenfolge der 32-Bit-Werte ist wieder die Standardreihenfolge (go-e-Einstellung geändert); es wird normal gelesen.');
+        $mismatch = $hub->GetDriverFlag('goe_order_mismatch');
+        if ($swapped > 0 && $normal === 0 && !$mismatch) {
+            $hub->SetDriverFlag('goe_order_mismatch', true);
+            $hub->LogNote('go-e: Das Gerät sendet 32-Bit-Werte mit vertauschter Wortreihenfolge (Spannung kommt als Wert x 65536 an). Die betroffenen Werte werden nicht übernommen. Bitte an der go-e die Einstellung msr (Modbus-Register vertauschen) umstellen oder in ChargerHub „Wortreihenfolge getauscht erzwingen“ setzen.');
+        } elseif ($normal > 0 && $swapped === 0 && $mismatch) {
+            $hub->SetDriverFlag('goe_order_mismatch', false);
+            $hub->LogNote('go-e: Die Wortreihenfolge der 32-Bit-Werte stimmt wieder (Einstellung am Gerät geändert); die Werte werden wieder übernommen.');
         }
     }
 
@@ -1626,7 +1637,7 @@ class GoeChargerDriver implements ChargerDriverInterface
             // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
             // generische Datenpunkt-Gruppen-Infrastruktur mit). Default AUS, da
             // nur die veraltete Firmware 60.3 betroffen ist.
-            'GoeWordSwap' => ['caption' => 'Wortreihenfolge getauscht erzwingen (wird sonst automatisch an der Spannung erkannt; Firmware 60.3 oder go-e-Einstellung msr)', 'vars' => [], 'default' => false],
+            'GoeWordSwap' => ['caption' => 'Wortreihenfolge getauscht erzwingen (nur wenn die go-e-Einstellung msr nicht geändert werden kann; sonst zeigt ChargerHub bei vertauschter Reihenfolge einen Hinweis)', 'vars' => [], 'default' => false],
         ];
     }
 
@@ -4561,6 +4572,22 @@ class ChargerHub extends IPSModule
         ];
     }
 
+    // Sichtbarer Hinweis im Formular, wenn der go-e-Treiber eine vertauschte Wortreihenfolge erkannt hat
+    // und nicht ausgleicht (Merker 'goe_order_mismatch', siehe GoeChargerDriver::detectWordOrder()).
+    private function GoeOrderHintItems(): array
+    {
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe'
+            || $this->ReadPropertyBoolean('GoeWordSwap')
+            || !$this->GetDriverFlag('goe_order_mismatch')) {
+            return [];
+        }
+        return [[
+            'type'    => 'Label',
+            'name'    => 'GoeOrderHint',
+            'caption' => '⚠️ go-e: Das Gerät sendet 32-Bit-Werte (Spannung, Strom, Leistung, Energie) mit vertauschter Wortreihenfolge. Diese Werte werden deshalb NICHT übernommen. Lösung am Gerät: Einstellung msr (Modbus-Register vertauschen) auf den anderen Wert stellen, z. B. über die HTTP-API http://<IP der go-e>/api/set?msr=false bzw. =true (aktueller Wert: http://<IP>/api/status?filter=msb,msr). Wer das nicht ändern kann: unten im Panel „Datenpunkte“ „Wortreihenfolge getauscht erzwingen“ setzen.',
+        ]];
+    }
+
     public function GetConfigurationForm()
     {
         $driver = $this->GetDriver();
@@ -4572,6 +4599,9 @@ class ChargerHub extends IPSModule
                 'name'    => $propName,
                 'caption' => $group['caption'],
             ];
+        }
+        foreach ($this->GoeOrderHintItems() as $hintItem) {
+            array_unshift($groupItems, $hintItem);
         }
         if ($this->DriverHasPlugState($driver)) {
             $groupItems[] = ['type' => 'CheckBox', 'name' => 'PlugTimes', 'caption' => '🆕 Angesteckt-/Abgesteckt-Zeit (vom Modul beim Lesen erkannt)'];
@@ -4616,7 +4646,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.118-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.119-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
