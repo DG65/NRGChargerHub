@@ -1582,7 +1582,7 @@ class GoeChargerDriver implements ChargerDriverInterface
         $mismatch = $hub->GetDriverFlag('goe_order_mismatch');
         if ($swapped > 0 && $normal === 0 && !$mismatch) {
             $hub->SetDriverFlag('goe_order_mismatch', true);
-            $hub->LogNote('go-e: Das Gerät sendet 32-Bit-Werte mit vertauschter Wortreihenfolge (Spannung kommt als Wert x 65536 an). Die betroffenen Werte werden nicht übernommen. Bitte an der go-e die Einstellung msr (Modbus-Register vertauschen) umstellen oder in ChargerHub „Wortreihenfolge getauscht erzwingen“ setzen.');
+            $hub->LogNote('go-e: Das Gerät sendet 32-Bit-Werte mit vertauschter Wortreihenfolge (Spannung kommt als Wert x 65536 an). Die betroffenen Werte werden nicht übernommen. Bitte in der go-e-App unter Einstellungen > API Einstellungen „Register tauschen“ und „Bytes tauschen“ ausschalten (Standard) oder in ChargerHub „Wortreihenfolge getauscht erzwingen“ setzen.');
         } elseif ($normal > 0 && $swapped === 0 && $mismatch) {
             $hub->SetDriverFlag('goe_order_mismatch', false);
             $hub->LogNote('go-e: Die Wortreihenfolge der 32-Bit-Werte stimmt wieder (Einstellung am Gerät geändert); die Werte werden wieder übernommen.');
@@ -1637,7 +1637,7 @@ class GoeChargerDriver implements ChargerDriverInterface
             // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
             // generische Datenpunkt-Gruppen-Infrastruktur mit). Default AUS, da
             // nur die veraltete Firmware 60.3 betroffen ist.
-            'GoeWordSwap' => ['caption' => 'Wortreihenfolge getauscht erzwingen (nur wenn die go-e-Einstellung msr nicht geändert werden kann; sonst zeigt ChargerHub bei vertauschter Reihenfolge einen Hinweis)', 'vars' => [], 'default' => false],
+            'GoeWordSwap' => ['caption' => 'Wortreihenfolge getauscht erzwingen (nur wenn „Register tauschen“ in der go-e-App nicht ausgeschaltet werden kann; sonst zeigt ChargerHub bei vertauschter Reihenfolge einen Hinweis)', 'vars' => [], 'default' => false],
         ];
     }
 
@@ -4584,7 +4584,7 @@ class ChargerHub extends IPSModule
         return [[
             'type'    => 'Label',
             'name'    => 'GoeOrderHint',
-            'caption' => '⚠️ go-e: Das Gerät sendet 32-Bit-Werte (Spannung, Strom, Leistung, Energie) mit vertauschter Wortreihenfolge. Diese Werte werden deshalb NICHT übernommen. Lösung am Gerät: Einstellung msr (Modbus-Register vertauschen) auf den anderen Wert stellen, z. B. über die HTTP-API http://<IP der go-e>/api/set?msr=false bzw. =true (aktueller Wert: http://<IP>/api/status?filter=msb,msr). Wer das nicht ändern kann: unten im Panel „Datenpunkte“ „Wortreihenfolge getauscht erzwingen“ setzen.',
+            'caption' => '⚠️ go-e: Das Gerät sendet 32-Bit-Werte (Spannung, Strom, Leistung, Energie) mit vertauschter Wortreihenfolge. Diese Werte werden deshalb NICHT übernommen. Lösung am Gerät: in der go-e-App unter Einstellungen → API Einstellungen die Schalter „Register tauschen“ und „Bytes tauschen“ ausschalten (Standard; API-Schlüssel msr und msb). Wer das nicht ändern kann: unten im Panel „Datenpunkte“ „Wortreihenfolge getauscht erzwingen“ setzen.',
         ]];
     }
 
@@ -4646,7 +4646,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.119-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.120-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
