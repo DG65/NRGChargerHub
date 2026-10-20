@@ -1467,8 +1467,10 @@ class HeidelbergDriver implements ChargerDriverInterface
 //   in der Doku, z. B. 200 für ALLOW/40201) — dieselbe 0-basierte Konvention
 //   wie bei den anderen drei Treibern.
 // - Firmware 60.3 hatte laut Doku eine vertauschte Byte-Reihenfolge bei
-//   32-Bit-Werten, seit 60.4 behoben. Für 60.3 die Option "Byte-Reihenfolge
-//   getauscht" aktivieren.
+//   32-Bit-Werten, seit 60.4 behoben; die API-Doku nennt außerdem die
+//   einstellbaren Optionen msb/msr. Die Wortreihenfolge wird seit 0.9.117
+//   automatisch an der Netzspannung erkannt (detectWordOrder()); die Option
+//   „getauscht erzwingen" bleibt als manuelle Übersteuerung.
 // - Ladefreigabe: FORCE_STATE (Register 337) ist laut HTTP-API-Doku (api key
 //   "frc") die für Automatisierung vorgesehene R/W-Steuerung
 //   (Neutral=0, Off=1, On=2) — nicht das ebenfalls vorhandene ALLOW-Register
@@ -1532,8 +1534,45 @@ class GoeChargerDriver implements ChargerDriverInterface
     // 42.949.672,95 W in einer archivierten Variable.
     private function u32($mb, $hub, $regs, $offset)
     {
-        $v = $hub->GroupActive('GoeWordSwap') ? $mb->u32sw($regs, $offset) : $mb->u32($regs, $offset);
+        $swap = $hub->GroupActive('GoeWordSwap') || $hub->GetDriverFlag('goe_word_swap');
+        $v = $swap ? $mb->u32sw($regs, $offset) : $mb->u32($regs, $offset);
         return ($v === 0xFFFFFFFF) ? null : $v;
+    }
+
+    // Erkennt automatisch, ob das Gerät 32-Bit-Werte mit vertauschter Wortreihenfolge sendet (Fund
+    // baraka/Adam, 20.10.2026: Spannung 224 V erschien als 14 680 064 = 224 x 65 536, Gesamtenergie als
+    // 194 124 185,7 kWh statt 9 515,7 kWh). Die go-e-Doku nennt dafür die Einstellungen msb/msr und
+    // Firmware 60.3. Maßstab ist die Netzspannung (100-300 V): normal [0, V], getauscht [V, 0]. Nur
+    // eindeutige Muster entscheiden; Phase ohne Spannung (0 V) oder andere Werte lassen die Frage offen.
+    // Der Merker gilt bis zum nächsten „Übernehmen“. Hat der Nutzer den Schalter „Byte-Reihenfolge
+    // getauscht“ selbst gesetzt, entscheidet allein der.
+    private function detectWordOrder($mb, $hub): void
+    {
+        if ($hub->GroupActive('GoeWordSwap') || $hub->GetDriverFlag('goe_swap_checked')) {
+            return;
+        }
+        $vr = $mb->readInput(self::REG_VOLT_L1, 6); // L1, L2, L3 je 2 Register
+        if ($vr === null) {
+            return;
+        }
+        $swapped = 0;
+        $normal  = 0;
+        for ($i = 0; $i < 3; $i++) {
+            $w0 = $mb->u16($vr, $i * 2);
+            $w1 = $mb->u16($vr, $i * 2 + 1);
+            if ($w1 === 0 && $w0 >= 100 && $w0 <= 300) {
+                $swapped++;
+            } elseif ($w0 === 0 && $w1 >= 100 && $w1 <= 300) {
+                $normal++;
+            }
+        }
+        if ($swapped > 0 && $normal === 0) {
+            $hub->SetDriverFlag('goe_word_swap', true);
+            $hub->SetDriverFlag('goe_swap_checked', true);
+            $hub->LogNote('go-e: Wortreihenfolge der 32-Bit-Werte automatisch als getauscht erkannt (Spannung als Wert x 65536 geliefert); es wird mit getauschter Reihenfolge gelesen.');
+        } elseif ($normal > 0 && $swapped === 0) {
+            $hub->SetDriverFlag('goe_swap_checked', true);
+        }
     }
 
     public function getBaseVars()
@@ -1584,7 +1623,7 @@ class GoeChargerDriver implements ChargerDriverInterface
             // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
             // generische Datenpunkt-Gruppen-Infrastruktur mit). Default AUS, da
             // nur die veraltete Firmware 60.3 betroffen ist.
-            'GoeWordSwap' => ['caption' => 'Byte-Reihenfolge getauscht (nur Firmware 60.3 — mit 60.4 behoben)', 'vars' => [], 'default' => false],
+            'GoeWordSwap' => ['caption' => 'Wortreihenfolge getauscht erzwingen (wird sonst automatisch an der Spannung erkannt; Firmware 60.3 oder go-e-Einstellung msr)', 'vars' => [], 'default' => false],
         ];
     }
 
@@ -1644,6 +1683,7 @@ class GoeChargerDriver implements ChargerDriverInterface
         if (!$ok) {
             return false;
         }
+        $this->detectWordOrder($mb, $hub);
         $carState = $mb->u16($car, 0);
         $hub->SetVarInt('state', $carState);
         // 2=lädt, 3=wartet auf Fahrzeug(-Freigabe), 4=Ladung beendet+verbunden
@@ -4033,6 +4073,12 @@ class ChargerHub extends IPSModule
         }
     }
 
+    // Einmalige Hinweismeldung aus einem Treiber (Treiber haben kein $this->LogMessage).
+    public function LogNote(string $text)
+    {
+        $this->LogMessage($text, KL_MESSAGE);
+    }
+
     // Merker der Treiber (z. B. „Register nicht vorhanden, nicht mehr abfragen“); werden bei
     // jedem „Übernehmen“ zurückgesetzt, damit ein Register danach einmal neu versucht wird.
     public function GetDriverFlag(string $key): bool
@@ -4567,7 +4613,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.116-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.117-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

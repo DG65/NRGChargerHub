@@ -186,6 +186,8 @@ check('Farbe: 🔗 grün 0x2E8B3D, ✏️ Standard -1', $f2[0]['color'] === 0x2E
 class FakeMb {
     public $r = []; public $w = []; public $reads = [];
     function set($a, $vals) { foreach ($vals as $i => $v) $this->r[$a + $i] = $v; }
+    function readInput($a, $n) { return $this->readHolding($a, $n); }
+    function u32sw($x, $o) { return (($x[$o + 1] & 0xFFFF) << 16) | ($x[$o] & 0xFFFF); }
     function readHolding($a, $n) { $this->reads[] = $a; $o = []; for ($i = 0; $i < $n; $i++) { if (!isset($this->r[$a + $i])) return null; $o[] = $this->r[$a + $i]; } return $o; }
     function u16($x, $o) { return $x[$o] & 0xFFFF; }
     function u32($x, $o) { return (($x[$o] & 0xFFFF) << 16) | ($x[$o + 1] & 0xFFFF); }
@@ -196,7 +198,10 @@ class FakeMb {
 class FakeHub {
     public $v = []; public $cp = 2;
     function GetChargePointNo() { return $this->cp; }
-    function GroupActive($g) { return true; }
+    public $groups = [];
+    function GroupActive($g) { return $this->groups[$g] ?? true; }
+    public $notes = [];
+    function LogNote($m) { $this->notes[] = $m; }
     function GetMaxCurrentA() { return 16; }
     function GetVarValue($i) { return $this->v[$i] ?? ''; }
     public $hidden = [];
@@ -442,6 +447,34 @@ $rvLines = array_slice(file($rvm->getFileName()), $rvm->getStartLine() - 1, $rvm
 $rvBody = implode('', $rvLines);
 check('ApplyChanges-Variablenpflege: RegisterVariables() fragt keine Fremdmodule ab (function_exists/GetFunctions/Instanzliste)',
     strpos($rvBody, 'function_exists(') === false && strpos($rvBody, '_GetFunctions(') === false && strpos($rvBody, 'IPS_GetInstanceListByModuleID') === false);
+
+// go-e: Wortreihenfolge der 32-Bit-Werte automatisch an der Netzspannung erkennen (Fund baraka/Adam, 20.10.2026).
+$goe = new GoeChargerDriver();
+function goeRegs(FakeMb $m, array $volts, bool $swapped) {
+    $m->set(100, [2]);
+    foreach ($volts as $i => $v) { $m->set(108 + $i * 2, $swapped ? [$v, 0] : [0, $v]); }
+    foreach ([0, 1, 2] as $i) { $m->set(114 + $i * 2, $swapped ? [62, 0] : [0, 62]); }  // 6,2 A (0,1 A)
+    $m->set(128, $swapped ? [0x73B5, 0x0001] : [0x0001, 0x73B5]);                         // 95157 = 9515,7 kWh
+}
+$gm = new FakeMb(); goeRegs($gm, [224, 223, 225], true);
+$gh = new FakeHub(); $gh->groups['GoeWordSwap'] = false;
+$goe->readValues($gm, $gh);
+check('go-e Automatik: getauschte Wortreihenfolge (Spannung [V, 0]) erkannt, Merker gesetzt, Hinweis einmal', ($gh->flags['goe_word_swap'] ?? false) === true && ($gh->flags['goe_swap_checked'] ?? false) === true && count($gh->notes) === 1);
+check('go-e Automatik: Spannung/Strom/Gesamtenergie danach richtig (224 V, 6,2 A, 9515,7 kWh)', ($gh->v['voltage_l1'] ?? null) === 224.0 && abs(($gh->v['current_l1'] ?? 0) - 6.2) < 1e-9 && abs(($gh->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+$gh->notes = []; $goe->readValues($gm, $gh);
+check('go-e Automatik: kein erneuter Hinweis bei folgenden Polls', count($gh->notes) === 0);
+$gm2 = new FakeMb(); goeRegs($gm2, [224, 223, 225], false);
+$gh2 = new FakeHub(); $gh2->groups['GoeWordSwap'] = false;
+$goe->readValues($gm2, $gh2);
+check('go-e Automatik: Standardreihenfolge ([0, V]) bleibt unverändert, Entscheidung gemerkt, kein Tausch', empty($gh2->flags['goe_word_swap']) && ($gh2->flags['goe_swap_checked'] ?? false) === true && ($gh2->v['voltage_l1'] ?? null) === 224.0 && abs(($gh2->v['energy_total'] ?? 0) - 9515.7) < 1e-6);
+$gm3 = new FakeMb(); goeRegs($gm3, [0, 0, 0], false);
+$gh3 = new FakeHub(); $gh3->groups['GoeWordSwap'] = false;
+$goe->readValues($gm3, $gh3);
+check('go-e Automatik: ohne Spannung (0 V) keine Entscheidung', empty($gh3->flags['goe_word_swap']) && empty($gh3->flags['goe_swap_checked']));
+$gm4 = new FakeMb(); goeRegs($gm4, [224, 223, 225], false);
+$gh4 = new FakeHub(); $gh4->groups['GoeWordSwap'] = true; // Nutzer hat manuell getauscht gesetzt
+$gm4->reads = []; $goe->readValues($gm4, $gh4);
+check('go-e Automatik: manuell gesetzter Schalter übersteuert, keine Erkennung', empty($gh4->flags['goe_word_swap']) && empty($gh4->flags['goe_swap_checked']) && count(array_filter($gm4->reads, fn ($a) => $a === 108)) === 1);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

@@ -5,6 +5,20 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.117-beta.1] - 2026-10-20
+
+### Added
+- go-e: Wortreihenfolge der 32-Bit-Werte wird automatisch erkannt (Fund baraka/Adam, Forum): Eine go-e,
+  die das niederwertige Wort zuerst sendet (go-e-Einstellung msr, Firmware 60.3), lieferte bisher
+  Spannung 14 680 064 V statt 224 V und Gesamtenergie 194 124 185,7 kWh statt 9 515,7 kWh. Der Treiber
+  prüft jetzt die Netzspannung (100-300 V): [0, V] = Standard, [V, 0] = getauscht, andere Werte
+  (z. B. 0 V) lassen die Frage offen. Der Merker gilt bis zum nächsten „Übernehmen“, eine Meldung
+  erscheint einmal im Meldungen-Log. Die Option „Wortreihenfolge getauscht erzwingen“ (vorher „Byte-
+  Reihenfolge getauscht“) bleibt als manuelle Übersteuerung und hat Vorrang.
+- Bekannt offen bei diesem Gerät: Gesamtleistung und Sitzungsenergie sowie die Skalierung der
+  Leistung je Phase ergeben nach dem Tauschen noch keine plausiblen Werte (Rohwerte werden vom Nutzer
+  nachgeliefert).
+
 ## [0.9.116-beta.1] - 2026-10-13
 
 ### Changed
