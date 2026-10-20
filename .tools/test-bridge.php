@@ -461,7 +461,7 @@ function goeRegs(FakeMb $m, array $volts, bool $swapped) {
 $gm = new FakeMb(); goeRegs($gm, [224, 223, 225], true);
 $gh = new FakeHub(); $gh->groups['GoeWordSwap'] = false;
 $goe->readValues($gm, $gh);
-check('go-e: vertauschte Wortreihenfolge (Spannung [V, 0]) erkannt, Merker gesetzt, Hinweis einmal im Log', ($gh->flags['goe_order_mismatch'] ?? false) === true && count($gh->notes) === 1 && strpos($gh->notes[0], 'msr') !== false);
+check('go-e: vertauschte Wortreihenfolge (Spannung [V, 0]) erkannt, Merker gesetzt, Hinweis einmal im Log', ($gh->flags['goe_order_mismatch'] ?? false) === true && count($gh->notes) === 1 && strpos($gh->notes[0], 'Register tauschen') !== false);
 check('go-e: bei Vertauschung KEINE 32-Bit-Werte in Variablen (keine 14 Mio. V, kein Archiv-Müll), Status weiter gelesen', !isset($gh->v['voltage_l1']) && !isset($gh->v['current_l1']) && !isset($gh->v['energy_total']) && ($gh->v['state'] ?? null) === 2);
 $gh->notes = []; $goe->readValues($gm, $gh);
 check('go-e: kein erneuter Hinweis bei folgenden Polls', count($gh->notes) === 0);
@@ -491,7 +491,7 @@ check('go-e Formularhinweis: ohne Merker kein Hinweis', $hi->invoke($hf) === [])
 $hf->RegisterAttributeString('DriverFlags', '{}');
 $hf->SetDriverFlag('goe_order_mismatch', true);
 $items = $hi->invoke($hf);
-check('go-e Formularhinweis: bei Vertauschung ⚠️-Zeile mit msr-Anleitung und „NICHT übernommen“', count($items) === 1 && strpos($items[0]['caption'], '⚠️') === 0 && strpos($items[0]['caption'], 'msr') !== false && strpos($items[0]['caption'], 'NICHT übernommen') !== false);
+check('go-e Formularhinweis: bei Vertauschung ⚠️-Zeile mit App-Anleitung (Register tauschen) und „NICHT übernommen“', count($items) === 1 && strpos($items[0]['caption'], '⚠️') === 0 && strpos($items[0]['caption'], 'Register tauschen') !== false && strpos($items[0]['caption'], 'API Einstellungen') !== false && strpos($items[0]['caption'], 'NICHT übernommen') !== false);
 $hf->prop['GoeWordSwap'] = true;
 check('go-e Formularhinweis: bei erzwungener Option kein Hinweis', $hi->invoke($hf) === []);
 

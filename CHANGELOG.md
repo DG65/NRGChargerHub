@@ -5,6 +5,14 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.120-beta.1] - 2026-10-20
+
+### Changed
+- go-e, Hinweis bei vertauschter Wortreihenfolge: Anleitung auf den tatsächlichen Weg umgestellt. Die
+  go-e-App bietet die Schalter unter Einstellungen > API Einstellungen („Register tauschen“, „Bytes
+  tauschen“, beide aus = Standard; API-Schlüssel msr/msb). Vorher stand dort die HTTP-API, weil mir der
+  App-Pfad nicht bekannt war (Hinweis von Dietmar mit Screenshot).
+
 ## [0.9.119-beta.1] - 2026-10-20
 
 ### Changed
