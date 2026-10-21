@@ -3121,6 +3121,10 @@ class ChargerHub extends IPSModule
     // — für die optionale Eigenregelung des Überschussladens, siehe
     // FindGridSurplusW().
     private const METERHUB_GUID = '{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}';
+    // MeterHub „Virtueller Zähler“ (eigenes Modul, Präfix MHUBV, gleicher Vertrag): damit lässt sich z. B. ein
+    // Netzbetreiber-Zähler, dessen Werte per MQTT als Symcon-Variablen vorliegen, als Netzzähler führen
+    // (Anfrage Stefan/somm, 21.10.2026, Antwort MeterHub-Sitzung).
+    private const METERHUBVIRTUAL_GUID = '{ADF18291-2E60-4354-92F5-B96863C127C8}';
     private const EMS_GUID = '{90286A25-E6C9-4A66-BD4E-0CFB707C2C6C}';
     private const INVERTERHUB_GUID = '{BBE2C593-1A91-426D-A714-29A9C7E87589}';
     private const CHARGERHUB_GUID = '{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}';
@@ -3940,21 +3944,52 @@ class ChargerHub extends IPSModule
     //   zusätzlich 'billing' als Tiebreaker.
     // - Vorzeichen bei MeterHub: + = Bezug, − = Einspeisung — daher
     //   max(0, -powerValue), nicht der Rohwert.
+    // Alle Zähler-Instanzen, die ChargerHub als Netzzähler-Quelle befragen darf: MeterHub (MHUB_) und MeterHub
+    // „Virtueller Zähler“ (MHUBV_), je mit demselben Vertrag; nur wenn die jeweilige Funktion existiert.
+    // Rückgabe: Liste von [instanceID, 'mhub'|'mhubv'].
+    private function MeterContractInstances(): array
+    {
+        $forcedID = $this->ReadPropertyInteger('SurplusMeterID');
+        $list = [];
+        if ($forcedID > 0) {
+            $mod = (string)(@IPS_GetInstance($forcedID)['ModuleInfo']['ModuleID'] ?? '');
+            if ($mod === self::METERHUBVIRTUAL_GUID && function_exists('MHUBV_GetFunctions')) {
+                $list[] = [$forcedID, 'mhubv'];
+            } elseif (function_exists('MHUB_GetFunctions')) {
+                $list[] = [$forcedID, 'mhub'];
+            }
+            return $list;
+        }
+        if (function_exists('MHUB_GetFunctions')) {
+            foreach (@IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: [] as $iid) {
+                $list[] = [$iid, 'mhub'];
+            }
+        }
+        if (function_exists('MHUBV_GetFunctions')) {
+            foreach (@IPS_GetInstanceListByModuleID(self::METERHUBVIRTUAL_GUID) ?: [] as $iid) {
+                $list[] = [$iid, 'mhubv'];
+            }
+        }
+        return $list;
+    }
+
     private function FindGridSurplusW(): ?float
     {
-        if (!function_exists('MHUB_GetFunctions')) {
+        if (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
             return null;
         }
-        $forcedID = $this->ReadPropertyInteger('SurplusMeterID');
-        $candidates = $forcedID > 0 ? [$forcedID] : (@IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: []);
-
         $best = null; // ['powerID' => int, 'billing' => bool, 'iid' => int]
-        foreach ($candidates as $iid) {
-            // MHUB_GetFunctions() liefert (anders als unser eigenes
-            // CHUB_GetFunctions()) einen JSON-String, keinen nativen Array —
-            // mit MeterHub live abgeglichen, 26.08.2026. Struktur:
+        foreach ($this->MeterContractInstances() as [$iid, $kind]) {
+            // MHUB_/MHUBV_GetFunctions() liefern (anders als unser eigenes CHUB_GetFunctions()) einen
+            // JSON-String, keinen nativen Array — mit MeterHub live abgeglichen, 26.08.2026. Struktur:
             // {..., "assignments": [{"function":"grid", "powerID":..., ...}]}.
-            $fns = json_decode((string)@MHUB_GetFunctions($iid), true);
+            if ($kind === 'mhubv' && function_exists('MHUBV_GetFunctions')) {
+                $fns = json_decode((string)@MHUBV_GetFunctions($iid), true);
+            } elseif ($kind === 'mhub' && function_exists('MHUB_GetFunctions')) {
+                $fns = json_decode((string)@MHUB_GetFunctions($iid), true);
+            } else {
+                continue;
+            }
             if (!is_array($fns) || !isset($fns['assignments']) || !is_array($fns['assignments'])) {
                 continue;
             }
@@ -4656,7 +4691,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.122-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.123-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4765,7 +4800,7 @@ class ChargerHub extends IPSModule
                         // bleibt das Eingabefeld eingeklappt (SUITE.md 21.09.2026): der Wert wird NIE
                         // ins Feld geschrieben, sonst würde „Übernehmen“ ihn als eigene Wahl speichern.
                         ['type' => 'ExpansionPanel', 'name' => 'SurplusMeterOverridePanel', 'caption' => '✏️  Anderen Netzzähler stattdessen verwenden', 'expanded' => !$this->GridMeterIsAutomatic(), 'items' => [
-                            ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag)', 'moduleID' => self::METERHUB_GUID],
+                            ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag; MeterHub-Zähler oder „Virtueller Zähler“)', 'validModules' => [self::METERHUB_GUID, self::METERHUBVIRTUAL_GUID]],
                         ]],
                         ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
                         ['type' => 'NumberSpinner', 'name' => 'BatteryCapacityKWh', 'caption' => '🆕 Speicherkapazität (kWh, 0 = kein Speicher/unbekannt)', 'minimum' => 0, 'maximum' => 200, 'digits' => 1, 'suffix' => 'kWh'],
@@ -4869,7 +4904,7 @@ class ChargerHub extends IPSModule
     private function GridMeterIsAutomatic(): bool
     {
         return $this->ReadPropertyInteger('SurplusMeterID') <= 0
-            && function_exists('MHUB_GetFunctions')
+            && (function_exists('MHUB_GetFunctions') || function_exists('MHUBV_GetFunctions'))
             && $this->FindGridSurplusW() !== null;
     }
 
@@ -4917,13 +4952,13 @@ class ChargerHub extends IPSModule
         // Netzzähler (MeterHub)
         $forced = $this->ReadPropertyInteger('SurplusMeterID');
         $usedBy = $this->ReadPropertyBoolean('EnableSurplusCharging') ? 'Überschussladen ist aktiviert' : 'wird nur bei aktiviertem Überschussladen genutzt';
-        if (!function_exists('MHUB_GetFunctions')) {
+        if (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
             $lines['LinkGridStatus'] = 'ℹ️ MeterHub nicht installiert: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
         } else {
-            $mhubs = @IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: [];
+            $mhubs = $this->MeterContractInstances();
             $w = $this->FindGridSurplusW();
             if ($mhubs === []) {
-                $lines['LinkGridStatus'] = 'ℹ️ Keine MeterHub-Instanz vorhanden: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
+                $lines['LinkGridStatus'] = 'ℹ️ Keine MeterHub-Instanz (Zähler oder „Virtueller Zähler“) vorhanden: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
             } elseif ($w === null) {
                 $lines['LinkGridStatus'] = '⚠️ MeterHub vorhanden, aber ' . ($forced > 0 ? 'die gewählte Instanz #' . $forced : 'keine Instanz') . ' liefert keinen Netzzähler („grid") mit Echtzeit-Wert. Ohne ihn regelt das Überschussladen nicht.';
             } elseif ($forced > 0) {
