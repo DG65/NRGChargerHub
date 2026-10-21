@@ -203,6 +203,8 @@ class FakeHub {
     function GroupActive($g) { return $this->groups[$g] ?? true; }
     public $notes = [];
     function LogNote($m) { $this->notes[] = $m; }
+    public $phaseInfo = null;
+    function SetPhaseInfo($p, $s) { $this->phaseInfo = [$p, $s]; }
     function GetMaxCurrentA() { return 16; }
     function GetVarValue($i) { return $this->v[$i] ?? ''; }
     public $hidden = [];
@@ -386,7 +388,7 @@ $gf = new ChargerHub(780);
 $gf->prop = ['Manufacturer' => 'charx'];
 $gf->RegisterAttributeInteger('LastSeenAt', 0);
 $fn7 = $gf->GetFunctions()[0];
-check('Vertrag 1.7: contractVersion 1.7', $fn7['contractVersion'] === '1.7');
+check('Vertrag 1.7-Felder bleiben im aktuellen Vertrag (contractVersion >= 1.7)', version_compare($fn7['contractVersion'], '1.7', '>='));
 check('Vertrag 1.7: vorhandene Zeit-Variablen als ID, fehlende als 0', $fn7['pluggedInAtID'] === 40010 && $fn7['chargeTimeSecID'] === 40011 && $fn7['pluggedOutAtID'] === 0 && $fn7['connectionTimeSecID'] === 0);
 
 // Store-Review-Konvention (12.10.2026): Logging nur über $this->LogMessage(), nie über die globale
@@ -534,6 +536,54 @@ check('Virtueller Zähler: von Hand gewählt (✏️), Instanz wird über ihre M
 $GLOBALS['byGuid']['{ADF18291-2E60-4354-92F5-B96863C127C8}'] = [];
 $vm->prop = ['SurplusMeterID' => 0];
 check('Virtueller Zähler: ohne jede Zähler-Instanz keine Quelle', $gmv->invoke($vm) === false && strpos($vls->invoke($vm)['LinkGridStatus'], 'ℹ️') === 0);
+
+// Vertrag 1.8 (EMS-Anfrage 21.10.2026): phaseModeID/phaseModeValues/phaseSwitchPauseSec/currentStepA/controlLatencySec.
+function contract18(string $mfr, array $attrs, array $vars): array {
+    static $n = 50000;
+    $inst = 790 + ($n++ % 200);
+    foreach ($vars as $ident => $vid) { $GLOBALS['objs'][$vid] = ['ObjectIdent' => $ident, 'ObjectType' => 2, 'ParentID' => $inst]; }
+    $h = new ChargerHub($inst);
+    $h->prop = ['Manufacturer' => $mfr];
+    $h->RegisterAttributeInteger('LastSeenAt', 0);
+    foreach ($attrs as $k => $v) { $h->WriteAttributeInteger($k, $v); }
+    return $h->GetFunctions()[0];
+}
+$c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
+check('Vertrag 1.8: contractVersion 1.8', $c1['contractVersion'] === '1.8');
+check('Vertrag 1.8 go-e: phaseModeID + Werte {one 1, three 2, auto 0}, Schritt 1 A, Latenz unbekannt', $c1['phaseModeID'] === 41001 && $c1['phaseModeValues'] === ['one' => 1, 'three' => 2, 'auto' => 0] && $c1['currentStepA'] === 1.0 && $c1['controlLatencySec'] === 0 && $c1['phaseSwitchPauseSec'] === 0);
+$c2 = contract18('daheimlader', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 1], ['ctl_phase_mode' => 41002]);
+check('Vertrag 1.8 DaheimLader: Werte 1/3, auto null, Umschaltpause 120 s', $c2['phaseModeID'] === 41002 && $c2['phaseModeValues'] === ['one' => 1, 'three' => 3, 'auto' => null] && $c2['phaseSwitchPauseSec'] === 120);
+$c3 = contract18('daheimlader', [], ['ctl_phase_mode' => 41003]);
+check('Vertrag 1.8 DaheimLader ohne Nachweis (keine PRO): phaseModeID 0, keine Werte, Pause bleibt 120', $c3['phaseModeID'] === 0 && !isset($c3['phaseModeValues']));
+$c4 = contract18('peblar', ['DevicePhaseSwitch' => 0, 'DevicePhases' => 3], ['ctl_phase_mode' => 41004]);
+check('Vertrag 1.8 Peblar ohne unabhängiges Relais: nicht umschaltbar (phaseModeID 0)', $c4['phaseModeID'] === 0 && !isset($c4['phaseModeValues']));
+$c5 = contract18('peblar', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41005]);
+check('Vertrag 1.8 Peblar mit unabhängigem Relais: umschaltbar, Werte 1/3', $c5['phaseModeID'] === 41005 && $c5['phaseModeValues']['three'] === 3);
+$c6 = contract18('alfen', ['DevicePhases' => 3, 'DevicePhaseSwitch' => -1], ['ctl_phase_mode' => 41006]);
+check('Vertrag 1.8 Alfen: Phasenzahl lesbar -> umschaltbar, Stromstufe 0,1 A', $c6['phaseModeID'] === 41006 && $c6['currentStepA'] === 0.1);
+$c7 = contract18('foxess', ['DevicePhaseSwitch' => 1], ['ctl_phase_mode' => 41007]);
+$c8 = contract18('keba', [], []);
+check('Vertrag 1.8 Fox ESS/KEBA: keine eindeutige Phasen-Kodierung bzw. keine Umschaltung -> phaseModeID 0, keine Werte', $c7['phaseModeID'] === 0 && $c8['phaseModeID'] === 0 && !isset($c7['phaseModeValues']) && !isset($c8['phaseModeValues']));
+
+// go-e: 'phases' = tatsächlich ladende Phasen aus der Phasenmaske nach dem Schütz (Register 205), sonst erzwungener Modus.
+$gp = new FakeMb(); $gp->set(100, [2]); $gp->set(332, [0]); $gp->set(205, [0b001]);   // psm 0 (Auto), nur L1 aktiv
+$gph = new FakeHub(); $gph->groups['GoeWordSwap'] = false;
+$goe->readValues($gp, $gph);
+check('go-e phases: Automatikmodus, Maske 001 -> 1 Phase tatsächlich (Umschaltbarkeit belegt)', $gph->phaseInfo === [1, 1]);
+$gp2 = new FakeMb(); $gp2->set(100, [2]); $gp2->set(332, [2]); $gp2->set(205, [0]);   // psm 2 (3-phasig erzwungen), Maske 0 (kein Ladevorgang)
+$gph2 = new FakeHub(); $gph2->groups['GoeWordSwap'] = false;
+$goe->readValues($gp2, $gph2);
+check('go-e phases: Maske 0 -> Rückfall auf erzwungenen Modus (3 Phasen)', $gph2->phaseInfo === [3, 1]);
+
+// DaheimLader: Register 184 (Phasenstatus) belegt Phasenzahl und Umschaltbarkeit (nur PRO).
+$dp = new FakeMb(); for ($i = 0; $i < 114; $i++) { $dp->r[$i] = 0; } $dp->r[0] = 1; $dp->r[184] = 3;
+$dph = new FakeHub();
+$dd->readValues($dp, $dph);
+check('DaheimLader PRO: Phasenstatus 3 -> phases 3, umschaltbar', $dph->phaseInfo === [3, 1]);
+$dp2 = new FakeMb(); for ($i = 0; $i < 114; $i++) { $dp2->r[$i] = 0; } $dp2->r[0] = 1;   // 184 nicht lesbar (kein PRO)
+$dph2 = new FakeHub();
+$dd->readValues($dp2, $dph2);
+check('DaheimLader ohne PRO: Register 184 nicht lesbar -> keine Phasenangabe', $dph2->phaseInfo === null);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

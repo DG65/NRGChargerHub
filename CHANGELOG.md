@@ -5,6 +5,21 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.124-beta.1] - 2026-10-21
+
+### Added
+- `CHUB_GetFunctions`, Vertrag 1.8 (EMS-Anfrage zu Stefans Wallbox-Modi, abgestimmt): optionale Steuerfelder
+  `phaseModeID` und `phaseModeValues` (herstellerunabhängige Phasenumschaltung für das EMS; nur bei belegter
+  Umschaltbarkeit), `phaseSwitchPauseSec` (DaheimLader 120 s), `currentStepA` (1,0, Alfen 0,1) und
+  `controlLatencySec` (bei keinem Gerät gemessen, immer 0). Fox ESS liefert bewusst keine Werte (Kodierung
+  an eine Zusatz-Box gebunden). Die Steuerwerte (0 ist kein Pausewert, erst Freigabe dann Limit, Bedeutung
+  von `phases`) sind im README festgeschrieben.
+
+### Changed
+- go-e: `phases` im Vertrag kommt bevorzugt aus der Phasenmaske nach dem Schütz (Register 205, auch im
+  Automatikmodus), sonst aus dem erzwungenen Modus. DaheimLader: Register 184 (nur PRO) belegt jetzt Phasenzahl
+  und Umschaltbarkeit (`phases`/`phasesSwitchable`).
+
 ## [0.9.123-beta.1] - 2026-10-21
 
 ### Added

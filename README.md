@@ -115,7 +115,7 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.7'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
+| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.8'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
 | `function` | string | `'charger'` |
 | `label` | string | Instanzname |
 | `powerID` | int | Variablen-ID Ladeleistung (W); 0 falls nicht verfügbar |
@@ -140,8 +140,19 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 | `pluggedOutAtID` | int | **Optional (1.7).** Variablen-ID „Abgesteckt um“ (`plugged_out_at`), sonst wie `pluggedInAtID` |
 | `chargeTimeSecID` | int | **Optional (1.7).** Variablen-ID „Ladezeit (Sek.)“ (`ladezeit_sek`), 0 = nicht vorhanden. Nur Hersteller, die die Zeit selbst melden (CHARX, DaheimLader) |
 | `connectionTimeSecID` | int | **Optional (1.7).** Variablen-ID „Verbindungszeit (Sek.)“ (`connection_time_sek`), 0 = nicht vorhanden. Nur CHARX |
+| `phaseModeID` | int | **Optional (1.8).** Variablen-ID von `ctl_phase_mode` (Phasenumschaltung), **0 = nicht umschaltbar oder nicht belegt**. Nur > 0, wenn die Umschaltung vom Gerät belegt ist (go-e: `psm` lesbar; Peblar: unabhängiges Relais; DaheimLader: Register 184 lesbar, nur PRO; Alfen: Phasenzahl lesbar). Fox ESS und KEBA/Heidelberg/ABL/CHARX liefern 0 |
+| `phaseModeValues` | object | **Nur bei `phaseModeID` > 0 (1.8).** Werte, die in `ctl_phase_mode` zu schreiben sind: `{"one": int, "three": int, "auto": int\|null}`. go-e `{1, 2, 0}`, DaheimLader/Peblar/Alfen `{1, 3, null}` (`null` = kein Automatikwert) |
+| `phaseSwitchPauseSec` | int | **1.8.** Ladepause durch eine Phasenumschaltung in Sekunden; nur belegt bei DaheimLader (120 laut Doku), sonst 0 = unbekannt |
+| `currentStepA` | float | **1.8.** Kleinste Stromstufe des Sollwerts `currentLimitID`: 1,0 (ganzzahlige Variable), bei Alfen 0,1 |
+| `controlLatencySec` | int | **1.8.** Typische Zeit vom Sollwert bis zur Wirkung auf die Leistung. **Bei keinem Gerät gemessen: immer 0 = unbekannt** |
 
-Vertragsversion (`contractVersion`): aktuell **`1.7`** (1.7: optionale Referenzfelder `pluggedInAtID`/`pluggedOutAtID`/`chargeTimeSecID`/`connectionTimeSecID`, Dashboard-Anfrage 06.10.2026; 1.6: optionale Felder `phases`/`phasesSwitchable`, siehe Tabelle; 1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer`; 1.5: `duplicateOf` — beide MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen, harter Weg `CHUB_SetActive()` plus weicher Marker `duplicateOf`).
+Vertragsversion (`contractVersion`): aktuell **`1.8`** (1.8: optionale Steuerfelder `phaseModeID`/`phaseModeValues`/`phaseSwitchPauseSec`/`currentStepA`/`controlLatencySec`, EMS-Anfrage 21.10.2026; 1.7: optionale Referenzfelder `pluggedInAtID`/`pluggedOutAtID`/`chargeTimeSecID`/`connectionTimeSecID`, Dashboard-Anfrage 06.10.2026; 1.6: optionale Felder `phases`/`phasesSwitchable`, siehe Tabelle; 1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer`; 1.5: `duplicateOf` — beide MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen, harter Weg `CHUB_SetActive()` plus weicher Marker `duplicateOf`).
+
+**Festschreibung Steuerwerte (1.8, auf Wunsch des EMS):**
+- `currentLimitID` ist ein **schreibbarer Sollwert in A** im Bereich `minCurrent` bis `maxCurrent` (ganzzahlig; Alfen mit 0,1 A). ChargerHub begrenzt Werte auf diesen Bereich. **0 ist kein gültiger Pausewert:** go-e, DaheimLader, Fox ESS, Peblar, CHARX und ABL heben Werte unter `minCurrent` auf `minCurrent` an, KEBA, Heidelberg und Alfen schreiben 0 als Sperre ans Gerät. **Zum Pausieren immer `chargeEnableID` = false schreiben.**
+- Freigabe und Limit sind getrennte Stellgrößen, **Start immer erst `chargeEnableID` = true, dann `currentLimitID`.** Bei Geräten, bei denen beides im selben Register steckt (ABL, Peblar, CHARX), wird ein Limit bei gesperrter Freigabe nur gemerkt und nicht geschrieben. Bei KEBA, Heidelberg und Alfen kann das Schreiben eines Limits größer 0 eine gesperrte Wallbox freigeben (gleiches Register).
+- `phases` (1.6) = die vom Gerät **gemeldete aktuelle** Phasenzahl, nie aus Messwerten geraten: go-e aus der Phasenmaske nach dem Schütz (Register 205, auch im Automatikmodus; sonst erzwungener Modus), DaheimLader aus Register 184 (PRO), Alfen aus Register 1215 (zuletzt eingestellt), Peblar aus Register 30092 (Phasenzahl des Geräts, nicht zwingend ladend). Fehlt das Feld, ist die Phasenzahl unbekannt.
+- `powerID` = Gesamtleistung des Ladepunkts in W.
 
 **Sicherheitsnetz zu `duplicateOf`** (EMS-Auftrag, 13.09.2026): Da `duplicateOf` bewusst nicht
 übers Schreibrecht entscheidet, kann eine als Dublette markierte Instanz gleichzeitig aktiver
