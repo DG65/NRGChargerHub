@@ -166,7 +166,7 @@ check('Zeile Dublette ⚠️ (Ziel fehlt)', strpos($ls->invoke($hub)['LinkDuplic
 // automatisch (Panel eingeklappt, Zeile 🔗); eigene Wahl -> ✏️, nie automatisch.
 if (true) {
     function MHUB_GetFunctions($id) { return json_encode(['assignments' => [['function' => 'grid', 'latency' => 'realtime', 'powerID' => 500]]]); }
-    function GetValue($id) { return -1234; }
+    function GetValue($id) { return $GLOBALS['objs'][$id]['Value'] ?? -1234; }
 }
 $GLOBALS['byGuid']['{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}'] = [77];
 $gm = new ReflectionMethod($hub, 'GridMeterIsAutomatic');
@@ -584,6 +584,51 @@ $dp2 = new FakeMb(); for ($i = 0; $i < 114; $i++) { $dp2->r[$i] = 0; } $dp2->r[0
 $dph2 = new FakeHub();
 $dd->readValues($dp2, $dph2);
 check('DaheimLader ohne PRO: Register 184 nicht lesbar -> keine Phasenangabe', $dph2->phaseInfo === null);
+
+// Netzleistung direkt aus einer Variablen (Anregung Dietmar, 21.10.2026): Vorzeichen, Einheit, maximales Alter.
+$GLOBALS['byGuid']['{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}'] = [77];   // ein normaler MeterHub wäre da, hat aber Nachrang
+$gvh = new ChargerHub(785);
+$fgs = new ReflectionMethod($gvh, 'FindGridSurplusW');
+$GLOBALS['objs'][52000] = ['ObjectIdent' => '', 'ObjectType' => 2, 'ParentID' => 0, 'Value' => -2500, 'VariableUpdated' => time() - 3];
+$gvh->prop = ['SurplusGridVarID' => 52000, 'SurplusGridSign' => 'import', 'SurplusGridUnit' => 'W', 'SurplusGridMaxAgeSec' => 30];
+check('Netzvariable: + = Bezug, -2500 W = 2500 W Überschuss (Vorrang vor MeterHub)', $fgs->invoke($gvh) === 2500.0);
+$GLOBALS['objs'][52000]['Value'] = 800;
+check('Netzvariable: Bezug 800 W -> kein Überschuss (0 W)', $fgs->invoke($gvh) === 0.0);
+$gvh->prop['SurplusGridSign'] = 'export'; $GLOBALS['objs'][52000]['Value'] = 3000;
+check('Netzvariable: + = Einspeisung, 3000 W -> 3000 W Überschuss', $fgs->invoke($gvh) === 3000.0);
+$gvh->prop['SurplusGridUnit'] = 'kW'; $GLOBALS['objs'][52000]['Value'] = 3.2;
+check('Netzvariable: Einheit kW, 3,2 kW -> 3200 W', abs($fgs->invoke($gvh) - 3200.0) < 1e-9);
+$GLOBALS['objs'][52000]['VariableUpdated'] = time() - 120;
+check('Netzvariable: Wert 120 s alt (erlaubt 30 s) -> null, KEIN Rückfall auf den MeterHub', $fgs->invoke($gvh) === null);
+$gvh->prop['SurplusGridMaxAgeSec'] = 300;
+check('Netzvariable: erlaubtes Alter 300 s -> Wert gilt wieder', abs($fgs->invoke($gvh) - 3200.0) < 1e-9);
+$gvh->prop['SurplusGridVarID'] = 59999;
+check('Netzvariable: Variable existiert nicht mehr -> null (kein Rückfall)', $fgs->invoke($gvh) === null);
+$gvh->prop['SurplusGridVarID'] = 0; $gvh->prop['SurplusMeterID'] = 0;
+check('Ohne Netzvariable gilt wieder der MeterHub-Vertrag (1234 W)', $fgs->invoke($gvh) === 1234.0);
+$gvl = new ReflectionMethod($gvh, 'LinkStatusLines');
+$gvh->prop = ['SurplusGridVarID' => 52000, 'SurplusGridSign' => 'import', 'SurplusGridUnit' => 'W', 'SurplusGridMaxAgeSec' => 30];
+$GLOBALS['objs'][52000]['Value'] = -1800; $GLOBALS['objs'][52000]['VariableUpdated'] = time() - 2;
+$gl = $gvl->invoke($gvh)['LinkGridStatus'];
+check('Netzvariable Statuszeile ✏️ mit Variable, Vorzeichen, Einheit, Wert und Alter', strpos($gl, '✏️ Netzleistung aus eigener Variable') === 0 && strpos($gl, '1800 W') !== false && strpos($gl, 's alt') !== false);
+$GLOBALS['objs'][52000]['VariableUpdated'] = time() - 400;
+check('Netzvariable Statuszeile ⚠️ bei veraltetem Wert', strpos($gvl->invoke($gvh)['LinkGridStatus'], '⚠️') === 0 && strpos($gvl->invoke($gvh)['LinkGridStatus'], 'gestoppt') !== false);
+
+// FAIL-SAFE: veraltete Netzvariable stoppt eine laufende Ladung der Überschussregelung (kein Weiterladen mit eingefrorenem Wert).
+class FailSafeHub extends ChargerHub { public $actions = []; public function RequestAction($i, $v) { $this->actions[] = [$i, $v]; } }
+$GLOBALS['objs'][53001] = ['ObjectIdent' => 'vehicle_plugged', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => true];
+$GLOBALS['objs'][53002] = ['ObjectIdent' => 'ctl_enable', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => true];
+$GLOBALS['objs'][52100] = ['ObjectIdent' => '', 'ObjectType' => 2, 'ParentID' => 0, 'Value' => -2000, 'VariableUpdated' => time() - 500];
+$GLOBALS['byGuid']['{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}'] = [];
+$fs = new FailSafeHub(786);
+$fs->prop = ['EnableSurplusCharging' => true, 'ManagedBy' => 'none', 'SurplusGridVarID' => 52100, 'SurplusGridMaxAgeSec' => 30, 'SurplusGridSign' => 'import', 'SurplusGridUnit' => 'W'];
+(new ReflectionMethod($fs, 'SurplusChargeControl'))->invoke($fs);
+check('Fail-Safe: veralteter Netzwert -> laufende Ladung wird gestoppt (ctl_enable=false)', $fs->actions === [['ctl_enable', false]]);
+$GLOBALS['objs'][52100]['VariableUpdated'] = time() - 1; $GLOBALS['objs'][52100]['Value'] = -6000;
+$fs->actions = [];
+// Aktueller Wert mit 6000 W Überschuss (8 A dreiphasig, über dem Minimum) -> die Regelung rechnet normal weiter, kein Stopp.
+(new ReflectionMethod($fs, 'SurplusChargeControl'))->invoke($fs);
+check('Fail-Safe: aktueller Netzwert (6000 W Überschuss) -> kein Stopp, Regelung setzt den Strom (ctl_curr_limit)', !in_array(['ctl_enable', false], $fs->actions, true) && in_array('ctl_curr_limit', array_column($fs->actions, 0), true));
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

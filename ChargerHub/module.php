@@ -3319,6 +3319,14 @@ class ChargerHub extends IPSModule
         // erzwingen — Rückfall, falls die Automatik keinen/den falschen
         // Zähler findet (z. B. mehrere realtime-Grid-Zähler gleichzeitig).
         $this->RegisterPropertyInteger('SurplusMeterID', 0);
+        // Alternative zum MeterHub (Anregung Dietmar, 21.10.2026): Netzleistung direkt aus einer beliebigen
+        // Symcon-Variablen (z. B. per MQTT befüllt). Vorzeichen, Einheit und maximales Alter des Werts sind
+        // einstellbar; ein zu alter Wert pausiert das Überschussladen statt mit einem eingefrorenen Wert
+        // weiterzuladen.
+        $this->RegisterPropertyInteger('SurplusGridVarID', 0);
+        $this->RegisterPropertyString('SurplusGridSign', 'import');   // import = + Bezug / - Einspeisung (wie MeterHub), export = umgekehrt
+        $this->RegisterPropertyString('SurplusGridUnit', 'W');        // W | kW
+        $this->RegisterPropertyInteger('SurplusGridMaxAgeSec', 30);
         // Anteil des Netz-Überschusses, der dem Speicher vorbehalten bleibt (0-100 %) —
         // wird VOR der Ampere-Berechnung vom Überschuss abgezogen.
         $this->RegisterPropertyInteger('StorageSharePercent', 0);
@@ -3726,6 +3734,20 @@ class ChargerHub extends IPSModule
         }
         $gridSurplusW = $this->FindGridSurplusW();
         if ($gridSurplusW === null) {
+            // Eigene Netzvariable eingetragen, aber veraltet/ungültig: FAIL-SAFE. Ohne aktuellen Netzwert
+            // weiß die Regelung nicht, ob die Ladung aus Überschuss oder aus dem Netz gespeist wird: eine
+            // laufende Ladung wird gestoppt (sonst würde sie mit dem zuletzt berechneten Strom weiterlaufen,
+            // wie bei einem eingefrorenen Messwert). Sie startet wieder, sobald aktuelle Werte kommen.
+            $gv = $this->GridVariableSurplus();
+            if ($gv['configured']) {
+                $stopped = false;
+                if ((bool)$this->GetVarValue('ctl_enable')) {
+                    $this->RequestAction('ctl_enable', false);
+                    $stopped = true;
+                }
+                $this->SetSurplusStatus('⚠️ Netzleistung (Variable #' . $gv['vid'] . ') veraltet oder ungültig' . ($stopped ? ' — Ladung gestoppt' : '') . ', bis wieder aktuelle Werte kommen.');
+                return;
+            }
             $this->SetSurplusStatus('⚠️ Kein passender MeterHub-Zähler am Netzanschlusspunkt gefunden (function=grid, latency=realtime) — bitte unten manuell auswählen, falls einer vorhanden ist.');
             return;
         }
@@ -4002,8 +4024,45 @@ class ChargerHub extends IPSModule
         return $list;
     }
 
+    // Netzleistung direkt aus der gewählten Variablen. 'configured' = Variable ist eingetragen; 'surplus' = Überschuss
+    // in W (>= 0) oder null, wenn der Wert fehlt, nicht numerisch oder älter als das erlaubte Alter ist.
+    private function GridVariableSurplus(): array
+    {
+        $vid = $this->ReadPropertyInteger('SurplusGridVarID');
+        $out = ['configured' => $vid > 0, 'surplus' => null, 'ageSec' => null, 'stale' => false, 'name' => '', 'vid' => $vid];
+        if ($vid <= 0) {
+            return $out;
+        }
+        $v = @IPS_GetVariable($vid);
+        if (!is_array($v) || $v === []) {
+            return $out; // Variable existiert nicht mehr
+        }
+        $out['name'] = (string)@IPS_GetName($vid);
+        $raw = @GetValue($vid);
+        if (!is_numeric($raw)) {
+            return $out;
+        }
+        $age = time() - (int)($v['VariableUpdated'] ?? 0);
+        $out['ageSec'] = $age;
+        if ($age > max(5, $this->ReadPropertyInteger('SurplusGridMaxAgeSec'))) {
+            $out['stale'] = true;
+            return $out;
+        }
+        $w = (float)$raw * ($this->ReadPropertyString('SurplusGridUnit') === 'kW' ? 1000.0 : 1.0);
+        // import: + = Bezug, - = Einspeisung (Überschuss = -Wert); export: + = Einspeisung (Überschuss = Wert)
+        $out['surplus'] = max(0.0, $this->ReadPropertyString('SurplusGridSign') === 'export' ? $w : -$w);
+        return $out;
+    }
+
     private function FindGridSurplusW(): ?float
     {
+        // Eigene Variable hat Vorrang vor dem MeterHub-Vertrag; ist sie eingetragen, aber veraltet oder
+        // ungültig, gibt es KEINEN Rückfall auf andere Quellen (null = Überschussladen pausiert).
+        $gv = $this->GridVariableSurplus();
+        if ($gv['configured']) {
+            $this->lastSurplusMeterName = $gv['name'] !== '' ? 'Variable „' . $gv['name'] . '" #' . $gv['vid'] : null;
+            return $gv['surplus'];
+        }
         if (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
             return null;
         }
@@ -4751,7 +4810,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.124-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.125-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4861,6 +4920,17 @@ class ChargerHub extends IPSModule
                         // ins Feld geschrieben, sonst würde „Übernehmen“ ihn als eigene Wahl speichern.
                         ['type' => 'ExpansionPanel', 'name' => 'SurplusMeterOverridePanel', 'caption' => '✏️  Anderen Netzzähler stattdessen verwenden', 'expanded' => !$this->GridMeterIsAutomatic(), 'items' => [
                             ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag; MeterHub-Zähler oder „Virtueller Zähler“)', 'validModules' => [self::METERHUB_GUID, self::METERHUBVIRTUAL_GUID]],
+                            ['type' => 'Label', 'caption' => 'Oder ohne MeterHub: die Netzleistung direkt aus einer Variablen (z. B. per MQTT befüllt). Sie hat Vorrang vor dem Zähler oben. Ist der Wert älter als das erlaubte Alter oder ungültig, stoppt das Überschussladen eine laufende Ladung, statt mit einem eingefrorenen Wert weiterzuladen; es startet wieder, sobald aktuelle Werte kommen.'],
+                            ['type' => 'SelectVariable', 'name' => 'SurplusGridVarID', 'caption' => 'Netzleistung (Variable)'],
+                            ['type' => 'Select', 'name' => 'SurplusGridSign', 'caption' => 'Vorzeichen der Variablen', 'options' => [
+                                ['caption' => '+ = Netzbezug, − = Einspeisung (wie MeterHub)', 'value' => 'import'],
+                                ['caption' => '+ = Einspeisung, − = Netzbezug', 'value' => 'export'],
+                            ]],
+                            ['type' => 'Select', 'name' => 'SurplusGridUnit', 'caption' => 'Einheit der Variablen', 'options' => [
+                                ['caption' => 'Watt (W)', 'value' => 'W'],
+                                ['caption' => 'Kilowatt (kW)', 'value' => 'kW'],
+                            ]],
+                            ['type' => 'NumberSpinner', 'name' => 'SurplusGridMaxAgeSec', 'caption' => 'Maximales Alter des Werts', 'minimum' => 5, 'maximum' => 600, 'suffix' => 's'],
                         ]],
                         ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
                         ['type' => 'NumberSpinner', 'name' => 'BatteryCapacityKWh', 'caption' => '🆕 Speicherkapazität (kWh, 0 = kein Speicher/unbekannt)', 'minimum' => 0, 'maximum' => 200, 'digits' => 1, 'suffix' => 'kWh'],
@@ -4964,6 +5034,7 @@ class ChargerHub extends IPSModule
     private function GridMeterIsAutomatic(): bool
     {
         return $this->ReadPropertyInteger('SurplusMeterID') <= 0
+            && $this->ReadPropertyInteger('SurplusGridVarID') <= 0
             && (function_exists('MHUB_GetFunctions') || function_exists('MHUBV_GetFunctions'))
             && $this->FindGridSurplusW() !== null;
     }
@@ -5009,10 +5080,22 @@ class ChargerHub extends IPSModule
             $lines['LinkEmsStatus'] = 'ℹ️ EMS #' . $emsIDs[0] . ' installiert, aber nicht aktiv (Statusvariable „EMS_Active_State" nicht an): die Eigenregelung ist möglich, wenn aktiviert.';
         }
 
-        // Netzzähler (MeterHub)
+        // Netzzähler (eigene Variable oder MeterHub)
         $forced = $this->ReadPropertyInteger('SurplusMeterID');
         $usedBy = $this->ReadPropertyBoolean('EnableSurplusCharging') ? 'Überschussladen ist aktiviert' : 'wird nur bei aktiviertem Überschussladen genutzt';
-        if (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
+        $gvar = $this->GridVariableSurplus();
+        if ($gvar['configured']) {
+            $maxAge = max(5, $this->ReadPropertyInteger('SurplusGridMaxAgeSec'));
+            if ($gvar['name'] === '') {
+                $lines['LinkGridStatus'] = '⚠️ Netzleistung: Variable #' . $gvar['vid'] . ' existiert nicht mehr. Ohne Netzwert stoppt das Überschussladen eine laufende Ladung.';
+            } elseif ($gvar['stale']) {
+                $lines['LinkGridStatus'] = '⚠️ Netzleistung: Variable „' . $gvar['name'] . '" #' . $gvar['vid'] . ' ist ' . $gvar['ageSec'] . ' s alt (erlaubt: ' . $maxAge . ' s). Eine laufende Ladung wird gestoppt, bis wieder aktuelle Werte kommen.';
+            } elseif ($gvar['surplus'] === null) {
+                $lines['LinkGridStatus'] = '⚠️ Netzleistung: Variable „' . $gvar['name'] . '" #' . $gvar['vid'] . ' liefert keinen Zahlenwert. Eine laufende Ladung wird gestoppt.';
+            } else {
+                $lines['LinkGridStatus'] = '✏️ Netzleistung aus eigener Variable „' . $gvar['name'] . '" #' . $gvar['vid'] . ' (Vorzeichen ' . ($this->ReadPropertyString('SurplusGridSign') === 'export' ? '+ = Einspeisung' : '+ = Bezug') . ', ' . $this->ReadPropertyString('SurplusGridUnit') . '), aktuell ' . round($gvar['surplus']) . ' W Überschuss, Wert ' . $gvar['ageSec'] . ' s alt (' . $usedBy . ').';
+            }
+        } elseif (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
             $lines['LinkGridStatus'] = 'ℹ️ MeterHub nicht installiert: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
         } else {
             $mhubs = $this->MeterContractInstances();
