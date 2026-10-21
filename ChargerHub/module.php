@@ -1716,6 +1716,7 @@ class GoeChargerDriver implements ChargerDriverInterface
             $hub->SetVarFloat('energy_session', $e * 10.0 / 3600000.0);
         }
 
+        $phMask = null; // Phasenmaske nach dem Schütz (Register 205), falls gelesen
         if ($hub->GroupActive('GroupPhases')) {
             foreach ([1, 2, 3] as $ph) {
                 $vr = $mb->readInput(self::REG_VOLT_L1 + ($ph - 1) * 2, 2);
@@ -1745,6 +1746,7 @@ class GoeChargerDriver implements ChargerDriverInterface
             if ($phm !== null && $mb->u16($phm, 0) !== 0xFFFF) {
                 // Bits 0-2 = L1/L2/L3 NACH dem Schütz -> Anzahl aktiver Phasen
                 $mask = $mb->u16($phm, 0) & 0x07;
+                $phMask = $mask;
                 $hub->SetVarInt('phases_charging', substr_count(decbin($mask), '1'));
             }
         }
@@ -1807,7 +1809,17 @@ class GoeChargerDriver implements ChargerDriverInterface
                 $hub->SetVarInt('ctl_phase_mode', $mb->u16($psm, 0));
                 // psm 1 = einphasig, 2 = dreiphasig erzwungen; 0 = Auto, dann ist die
                 // aktuelle Phasenzahl aus diesem Register nicht ablesbar (unbekannt).
-                $hub->SetPhaseInfo($mb->u16($psm, 0) === 1 ? 1 : ($mb->u16($psm, 0) === 2 ? 3 : 0), 1);
+                // Vertragsfeld 'phases' = tatsächlich ladende Phasen: bevorzugt aus der Phasenmaske nach dem
+                // Schütz (Register 205, auch im Automatikmodus), sonst der erzwungene Modus (psm 1/2).
+                if ($phMask === null) {
+                    $phm2 = $mb->readInput(self::REG_PHASES, 1);
+                    if ($phm2 !== null && $mb->u16($phm2, 0) !== 0xFFFF) {
+                        $phMask = $mb->u16($phm2, 0) & 0x07;
+                    }
+                }
+                $actualPh = ($phMask !== null) ? substr_count(decbin($phMask), '1') : 0;
+                $forcedPh = $mb->u16($psm, 0) === 1 ? 1 : ($mb->u16($psm, 0) === 2 ? 3 : 0);
+                $hub->SetPhaseInfo(($actualPh === 1 || $actualPh === 3) ? $actualPh : $forcedPh, 1);
             }
             $acc = $mb->readHolding(self::REG_ACCESS_STATE, 1);
             if ($acc !== null && $mb->u16($acc, 0) <= 3) {
@@ -2289,6 +2301,11 @@ class DaheimLaderDriver implements ChargerDriverInterface
             $ps = $mb->readHolding(self::REG_PHASE_STATUS, 1);
             if ($ps !== null) {
                 $hub->SetVarInt('phase_status', $mb->u16($ps, 0));
+                // Register 184 gibt es laut Doku nur bei PRO-Modellen und meldet die aktuelle Phasenzahl
+                // (1 = einphasig, 3 = dreiphasig): damit sind Phasenzahl und Umschaltbarkeit vom Gerät belegt.
+                if ($mb->u16($ps, 0) === 1 || $mb->u16($ps, 0) === 3) {
+                    $hub->SetPhaseInfo($mb->u16($ps, 0), 1);
+                }
             }
         }
 
@@ -3124,6 +3141,18 @@ class ChargerHub extends IPSModule
     // MeterHub „Virtueller Zähler“ (eigenes Modul, Präfix MHUBV, gleicher Vertrag): damit lässt sich z. B. ein
     // Netzbetreiber-Zähler, dessen Werte per MQTT als Symcon-Variablen vorliegen, als Netzzähler führen
     // (Anfrage Stefan/somm, 21.10.2026, Antwort MeterHub-Sitzung).
+    // Steuerprofil je Hersteller fürs Vertragsfeld 'phaseModeValues' (Werte, die in ctl_phase_mode zu schreiben
+    // sind) und weitere Steuerangaben (Vertrag 1.8, EMS-Anfrage 21.10.2026). Nur Hersteller mit eindeutiger
+    // Zuordnung: Fox ESS (Werte 0/1/2 = „welche Phase“, an eine Zusatz-Box gebunden) bleibt bewusst draußen.
+    // 'pauseSec' = Ladepause durch eine Umschaltung (nur belegt: DaheimLader 2 Minuten laut Doku);
+    // 'stepA' = kleinste Stromstufe des Sollwerts (Variable ganzzahlig, nur Alfen mit 0,1 A).
+    private const CONTROL_PROFILES = [
+        'goe'         => ['values' => ['one' => 1, 'three' => 2, 'auto' => 0]],
+        'daheimlader' => ['values' => ['one' => 1, 'three' => 3, 'auto' => null], 'pauseSec' => 120],
+        'peblar'      => ['values' => ['one' => 1, 'three' => 3, 'auto' => null]],
+        'alfen'       => ['values' => ['one' => 1, 'three' => 3, 'auto' => null], 'stepA' => 0.1],
+    ];
+
     private const METERHUBVIRTUAL_GUID = '{ADF18291-2E60-4354-92F5-B96863C127C8}';
     private const EMS_GUID = '{90286A25-E6C9-4A66-BD4E-0CFB707C2C6C}';
     private const INVERTERHUB_GUID = '{BBE2C593-1A91-426D-A714-29A9C7E87589}';
@@ -4116,6 +4145,34 @@ class ChargerHub extends IPSModule
         return $vid ? (bool)@GetValueBoolean($vid) : false;
     }
 
+    // Steuerangaben fürs GetFunctions() (Vertrag 1.8): phaseModeID/phaseModeValues, phaseSwitchPauseSec,
+    // currentStepA, controlLatencySec. phaseModeID > 0 nur, wenn die Umschaltung belegt ist: das Gerät hat
+    // Umschaltbarkeit gemeldet (go-e: psm lesbar, Peblar: unabhängiges Relais, DaheimLader: Register 184)
+    // bzw. bei Alfen die Phasenzahl (Register 1215) lesbar ist. Sonst 0 (nicht umschaltbar/unbekannt).
+    // controlLatencySec ist bei keinem Gerät gemessen: immer 0 = unbekannt.
+    private function ControlContractFields(): array
+    {
+        $mfr  = $this->ReadPropertyString('Manufacturer');
+        $prof = self::CONTROL_PROFILES[$mfr] ?? [];
+        $out  = [
+            'phaseModeID'         => 0,
+            'phaseSwitchPauseSec' => (int)($prof['pauseSec'] ?? 0),
+            'currentStepA'        => (float)($prof['stepA'] ?? 1.0),
+            'controlLatencySec'   => 0,
+        ];
+        if (isset($prof['values'])) {
+            $vid = $this->FindVarByIdent('ctl_phase_mode');
+            $switchable = ($mfr === 'alfen')
+                ? $this->ReadAttributeInteger('DevicePhases') > 0
+                : $this->ReadAttributeInteger('DevicePhaseSwitch') === 1;
+            if ($vid && $switchable) {
+                $out['phaseModeID']     = $vid;
+                $out['phaseModeValues'] = $prof['values'];
+            }
+        }
+        return $out;
+    }
+
     // Vom Treiber gemeldete Phasenangaben fürs GetFunctions() (Vertrag 1.6).
     // $phases: 1/3 nur, wenn das Gerät es selbst meldet, sonst 0 (unbekannt);
     // $switchable: 1/0 nur bei Nachweis durch das Gerät, sonst -1 (unbekannt).
@@ -4384,8 +4441,9 @@ class ChargerHub extends IPSModule
             // deviceHost/manufacturer ergänzt. 1.5: duplicateOf ergänzt. 1.6: phases/
             // phasesSwitchable ergänzt (optional, fehlt = unbekannt). 1.7: pluggedInAtID/
             // pluggedOutAtID/chargeTimeSecID/connectionTimeSecID ergänzt (Referenzfelder, 0 =
-            // Variable nicht vorhanden; Dashboard-Anfrage 06.10.2026).
-            'contractVersion'    => '1.7',
+            // Variable nicht vorhanden; Dashboard-Anfrage 06.10.2026). 1.8: phaseModeID/
+            // phaseModeValues/phaseSwitchPauseSec/currentStepA/controlLatencySec (EMS-Anfrage 21.10.2026).
+            'contractVersion'    => '1.8',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -4458,6 +4516,8 @@ class ChargerHub extends IPSModule
             'chargeTimeSecID'     => $this->FindVarByIdent('ladezeit_sek') ?: 0,
             'connectionTimeSecID' => $this->FindVarByIdent('connection_time_sek') ?: 0,
         ];
+        // 1.8 (EMS-Anfrage 21.10.2026): Steuerangaben für die Modi/Phasenumschaltung des EMS.
+        $fn = array_merge($fn, $this->ControlContractFields());
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
@@ -4691,7 +4751,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.123-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.124-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
