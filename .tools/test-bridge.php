@@ -517,6 +517,24 @@ check('go-e Formularhinweis: bei Vertauschung ⚠️-Zeile mit App-Anleitung (Re
 $hf->prop['GoeWordSwap'] = true;
 check('go-e Formularhinweis: bei erzwungener Option kein Hinweis', $hi->invoke($hf) === []);
 
+// MeterHub „Virtueller Zähler“ (MHUBV_) als Netzzähler-Quelle (Stefan/somm: Netzbetreiber-Zähler per MQTT-Variable).
+function MHUBV_GetFunctions($id) { return json_encode(['assignments' => [['function' => 'grid', 'latency' => 'realtime', 'authority' => 'auxiliary', 'powerID' => 600]]]); }
+$GLOBALS['byGuid']['{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}'] = [];            // kein normaler MeterHub vorhanden
+$GLOBALS['byGuid']['{ADF18291-2E60-4354-92F5-B96863C127C8}'] = [88];          // nur ein Virtueller Zähler
+$GLOBALS['inst'][88] = ['ModuleInfo' => ['ModuleID' => '{ADF18291-2E60-4354-92F5-B96863C127C8}']];
+$vm = new ChargerHub(784);
+$vm->prop = ['SurplusMeterID' => 0];
+$gmv = new ReflectionMethod($vm, 'GridMeterIsAutomatic');
+check('Virtueller Zähler: ohne MeterHub-Instanz als Netzzähler automatisch gefunden', $gmv->invoke($vm) === true);
+$vls = new ReflectionMethod($vm, 'LinkStatusLines');
+$vline = $vls->invoke($vm)['LinkGridStatus'];
+check('Virtueller Zähler: Statuszeile 🔗 mit Wert (+ = Bezug, -1234 = 1234 W Überschuss)', strpos($vline, '🔗 Netzzähler:') === 0 && strpos($vline, '1234 W') !== false);
+$vm->prop = ['SurplusMeterID' => 88];
+check('Virtueller Zähler: von Hand gewählt (✏️), Instanz wird über ihre Modul-GUID erkannt', $gmv->invoke($vm) === false && strpos($vls->invoke($vm)['LinkGridStatus'], '✏️') === 0 && strpos($vls->invoke($vm)['LinkGridStatus'], '1234 W') !== false);
+$GLOBALS['byGuid']['{ADF18291-2E60-4354-92F5-B96863C127C8}'] = [];
+$vm->prop = ['SurplusMeterID' => 0];
+check('Virtueller Zähler: ohne jede Zähler-Instanz keine Quelle', $gmv->invoke($vm) === false && strpos($vls->invoke($vm)['LinkGridStatus'], 'ℹ️') === 0);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

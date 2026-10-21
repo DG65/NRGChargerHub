@@ -5,6 +5,18 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.123-beta.1] - 2026-10-21
+
+### Added
+- Überschussladen: Der Netzzähler kann jetzt auch ein MeterHub „Virtueller Zähler“ sein (Modul
+  `MeterHubVirtual`, Präfix MHUBV, gleicher Vertrag wie MeterHub: Funktion `grid`, Latenz `realtime`,
+  `powerID`, + = Bezug). Bisher fragte ChargerHub nur Instanzen des normalen MeterHub-Moduls ab (`MHUB_`),
+  ein virtueller Zähler wurde weder automatisch gefunden noch in der Instanzauswahl angeboten. Damit lässt
+  sich zum Beispiel ein Netzbetreiber-Zähler, dessen Werte per MQTT als Symcon-Variablen vorliegen, als
+  Netzzähler führen (Anfrage somm im Forum, Anleitung der MeterHub-Sitzung). Auswahl „NAP-Zähler“ listet
+  beide Module; die Statuszeile „Netzzähler“ erkennt beide. Die Autorität `billing` wird nur als
+  Vorrang bevorzugt, nicht verlangt (der virtuelle Zähler meldet `auxiliary`).
+
 ## [0.9.122-beta.1] - 2026-10-20
 
 ### Fixed
