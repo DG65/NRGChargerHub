@@ -46,6 +46,25 @@ und Bedienelemente freigeschaltet. Im Unterschied zu MeterHub (nur lesen) brauch
 Schreibzugriff: Ladefreigabe setzen, Stromlimit setzen — das macht die Anbindung näher an
 InverterHub als an MeterHub.
 
+## PV-Überschussladen (Fallback ohne EMS)
+
+Im Panel „Steuerungshoheit & Sicherheit“ lässt sich „Überschussladen selbst regeln“ einschalten. Es ist ein
+**Fallback ohne EMS**: „Wer regelt?“ auf „Niemand“, kein aktives EMS und genau eine ChargerHub-Instanz mit
+angestecktem Fahrzeug. Die Regelung schaltet bei Bedarf zwischen 1 und 3 Phasen (mit Hysterese) und kann einen
+Prozentanteil des Überschusses für einen Speicher reservieren. Sie startet bei etwa 1,4 kW Überschuss (6 A einphasig).
+
+**Woher der Netzwert kommt (in dieser Reihenfolge):**
+1. **Netzleistung direkt aus einer Variablen** (ohne MeterHub): beliebige Symcon-Variable, z. B. per MQTT befüllt oder der
+   Netz-/Smartmeter-Wert eines InverterHub. Einzustellen sind Vorzeichen (`+ = Bezug` wie bei MeterHub oder `+ = Einspeisung`),
+   Einheit (W oder kW) und das **maximale Alter des Werts** (Standard 30 s). **Ist der Wert älter oder ungültig, stoppt die
+   Regelung eine laufende Ladung** (Fail-Safe: kein Weiterladen mit einem eingefrorenen Messwert) und startet wieder, sobald
+   aktuelle Werte kommen. Die Statuszeile zeigt Wert, Alter und den daraus berechneten Überschuss. *Vorzeichen prüfen:*
+   Wird bei Einspeisung ein Überschuss größer 0 W angezeigt, stimmt es.
+2. Eine gewählte MeterHub-Instanz (Zähler oder „Virtueller Zähler“) oder, wenn leer, automatisch der MeterHub-Vertrag
+   (Funktion `grid`, Echtzeit, `+ = Bezug`).
+
+Nicht enthalten: Modi wie „Hybrid“, „PV-Anteil“ oder eine 15-Minuten-Spitzenbegrenzung (Aufgabe des künftigen EMS).
+
 ## Symbox-Gateway (eingebauter RS485-Port)
 
 Zusätzlich zum direkten TCP-Weg kann ChargerHub über Symcons natives **ModBus-Gateway** (z. B. eingebauter Symbox-RS485-Port) lesen. Der Weg läuft über eine eigene Brücken-Instanz (**„NRG-Stack ChargerHub Brücke (ModBus-Gateway)"**, Modul `ChargerHubBridge`), damit normale Direkt-Instanzen keine übergeordnete Instanz brauchen.

@@ -5,6 +5,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.125-beta.1] - 2026-10-21
+
+### Added
+- Überschussladen: Netzleistung **direkt aus einer Variablen** (Anregung Dietmar), ohne MeterHub. Neue Einstellungen
+  „Netzleistung (Variable)“, Vorzeichen (`+ = Bezug` wie MeterHub oder `+ = Einspeisung`), Einheit (W/kW) und maximales
+  Alter des Werts (Standard 30 s). Die Variable hat Vorrang vor einem MeterHub-Zähler. Geeignet z. B. für einen per MQTT
+  befüllten Netzbetreiber-Zähler oder den Smartmeter-Wert eines InverterHub (Vorzeichen dort je nach InverterHub-Einstellung).
+- **Fail-Safe:** Ist der Wert der eigenen Netzvariable älter als erlaubt, ungültig oder die Variable gelöscht, stoppt die
+  Überschussregelung eine laufende Ladung und startet erst wieder mit aktuellen Werten (kein Weiterladen mit einem
+  eingefrorenen Messwert). Bei MeterHub als Quelle bleibt das Verhalten unverändert.
+
 ## [0.9.124-beta.1] - 2026-10-21
 
 ### Added
