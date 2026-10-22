@@ -3203,6 +3203,10 @@ class ChargerHub extends IPSModule
         // Für ReleaseForceLockOnHandoff() — merkt sich den zuletzt angewendeten
         // „Wer regelt?"-Wert, um den ÜBERGANG none→(etwas anderes) zu erkennen.
         $this->RegisterAttributeString('PrevManagedBy', 'none');
+        // Regelungsstatus (Vertrag 1.9): wer regelt gerade, seit wann — siehe UpdateControlState().
+        $this->RegisterAttributeString('ControlOwnerKey', '');
+        $this->RegisterAttributeInteger('ControlSince', 0);
+        $this->RegisterAttributeBoolean('SurplusRegulating', false);
         // Zeitpunkt (Unix-Timestamp) des letzten erfolgreichen Lesezyklus —
         // siehe SetVarBool()/GetFunctions() 'lastSeenAt', contractVersion 1.3.
         $this->RegisterAttributeInteger('LastSeenAt', 0);
@@ -3621,6 +3625,7 @@ class ChargerHub extends IPSModule
         }
         $this->SurplusChargeControl();
         $this->CheckDuplicateManagedByConflict();
+        $this->UpdateControlState();
     }
 
     // Sicherheitsnetz zum weichen Dubletten-Marker (EMS-Auftrag, 13.09.2026,
@@ -3689,10 +3694,59 @@ class ChargerHub extends IPSModule
     // (wird ausschließlich bei aktivierter EnableSurplusCharging registriert,
     // siehe RegisterVariables()) — sichtbare Rückmeldung, ob/warum die
     // Eigenregelung gerade (nicht) eingreift, statt stillem Nichtstun.
-    private function SetSurplusStatus(string $text): void
+    private function SetSurplusStatus(string $text, bool $regulating = false): void
     {
+        $this->WriteAttributeBoolean('SurplusRegulating', $regulating);
         if ($this->FindVarByIdent('surplus_status')) {
             $this->SetVarStr('surplus_status', $text);
+        }
+    }
+
+    // Regelungsstatus: WER regelt diesen Ladepunkt gerade und WARUM (Vertrag 1.9, gleiche Begriffe wie
+    // EMS_GetCurrentDecision: source/reason/since). owner: none | ems | surplus | goe-controller | tibber |
+    // p14a | marketer | other. Reine Auskunft, schaltet nichts. Der Grund ist Klartext für Menschen.
+    private function ControlState(): array
+    {
+        $mb = $this->GetManagedBy();
+        if (!in_array($mb, ['none', 'ems'], true)) {
+            return ['owner' => $mb, 'source' => 'einstellung',
+                'reason' => 'Regler-Hoheit im Formular auf „' . $mb . '“ gestellt — ChargerHub und EMS schreiben nicht.'];
+        }
+        if ($mb === 'ems') {
+            return ['owner' => 'ems', 'source' => 'einstellung',
+                'reason' => 'Regler-Hoheit im Formular auf „EMS“ gestellt — das EMS steuert die Ladefreigabe.'];
+        }
+        if ($this->IsEmsActive()) {
+            return ['owner' => 'ems', 'source' => 'ems', 'reason' => 'EMS ist aktiv und hat Vorrang vor der eigenen Regelung.'];
+        }
+        if ($this->ReadPropertyBoolean('EnableSurplusCharging')) {
+            $text = $this->FindVarByIdent('surplus_status') ? (string)$this->GetVarValue('surplus_status') : '';
+            if ($this->ReadAttributeBoolean('SurplusRegulating')) {
+                return ['owner' => 'surplus', 'source' => 'ueberschuss', 'reason' => $text];
+            }
+            return ['owner' => 'none', 'source' => 'ueberschuss',
+                'reason' => 'Überschussladen eingeschaltet, greift gerade nicht ein' . ($text !== '' ? ': ' . $text : '.')];
+        }
+        return ['owner' => 'none', 'source' => 'manuell', 'reason' => 'Niemand regelt — manuelle Bedienung.'];
+    }
+
+    // Hält Besitzerwechsel-Zeitpunkt (Attribut) und die Anzeigevariable `control_status` aktuell. Wird
+    // am Ende jedes Lesezyklus aufgerufen.
+    private function UpdateControlState(): void
+    {
+        $st = $this->ControlState();
+        if ($this->ReadAttributeString('ControlOwnerKey') !== $st['owner']) {
+            $this->WriteAttributeString('ControlOwnerKey', $st['owner']);
+            $this->WriteAttributeInteger('ControlSince', time());
+        }
+        $labels = ['none' => 'Niemand', 'ems' => 'EMS', 'surplus' => 'Überschussladen (ChargerHub)',
+            'goe-controller' => 'go-e Controller', 'tibber' => 'Tibber', 'p14a' => '§14a',
+            'marketer' => 'Direktvermarkter', 'other' => 'Anderer Regler'];
+        $since = $this->ReadAttributeInteger('ControlSince');
+        $text = '🎛️ ' . ($labels[$st['owner']] ?? $st['owner']) . ' — ' . $st['reason']
+            . ($since > 0 ? ' (seit ' . date('d.m. H:i', $since) . ')' : '');
+        if ($this->FindVarByIdent('control_status') && $this->GetVarValue('control_status') !== $text) {
+            $this->SetVarStr('control_status', $text);
         }
     }
 
@@ -3837,7 +3891,7 @@ class ChargerHub extends IPSModule
             if ($enabled) {
                 $this->RequestAction('ctl_enable', false);
             }
-            $this->SetSurplusStatus('🔌 Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.");
+            $this->SetSurplusStatus('🔌 Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.", true);
             return;
         }
         if (!$enabled) {
@@ -3851,7 +3905,7 @@ class ChargerHub extends IPSModule
             $this->RequestAction('ctl_curr_limit', $amp);
         }
         $storageNote = $storageShare > 0 ? " (nach $storageShare % Speicheranteil, davon " . round($storageW) . ' W für Speicher)' : '';
-        $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote$storageNote → $amp A ($phases-phasig).");
+        $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote$storageNote → $amp A ($phases-phasig).", true);
     }
 
     // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
@@ -4502,7 +4556,8 @@ class ChargerHub extends IPSModule
             // pluggedOutAtID/chargeTimeSecID/connectionTimeSecID ergänzt (Referenzfelder, 0 =
             // Variable nicht vorhanden; Dashboard-Anfrage 06.10.2026). 1.8: phaseModeID/
             // phaseModeValues/phaseSwitchPauseSec/currentStepA/controlLatencySec (EMS-Anfrage 21.10.2026).
-            'contractVersion'    => '1.8',
+            // 1.9: controlOwner/controlSource/controlReason/controlSince (Regelungsstatus).
+            'contractVersion'    => '1.9',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -4577,6 +4632,12 @@ class ChargerHub extends IPSModule
         ];
         // 1.8 (EMS-Anfrage 21.10.2026): Steuerangaben für die Modi/Phasenumschaltung des EMS.
         $fn = array_merge($fn, $this->ControlContractFields());
+        // 1.9: Regelungsstatus (wer regelt gerade, warum, seit wann) — reine Auskunft.
+        $cs = $this->ControlState();
+        $fn['controlOwner']  = $cs['owner'];
+        $fn['controlSource'] = $cs['source'];
+        $fn['controlReason'] = $cs['reason'];
+        $fn['controlSince']  = $this->ReadAttributeInteger('ControlSince');
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
@@ -4810,7 +4871,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.125-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.126-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5404,6 +5465,7 @@ class ChargerHub extends IPSModule
         // ausschließlich per CHUB_SetVehicleName() von außen (Tessie oder ein
         // beliebiges anderes Fahrzeug-Modul) — siehe SetVehicleName().
         $valid['vehicle_name'] = true;
+        $valid['control_status'] = true;
         $surplusActive = $this->ReadPropertyBoolean('EnableSurplusCharging');
         if ($surplusActive) {
             $valid['surplus_status'] = true;
@@ -5433,6 +5495,7 @@ class ChargerHub extends IPSModule
             $this->RegisterVar(['plugged_in_at',  'Angesteckt um',  'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Ja'], $pos++);
             $this->RegisterVar(['plugged_out_at', 'Abgesteckt um', 'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Nein'], $pos++);
         }
+        $this->RegisterVar(['control_status', 'Regelung (wer, warum)', 'S', '', false, 'control', 'Auskunft: wer den Ladepunkt gerade regelt und warum'], $pos++);
         if ($surplusActive) {
             $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);
         }
