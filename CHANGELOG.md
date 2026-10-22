@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.126-beta.1] - 2026-10-22
+
+### Added
+- **Regelung (wer, warum):** Neue Variable „Regelung (wer, warum)“ (`control_status`) zeigt je Ladepunkt, wer ihn gerade
+  regelt (Niemand, EMS, Überschussladen, go-e Controller, Tibber, §14a, Direktvermarkter, Anderer Regler), den Grund im
+  Klartext und seit wann. Gedacht gegen die Frage „warum lädt (oder lädt nicht) meine Wallbox?“ bei mehreren möglichen Reglern.
+- **Vertrag 1.9 (additiv):** `CHUB_GetFunctions` liefert zusätzlich `controlOwner`, `controlSource`, `controlReason` und
+  `controlSince`. Reine Auskunft, die Begriffe entsprechen der Entscheidungsauskunft des EMS (Quelle, Grund, seit wann).
+
 ## [0.9.125-beta.1] - 2026-10-21
 
 ### Added

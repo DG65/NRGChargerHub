@@ -37,6 +37,7 @@ function IPS_CreateCategory() { $id = 30000 + count($GLOBALS['objs']); $GLOBALS[
 function IPS_SetVariableCustomProfile($id, $p) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['VariableCustomProfile'] = $p; } }
 function IPS_SetInfo($id, $s) {}
 function SetValueBoolean($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
+function SetValueString($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function SetValueInteger($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function IPS_DeleteVariable($id) { unset($GLOBALS['objs'][$id]); }
 function IPS_GetName($id) { return 'Name' . $id; }
@@ -549,7 +550,8 @@ function contract18(string $mfr, array $attrs, array $vars): array {
     return $h->GetFunctions()[0];
 }
 $c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
-check('Vertrag 1.8: contractVersion 1.8', $c1['contractVersion'] === '1.8');
+check('Vertrag 1.9: contractVersion 1.9', $c1['contractVersion'] === '1.9');
+check('Vertrag 1.9: controlOwner/Source/Reason/Since vorhanden', isset($c1['controlOwner'], $c1['controlSource'], $c1['controlReason'], $c1['controlSince']));
 check('Vertrag 1.8 go-e: phaseModeID + Werte {one 1, three 2, auto 0}, Schritt 1 A, Latenz unbekannt', $c1['phaseModeID'] === 41001 && $c1['phaseModeValues'] === ['one' => 1, 'three' => 2, 'auto' => 0] && $c1['currentStepA'] === 1.0 && $c1['controlLatencySec'] === 0 && $c1['phaseSwitchPauseSec'] === 0);
 $c2 = contract18('daheimlader', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 1], ['ctl_phase_mode' => 41002]);
 check('Vertrag 1.8 DaheimLader: Werte 1/3, auto null, Umschaltpause 120 s', $c2['phaseModeID'] === 41002 && $c2['phaseModeValues'] === ['one' => 1, 'three' => 3, 'auto' => null] && $c2['phaseSwitchPauseSec'] === 120);
@@ -629,6 +631,31 @@ $fs->actions = [];
 // Aktueller Wert mit 6000 W Überschuss (8 A dreiphasig, über dem Minimum) -> die Regelung rechnet normal weiter, kein Stopp.
 (new ReflectionMethod($fs, 'SurplusChargeControl'))->invoke($fs);
 check('Fail-Safe: aktueller Netzwert (6000 W Überschuss) -> kein Stopp, Regelung setzt den Strom (ctl_curr_limit)', !in_array(['ctl_enable', false], $fs->actions, true) && in_array('ctl_curr_limit', array_column($fs->actions, 0), true));
+
+// Regelungsstatus (Vertrag 1.9): wer regelt, warum.
+$cs = new FailSafeHub(786);
+$csm = new ReflectionMethod($cs, 'ControlState');
+$cs->prop = ['EnableSurplusCharging' => false, 'ManagedBy' => 'none'];
+$r = $csm->invoke($cs);
+check('Regelung: nichts aktiv -> Niemand, manuell', $r['owner'] === 'none' && $r['source'] === 'manuell');
+$cs->prop = ['EnableSurplusCharging' => false, 'ManagedBy' => 'tibber'];
+$r = $csm->invoke($cs);
+check('Regelung: managedBy tibber -> Besitzer tibber, Quelle Einstellung, Grund nennt Wert', $r['owner'] === 'tibber' && $r['source'] === 'einstellung' && strpos($r['reason'], 'tibber') !== false);
+$cs->prop = ['EnableSurplusCharging' => false, 'ManagedBy' => 'ems'];
+check('Regelung: managedBy ems -> Besitzer ems', $csm->invoke($cs)['owner'] === 'ems');
+$cs->prop = ['EnableSurplusCharging' => true, 'ManagedBy' => 'none'];
+$cs->WriteAttributeBoolean('SurplusRegulating', true);
+check('Regelung: Überschussladen regelt -> Besitzer surplus', $csm->invoke($cs)['owner'] === 'surplus');
+$cs->WriteAttributeBoolean('SurplusRegulating', false);
+$r = $csm->invoke($cs);
+check('Regelung: Überschussladen an, greift nicht ein -> Niemand mit Grund', $r['owner'] === 'none' && strpos($r['reason'], 'greift gerade nicht ein') !== false);
+$GLOBALS['objs'][53010] = ['ObjectIdent' => 'control_status', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => ''];
+$cs->prop = ['EnableSurplusCharging' => false, 'ManagedBy' => 'tibber'];
+(new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
+$t1 = $cs->ReadAttributeInteger('ControlSince');
+check('Regelung: Anzeigevariable gefüllt mit Besitzer und Grund', strpos($GLOBALS['objs'][53010]['Value'], 'Tibber') !== false && $t1 > 0);
+(new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
+check('Regelung: Zeitpunkt bleibt ohne Besitzerwechsel unverändert', $cs->ReadAttributeInteger('ControlSince') === $t1);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
