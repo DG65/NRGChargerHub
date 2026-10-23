@@ -3653,14 +3653,7 @@ class ChargerHub extends IPSModule
             return;
         }
         $ownManaged = $this->GetManagedBy();
-        $targetManaged = null;
-        if ($dup['source'] === 'chargerhub') {
-            $fns = @CHUB_GetFunctions($dup['instanceID']);
-            $targetManaged = $fns[0]['managedBy'] ?? null;
-        } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
-            $fns = @OHUB_GetFunctions($dup['instanceID']);
-            $targetManaged = $fns[0]['managedBy'] ?? null;
-        }
+        $targetManaged = $this->DuplicateTargetManaged($dup);
         $conflict = in_array($ownManaged, ['none', 'ems'], true)
             && in_array($targetManaged, ['none', 'ems'], true);
         if ($conflict) {
@@ -4442,6 +4435,28 @@ class ChargerHub extends IPSModule
         return ['source' => $source, 'instanceID' => $id];
     }
 
+    // managedBy der als Dublette gewählten Zielinstanz, oder null (unbekannt). Das @ fängt keine
+    // Ausnahmen: CHUB_/OHUB_GetFunctions() wirft „Instance does not implement this function“, wenn die
+    // gespeicherte ID inzwischen eine andere Instanzart ist (Meldung Nutzer 23.10.2026, OCPPHub-ID
+    // zeigte auf eine Instanz ohne diese Funktion) — das darf weder das Formular noch den Lesezyklus
+    // abbrechen.
+    private function DuplicateTargetManaged(array $dup): ?string
+    {
+        try {
+            if ($dup['source'] === 'chargerhub' && function_exists('CHUB_GetFunctions')) {
+                $fns = @CHUB_GetFunctions($dup['instanceID']);
+            } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
+                $fns = @OHUB_GetFunctions($dup['instanceID']);
+            } else {
+                return null;
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $v = is_array($fns) ? ($fns[0]['managedBy'] ?? null) : null;
+        return is_string($v) ? $v : null;
+    }
+
     // Statuszeile zur Dubletten-Zuordnung für einen gegebenen Schlüssel (siehe ResolveDuplicateOf()) —
     // eigene Funktion statt inline in LinkStatusLines(), damit derselbe Text sowohl beim Formular-
     // aufbau (gespeicherte Property) als auch live per onChange (noch nicht übernommene Auswahl)
@@ -4456,12 +4471,7 @@ class ChargerHub extends IPSModule
             return '⚠️ Zuordnung eingetragen („' . $key . '"), aber die Zielinstanz existiert nicht mehr. Sie wird ignoriert, diese Instanz zählt normal.';
         }
         $targetName = @IPS_GetName($dup['instanceID']);
-        $targetManaged = null;
-        if ($dup['source'] === 'chargerhub' && function_exists('CHUB_GetFunctions')) {
-            $targetManaged = @CHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
-        } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
-            $targetManaged = @OHUB_GetFunctions($dup['instanceID'])[0]['managedBy'] ?? null;
-        }
+        $targetManaged = $this->DuplicateTargetManaged($dup);
         $src = $dup['source'] === 'ocpphub' ? 'OCPPHub' : 'ChargerHub';
         $own = $this->GetManagedBy();
         return '✅ Zählt als Dublette von ' . $src . '-Instanz #' . $dup['instanceID'] . ' („' . $targetName . '"), wird bei Summen/Sitzungen übersprungen. Regler: hier „' . $own . '", dort ' . ($targetManaged === null ? 'unbekannt' : '„' . $targetManaged . '"') . '.'
@@ -4871,7 +4881,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.126-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.127-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

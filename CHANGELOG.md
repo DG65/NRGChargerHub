@@ -5,6 +5,14 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.127-beta.1] - 2026-10-23
+
+### Fixed
+- **Absturz bei der Dubletten-Zuordnung:** Zeigte die gespeicherte Zuordnung („Zählt als Dublette von …“) auf eine Instanz,
+  die die Funktion `CHUB_`/`OHUB_GetFunctions` nicht (mehr) bereitstellt (z. B. weil die ID inzwischen eine andere Instanzart
+  ist), brach das Formular mit „Instance does not implement this function“ ab, ebenso die tägliche Prüfung im Lesezyklus.
+  Die Abfrage ist jetzt abgesichert; der Regler der Zielinstanz erscheint dann als „unbekannt“.
+
 ## [0.9.126-beta.1] - 2026-10-22
 
 ### Added
