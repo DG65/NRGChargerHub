@@ -5,6 +5,13 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.129-beta.1] - 2026-10-23
+
+### Added
+- **Vertrag 1.11 (additiv):** `CHUB_GetFunctions` liefert zusätzlich `stateID` (Ladestatus) und `errorCodeID` (Fehlercode, nur
+  DaheimLader, Fox ESS und CHARX). Damit kann das EMS Status und Fehler einer Wallbox automatisch verbinden, statt dafür
+  eigene Eingabefelder zu verlangen (Hinweis Dietmar, 23.10.2026).
+
 ## [0.9.128-beta.1] - 2026-10-23
 
 ### Added
