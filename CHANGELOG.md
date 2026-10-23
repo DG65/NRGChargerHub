@@ -5,6 +5,16 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.130-beta.1] - 2026-10-23
+
+### Added
+- **Plan (was als Nächstes passiert):** Neue Variable „Plan (was als Nächstes passiert)“ (`control_plan`) und die Funktion
+  `CHUB_SetPlanInfo($id, $text, $validUntil)`. Ein Planer wie das EMS meldet damit, was mit der Wallbox geplant ist
+  („Heute 02:15 bis 04:30 laden …“). Der ChargerHub zeigt den Text nur an und regelt danach nicht. Mit Ablaufzeit wird der
+  Text gelöscht, wenn der Planer ausfällt, damit kein veralteter Plan stehen bleibt (Wunsch Dietmar: „Ich sehe nicht, was die
+  Wallbox tun wird“).
+- **Vertrag 1.12 (additiv):** Referenzfeld `planInfoID`.
+
 ## [0.9.129-beta.1] - 2026-10-23
 
 ### Added
