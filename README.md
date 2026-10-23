@@ -134,7 +134,7 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.9'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
+| `contractVersion` | string | Vertragsversion `Major.Minor` (aktuell `'1.10'`); Konsumenten prüfen die Major, additive Felder erhöhen nur die Minor. Fehlt das Feld, gilt konservativ `'1.0'` |
 | `function` | string | `'charger'` |
 | `label` | string | Instanzname |
 | `powerID` | int | Variablen-ID Ladeleistung (W); 0 falls nicht verfügbar |
@@ -167,9 +167,12 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 | `controlSource` | string | **1.9.** Herkunft der Aussage: `einstellung` (Formular „Wer regelt?“), `ems`, `ueberschuss`, `manuell` |
 | `controlReason` | string | **1.9.** Grund als deutscher Klartext (für Anzeige gedacht, nicht maschinell auswerten) |
 | `controlSince` | int | **1.9.** Unix-Zeitstempel des letzten Besitzerwechsels (0 = seit Start nicht gewechselt/unbekannt) |
+| `sessionEnergyID` | int | **1.10.** Variablen-ID „Energie akt. Sitzung“ (`energy_session`, kWh); 0 = nicht vorhanden (Alfen, Heidelberg, ABL). Springt je Sitzung zurück, daher **kein Zählerstand** (dafür `energyImportID`) |
+| `energyLimitID` | int | **1.10.** Variablen-ID „Energie-Limit Ladevorgang“ (`ctl_energy_limit`, hartes Limit der Wallbox, per `RequestAction` schreibbar); 0 = nicht vorhanden. Nur go-e |
+| `chargingStateID` | int | **1.10.** Variablen-ID „Lädt“ (`charging_active`, Bool): Ladeleistung über 100 W. Unterscheidet „freigegeben“ von „es fließt Strom“ |
 | `controlLatencySec` | int | **1.8.** Typische Zeit vom Sollwert bis zur Wirkung auf die Leistung. **Bei keinem Gerät gemessen: immer 0 = unbekannt** |
 
-Vertragsversion (`contractVersion`): aktuell **`1.9`** (1.9: optionale Auskunftsfelder `controlOwner`/`controlSource`/`controlReason`/`controlSince`, zentrale Anzeige „wer regelt, warum“; 1.8: optionale Steuerfelder `phaseModeID`/`phaseModeValues`/`phaseSwitchPauseSec`/`currentStepA`/`controlLatencySec`, EMS-Anfrage 21.10.2026; 1.7: optionale Referenzfelder `pluggedInAtID`/`pluggedOutAtID`/`chargeTimeSecID`/`connectionTimeSecID`, Dashboard-Anfrage 06.10.2026; 1.6: optionale Felder `phases`/`phasesSwitchable`, siehe Tabelle; 1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer`; 1.5: `duplicateOf` — beide MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen, harter Weg `CHUB_SetActive()` plus weicher Marker `duplicateOf`).
+Vertragsversion (`contractVersion`): aktuell **`1.10`** (1.10: optionale Referenzfelder `sessionEnergyID`/`energyLimitID`/`chargingStateID` für Ladeziel und Frist im EMS; 1.9: optionale Auskunftsfelder `controlOwner`/`controlSource`/`controlReason`/`controlSince`, zentrale Anzeige „wer regelt, warum“; 1.8: optionale Steuerfelder `phaseModeID`/`phaseModeValues`/`phaseSwitchPauseSec`/`currentStepA`/`controlLatencySec`, EMS-Anfrage 21.10.2026; 1.7: optionale Referenzfelder `pluggedInAtID`/`pluggedOutAtID`/`chargeTimeSecID`/`connectionTimeSecID`, Dashboard-Anfrage 06.10.2026; 1.6: optionale Felder `phases`/`phasesSwitchable`, siehe Tabelle; 1.1: `managedBy`; 1.2: `vehicleNameID`; 1.3: `lastSeenAt` — EMS-Vorfall 12.09.2026, Grid Rewards hielt eine eingefrorene 0-W-Messung für gültig und lud die Hausbatterie ins Auto leer; 1.4: `deviceSerial`/`deviceHost`/`manufacturer`; 1.5: `duplicateOf` — beide MeterHub-Anfrage 13.09.2026, Dubletten-Erkennung bei doppelt angebundenen Wallboxen, harter Weg `CHUB_SetActive()` plus weicher Marker `duplicateOf`).
 
 **Festschreibung Steuerwerte (1.8, auf Wunsch des EMS):**
 - `currentLimitID` ist ein **schreibbarer Sollwert in A** im Bereich `minCurrent` bis `maxCurrent` (ganzzahlig; Alfen mit 0,1 A). ChargerHub begrenzt Werte auf diesen Bereich. **0 ist kein gültiger Pausewert:** go-e, DaheimLader, Fox ESS, Peblar, CHARX und ABL heben Werte unter `minCurrent` auf `minCurrent` an, KEBA, Heidelberg und Alfen schreiben 0 als Sperre ans Gerät. **Zum Pausieren immer `chargeEnableID` = false schreiben.**
