@@ -657,6 +657,20 @@ check('Regelung: Anzeigevariable gefüllt mit Besitzer und Grund', strpos($GLOBA
 (new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
 check('Regelung: Zeitpunkt bleibt ohne Besitzerwechsel unverändert', $cs->ReadAttributeInteger('ControlSince') === $t1);
 
+// Dubletten-Ziel ohne passende Funktion: OHUB_GetFunctions wirft „Instance does not implement this function“
+// (Nutzermeldung 23.10.2026) — weder Statuszeile noch Lesezyklus dürfen abbrechen.
+if (!function_exists('OHUB_GetFunctions')) {
+    function OHUB_GetFunctions($id) { throw new Exception('Instance does not implement this function'); }
+}
+$GLOBALS['inst'][36981] = true;
+$dt = new FailSafeHub(786);
+$dt->prop = ['DuplicateOfKey' => 'ocpphub:36981', 'ManagedBy' => 'none'];
+$line = (new ReflectionMethod($dt, 'DuplicateLine'))->invoke($dt, 'ocpphub:36981');
+check('Dublette: Zielinstanz ohne GetFunctions wirft nicht, Regler dort „unbekannt“', strpos($line, 'unbekannt') !== false);
+$threw = false;
+try { (new ReflectionMethod($dt, 'CheckDuplicateManagedByConflict'))->invoke($dt); } catch (\Throwable $e) { $threw = true; }
+check('Dublette: Lesezyklus-Prüfung wirft bei Zielinstanz ohne GetFunctions nicht', !$threw);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);
