@@ -550,7 +550,8 @@ function contract18(string $mfr, array $attrs, array $vars): array {
     return $h->GetFunctions()[0];
 }
 $c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
-check('Vertrag 1.10: contractVersion 1.10', $c1['contractVersion'] === '1.10');
+check('Vertrag 1.11: contractVersion 1.11', $c1['contractVersion'] === '1.11');
+check('Vertrag 1.11: stateID/errorCodeID vorhanden (int)', isset($c1['stateID'], $c1['errorCodeID']) && is_int($c1['stateID']) && is_int($c1['errorCodeID']));
 check('Vertrag 1.10: sessionEnergyID/energyLimitID/chargingStateID vorhanden (int)', isset($c1['sessionEnergyID'], $c1['energyLimitID'], $c1['chargingStateID']) && is_int($c1['sessionEnergyID']) && is_int($c1['energyLimitID']) && is_int($c1['chargingStateID']));
 check('Vertrag 1.9: controlOwner/Source/Reason/Since vorhanden', isset($c1['controlOwner'], $c1['controlSource'], $c1['controlReason'], $c1['controlSince']));
 check('Vertrag 1.8 go-e: phaseModeID + Werte {one 1, three 2, auto 0}, Schritt 1 A, Latenz unbekannt', $c1['phaseModeID'] === 41001 && $c1['phaseModeValues'] === ['one' => 1, 'three' => 2, 'auto' => 0] && $c1['currentStepA'] === 1.0 && $c1['controlLatencySec'] === 0 && $c1['phaseSwitchPauseSec'] === 0);

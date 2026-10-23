@@ -4573,7 +4573,8 @@ class ChargerHub extends IPSModule
             // phaseModeValues/phaseSwitchPauseSec/currentStepA/controlLatencySec (EMS-Anfrage 21.10.2026).
             // 1.9: controlOwner/controlSource/controlReason/controlSince (Regelungsstatus).
             // 1.10: sessionEnergyID/energyLimitID/chargingStateID (Ladeziel/Frist im EMS).
-            'contractVersion'    => '1.10',
+            // 1.11: stateID/errorCodeID (Ladestatus/Fehlercode, EMS verbindet automatisch).
+            'contractVersion'    => '1.11',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -4661,6 +4662,12 @@ class ChargerHub extends IPSModule
         $fn['sessionEnergyID'] = $this->FindVarByIdent('energy_session') ?: 0;
         $fn['energyLimitID']   = $this->FindVarByIdent('ctl_energy_limit') ?: 0;
         $fn['chargingStateID'] = $this->FindVarByIdent('charging_active') ?: 0;
+        // 1.11: Ladestatus und Fehlercode als Referenzfelder, damit das EMS sie automatisch verbindet statt
+        // über eigene Eingabefelder (Variablen-ID, 0 = nicht vorhanden). stateID: herstellerspezifischer
+        // Ladestatus (Wertebedeutung je Hersteller, siehe Variablenprofil `CHB.*State`). errorCodeID: nur
+        // DaheimLader, Fox ESS und CHARX melden einen Fehlercode (Bitfeld bzw. Zahl, 0 = kein Fehler).
+        $fn['stateID']     = $this->FindVarByIdent('state') ?: 0;
+        $fn['errorCodeID'] = $this->FindVarByIdent('error_code') ?: 0;
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
@@ -4894,7 +4901,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.128-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.129-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
