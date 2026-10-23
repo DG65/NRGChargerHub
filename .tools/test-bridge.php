@@ -550,7 +550,8 @@ function contract18(string $mfr, array $attrs, array $vars): array {
     return $h->GetFunctions()[0];
 }
 $c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
-check('Vertrag 1.9: contractVersion 1.9', $c1['contractVersion'] === '1.9');
+check('Vertrag 1.10: contractVersion 1.10', $c1['contractVersion'] === '1.10');
+check('Vertrag 1.10: sessionEnergyID/energyLimitID/chargingStateID vorhanden (int)', isset($c1['sessionEnergyID'], $c1['energyLimitID'], $c1['chargingStateID']) && is_int($c1['sessionEnergyID']) && is_int($c1['energyLimitID']) && is_int($c1['chargingStateID']));
 check('Vertrag 1.9: controlOwner/Source/Reason/Since vorhanden', isset($c1['controlOwner'], $c1['controlSource'], $c1['controlReason'], $c1['controlSince']));
 check('Vertrag 1.8 go-e: phaseModeID + Werte {one 1, three 2, auto 0}, Schritt 1 A, Latenz unbekannt', $c1['phaseModeID'] === 41001 && $c1['phaseModeValues'] === ['one' => 1, 'three' => 2, 'auto' => 0] && $c1['currentStepA'] === 1.0 && $c1['controlLatencySec'] === 0 && $c1['phaseSwitchPauseSec'] === 0);
 $c2 = contract18('daheimlader', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 1], ['ctl_phase_mode' => 41002]);
@@ -670,6 +671,15 @@ check('Dublette: Zielinstanz ohne GetFunctions wirft nicht, Regler dort „unbek
 $threw = false;
 try { (new ReflectionMethod($dt, 'CheckDuplicateManagedByConflict'))->invoke($dt); } catch (\Throwable $e) { $threw = true; }
 check('Dublette: Lesezyklus-Prüfung wirft bei Zielinstanz ohne GetFunctions nicht', !$threw);
+
+// „Lädt“ (charging_active) folgt der Ladeleistung (> 100 W).
+$GLOBALS['objs'][53020] = ['ObjectIdent' => 'power', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => 3200.0];
+$GLOBALS['objs'][53021] = ['ObjectIdent' => 'charging_active', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => false];
+(new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
+check('Lädt: 3200 W -> true', $GLOBALS['objs'][53021]['Value'] === true);
+$GLOBALS['objs'][53020]['Value'] = 20.0;
+(new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
+check('Lädt: 20 W (Standby) -> false', $GLOBALS['objs'][53021]['Value'] === false);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

@@ -3727,6 +3727,11 @@ class ChargerHub extends IPSModule
     // am Ende jedes Lesezyklus aufgerufen.
     private function UpdateControlState(): void
     {
+        // „Lädt“: Ladeleistung über 100 W (unterscheidet „freigegeben“ von „es fließt wirklich Strom“, Vertrag 1.10).
+        $pw = $this->GetVarValue('power');
+        if ($pw !== null && $this->FindVarByIdent('charging_active')) {
+            $this->SetVarBool('charging_active', (float)$pw > 100.0);
+        }
         $st = $this->ControlState();
         if ($this->ReadAttributeString('ControlOwnerKey') !== $st['owner']) {
             $this->WriteAttributeString('ControlOwnerKey', $st['owner']);
@@ -4567,7 +4572,8 @@ class ChargerHub extends IPSModule
             // Variable nicht vorhanden; Dashboard-Anfrage 06.10.2026). 1.8: phaseModeID/
             // phaseModeValues/phaseSwitchPauseSec/currentStepA/controlLatencySec (EMS-Anfrage 21.10.2026).
             // 1.9: controlOwner/controlSource/controlReason/controlSince (Regelungsstatus).
-            'contractVersion'    => '1.9',
+            // 1.10: sessionEnergyID/energyLimitID/chargingStateID (Ladeziel/Frist im EMS).
+            'contractVersion'    => '1.10',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -4648,6 +4654,13 @@ class ChargerHub extends IPSModule
         $fn['controlSource'] = $cs['source'];
         $fn['controlReason'] = $cs['reason'];
         $fn['controlSince']  = $this->ReadAttributeInteger('ControlSince');
+        // 1.10: Referenzfelder für Ladeziel/Frist im EMS (Variablen-ID, 0 = nicht vorhanden).
+        // sessionEnergyID: Energie der laufenden Sitzung (kWh, springt je Sitzung zurück — bewusst
+        // NICHT als Zählerstand nutzen); fehlt bei Alfen/Heidelberg/ABL. energyLimitID: hartes Energie-
+        // Limit der Wallbox (nur go-e). chargingStateID: „Lädt“ = Leistung über 100 W.
+        $fn['sessionEnergyID'] = $this->FindVarByIdent('energy_session') ?: 0;
+        $fn['energyLimitID']   = $this->FindVarByIdent('ctl_energy_limit') ?: 0;
+        $fn['chargingStateID'] = $this->FindVarByIdent('charging_active') ?: 0;
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
@@ -4881,7 +4894,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.127-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.128-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5476,6 +5489,7 @@ class ChargerHub extends IPSModule
         // beliebiges anderes Fahrzeug-Modul) — siehe SetVehicleName().
         $valid['vehicle_name'] = true;
         $valid['control_status'] = true;
+        $valid['charging_active'] = true;
         $surplusActive = $this->ReadPropertyBoolean('EnableSurplusCharging');
         if ($surplusActive) {
             $valid['surplus_status'] = true;
@@ -5505,6 +5519,7 @@ class ChargerHub extends IPSModule
             $this->RegisterVar(['plugged_in_at',  'Angesteckt um',  'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Ja'], $pos++);
             $this->RegisterVar(['plugged_out_at', 'Abgesteckt um', 'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Nein'], $pos++);
         }
+        $this->RegisterVar(['charging_active', 'Lädt', 'B', '', false, 'errors', 'abgeleitet: Ladeleistung über 100 W'], $pos++);
         $this->RegisterVar(['control_status', 'Regelung (wer, warum)', 'S', '', false, 'control', 'Auskunft: wer den Ladepunkt gerade regelt und warum'], $pos++);
         if ($surplusActive) {
             $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);

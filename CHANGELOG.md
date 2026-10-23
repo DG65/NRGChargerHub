@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.128-beta.1] - 2026-10-23
+
+### Added
+- **Vertrag 1.10 (additiv):** `CHUB_GetFunctions` liefert die Referenzfelder `sessionEnergyID` (Energie der laufenden Sitzung, 0 bei
+  Alfen/Heidelberg/ABL), `energyLimitID` (hartes Energie-Limit der Wallbox, nur go-e) und `chargingStateID`. Grundlage dafür,
+  dass das EMS Ladeziel und Frist je Wallbox planen kann (wie viel ist schon geladen, lässt sich ein Limit in der Wallbox absichern).
+- **Neue Variable „Lädt“** (`charging_active`) im Bereich Status: wahr, wenn die Ladeleistung über 100 W liegt. Unterscheidet
+  „Ladung freigegeben“ von „es fließt wirklich Strom“.
+
 ## [0.9.127-beta.1] - 2026-10-23
 
 ### Fixed
