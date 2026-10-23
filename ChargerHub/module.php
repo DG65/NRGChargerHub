@@ -3207,6 +3207,8 @@ class ChargerHub extends IPSModule
         $this->RegisterAttributeString('ControlOwnerKey', '');
         $this->RegisterAttributeInteger('ControlSince', 0);
         $this->RegisterAttributeBoolean('SurplusRegulating', false);
+        // Plantext von außen (CHUB_SetPlanInfo, z. B. vom EMS): Ablaufzeitpunkt, danach wird er gelöscht.
+        $this->RegisterAttributeInteger('PlanValidUntil', 0);
         // Zeitpunkt (Unix-Timestamp) des letzten erfolgreichen Lesezyklus —
         // siehe SetVarBool()/GetFunctions() 'lastSeenAt', contractVersion 1.3.
         $this->RegisterAttributeInteger('LastSeenAt', 0);
@@ -3732,6 +3734,11 @@ class ChargerHub extends IPSModule
         if ($pw !== null && $this->FindVarByIdent('charging_active')) {
             $this->SetVarBool('charging_active', (float)$pw > 100.0);
         }
+        $until = $this->ReadAttributeInteger('PlanValidUntil');
+        if ($until > 0 && time() > $until) {
+            $this->WriteAttributeInteger('PlanValidUntil', 0);
+            $this->SetVarStr('control_plan', '');
+        }
         $st = $this->ControlState();
         if ($this->ReadAttributeString('ControlOwnerKey') !== $st['owner']) {
             $this->WriteAttributeString('ControlOwnerKey', $st['owner']);
@@ -3904,6 +3911,17 @@ class ChargerHub extends IPSModule
         }
         $storageNote = $storageShare > 0 ? " (nach $storageShare % Speicheranteil, davon " . round($storageW) . ' W für Speicher)' : '';
         $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote$storageNote → $amp A ($phases-phasig).", true);
+    }
+
+    // Plantext von außen: Ein Planer (z. B. das EMS) meldet, was mit dieser Wallbox als Nächstes geschehen soll
+    // („Heute 02:15 bis 04:30 laden, Ziel 12 kWh bis 07:00“). Der ChargerHub zeigt ihn nur an und regelt
+    // danach NICHT — es ist reine Auskunft, genau wie SetVehicleName(). $validUntil (Unix-Zeit, 0 = ohne
+    // Ablauf): danach wird der Text gelöscht, damit nach Ausfall des Planers kein veralteter Plan stehen
+    // bleibt. Leerer Text löscht sofort.
+    public function SetPlanInfo(string $text, int $validUntil = 0)
+    {
+        $this->WriteAttributeInteger('PlanValidUntil', trim($text) === '' ? 0 : max(0, $validUntil));
+        $this->SetVarStr('control_plan', trim($text));
     }
 
     // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
@@ -4574,7 +4592,8 @@ class ChargerHub extends IPSModule
             // 1.9: controlOwner/controlSource/controlReason/controlSince (Regelungsstatus).
             // 1.10: sessionEnergyID/energyLimitID/chargingStateID (Ladeziel/Frist im EMS).
             // 1.11: stateID/errorCodeID (Ladestatus/Fehlercode, EMS verbindet automatisch).
-            'contractVersion'    => '1.11',
+            // 1.12: planInfoID (Plantext von außen, CHUB_SetPlanInfo).
+            'contractVersion'    => '1.12',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -4668,6 +4687,8 @@ class ChargerHub extends IPSModule
         // DaheimLader, Fox ESS und CHARX melden einen Fehlercode (Bitfeld bzw. Zahl, 0 = kein Fehler).
         $fn['stateID']     = $this->FindVarByIdent('state') ?: 0;
         $fn['errorCodeID'] = $this->FindVarByIdent('error_code') ?: 0;
+        // 1.12: Variable „Plan (was als Nächstes passiert)“ — von außen per CHUB_SetPlanInfo() befüllt.
+        $fn['planInfoID'] = $this->FindVarByIdent('control_plan') ?: 0;
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
@@ -4901,7 +4922,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.129-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.130-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5497,6 +5518,7 @@ class ChargerHub extends IPSModule
         $valid['vehicle_name'] = true;
         $valid['control_status'] = true;
         $valid['charging_active'] = true;
+        $valid['control_plan'] = true;
         $surplusActive = $this->ReadPropertyBoolean('EnableSurplusCharging');
         if ($surplusActive) {
             $valid['surplus_status'] = true;
@@ -5527,6 +5549,7 @@ class ChargerHub extends IPSModule
             $this->RegisterVar(['plugged_out_at', 'Abgesteckt um', 'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Nein'], $pos++);
         }
         $this->RegisterVar(['charging_active', 'Lädt', 'B', '', false, 'errors', 'abgeleitet: Ladeleistung über 100 W'], $pos++);
+        $this->RegisterVar(['control_plan', 'Plan (was als Nächstes passiert)', 'S', '', false, 'control', 'Auskunft von außen (z. B. EMS) über die geplanten Ladefenster'], $pos++);
         $this->RegisterVar(['control_status', 'Regelung (wer, warum)', 'S', '', false, 'control', 'Auskunft: wer den Ladepunkt gerade regelt und warum'], $pos++);
         if ($surplusActive) {
             $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);

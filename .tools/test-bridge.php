@@ -550,7 +550,8 @@ function contract18(string $mfr, array $attrs, array $vars): array {
     return $h->GetFunctions()[0];
 }
 $c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
-check('Vertrag 1.11: contractVersion 1.11', $c1['contractVersion'] === '1.11');
+check('Vertrag 1.12: contractVersion 1.12', $c1['contractVersion'] === '1.12');
+check('Vertrag 1.12: planInfoID vorhanden (int)', isset($c1['planInfoID']) && is_int($c1['planInfoID']));
 check('Vertrag 1.11: stateID/errorCodeID vorhanden (int)', isset($c1['stateID'], $c1['errorCodeID']) && is_int($c1['stateID']) && is_int($c1['errorCodeID']));
 check('Vertrag 1.10: sessionEnergyID/energyLimitID/chargingStateID vorhanden (int)', isset($c1['sessionEnergyID'], $c1['energyLimitID'], $c1['chargingStateID']) && is_int($c1['sessionEnergyID']) && is_int($c1['energyLimitID']) && is_int($c1['chargingStateID']));
 check('Vertrag 1.9: controlOwner/Source/Reason/Since vorhanden', isset($c1['controlOwner'], $c1['controlSource'], $c1['controlReason'], $c1['controlSince']));
@@ -681,6 +682,21 @@ check('Lädt: 3200 W -> true', $GLOBALS['objs'][53021]['Value'] === true);
 $GLOBALS['objs'][53020]['Value'] = 20.0;
 (new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
 check('Lädt: 20 W (Standby) -> false', $GLOBALS['objs'][53021]['Value'] === false);
+
+// Plantext von außen (CHUB_SetPlanInfo): setzen, ablaufen lassen, sofort löschen.
+$GLOBALS['objs'][53030] = ['ObjectIdent' => 'control_plan', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => ''];
+$cs->SetPlanInfo('Heute 02:15 bis 04:30 laden', time() + 600);
+check('Plan: Text gesetzt', $GLOBALS['objs'][53030]['Value'] === 'Heute 02:15 bis 04:30 laden');
+(new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
+check('Plan: vor Ablauf bleibt der Text stehen', $GLOBALS['objs'][53030]['Value'] === 'Heute 02:15 bis 04:30 laden');
+$cs->SetPlanInfo('Alter Plan', time() - 5);
+(new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
+check('Plan: nach Ablauf wird der Text gelöscht', $GLOBALS['objs'][53030]['Value'] === '');
+$cs->SetPlanInfo('Plan ohne Ablauf');
+(new ReflectionMethod($cs, 'UpdateControlState'))->invoke($cs);
+check('Plan: ohne Ablaufzeit bleibt der Text', $GLOBALS['objs'][53030]['Value'] === 'Plan ohne Ablauf');
+$cs->SetPlanInfo('');
+check('Plan: leerer Text löscht sofort', $GLOBALS['objs'][53030]['Value'] === '');
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
