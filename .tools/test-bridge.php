@@ -38,6 +38,7 @@ function IPS_SetVariableCustomProfile($id, $p) { if (isset($GLOBALS['objs'][$id]
 function IPS_SetInfo($id, $s) {}
 function SetValueBoolean($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function SetValueString($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
+function GetValueBoolean($id) { return (bool)($GLOBALS['objs'][$id]['Value'] ?? false); }
 function SetValueInteger($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function IPS_DeleteVariable($id) { unset($GLOBALS['objs'][$id]); }
 function IPS_GetName($id) { return 'Name' . $id; }
@@ -697,6 +698,15 @@ $cs->SetPlanInfo('Plan ohne Ablauf');
 check('Plan: ohne Ablaufzeit bleibt der Text', $GLOBALS['objs'][53030]['Value'] === 'Plan ohne Ablauf');
 $cs->SetPlanInfo('');
 check('Plan: leerer Text löscht sofort', $GLOBALS['objs'][53030]['Value'] === '');
+
+// EMS-GUID muss die Modul-GUID des EMS sein (module.json im EMS-Repo); eine falsche GUID ließ IsEmsActive() immer false liefern.
+check('EMS-GUID entspricht der Modul-GUID des EMS', (new ReflectionClassConstant('ChargerHub', 'EMS_GUID'))->getValue() === '{31C61A7B-28C4-4F97-9651-1A64B3469E3C}');
+$GLOBALS['byGuid']['{31C61A7B-28C4-4F97-9651-1A64B3469E3C}'] = [9001];
+$GLOBALS['objs'][9002] = ['ObjectIdent' => 'EMS_Active_State', 'ObjectType' => 2, 'ParentID' => 9001, 'Value' => true];
+$ea = new FailSafeHub(786);
+$ea->prop = ['EnableSurplusCharging' => false, 'ManagedBy' => 'none'];
+check('Regelung: aktives EMS bei ManagedBy none -> Besitzer ems', (new ReflectionMethod($ea, 'ControlState'))->invoke($ea)['owner'] === 'ems');
+unset($GLOBALS['byGuid']['{31C61A7B-28C4-4F97-9651-1A64B3469E3C}']);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

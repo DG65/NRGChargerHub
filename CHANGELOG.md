@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.131-beta.1] - 2026-10-24
+
+### Fixed
+- **EMS wurde nie erkannt:** Die hinterlegte Modul-GUID des EMS war falsch, `IsEmsActive()` lieferte deshalb immer „nein“. Folgen:
+  die Formularzeile zeigte „Kein EMS installiert“, die Anzeige „Regelung (wer, warum)“ nannte bei aktivem EMS „Niemand“, und
+  vor allem **gab die eigene Überschussregelung dem EMS nie den Vorrang**: waren Überschussladen und EMS gleichzeitig aktiv
+  (und „Wer regelt?“ auf „Niemand“), regelten beide dieselbe Wallbox. Mit der richtigen GUID weicht die Überschussregelung
+  jetzt wie vorgesehen zurück, wenn das EMS aktiv ist (gefunden bei der Prüfung auf Dietmars System, 24.10.2026).
+
 ## [0.9.130-beta.1] - 2026-10-23
 
 ### Added
