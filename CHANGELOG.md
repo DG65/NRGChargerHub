@@ -5,6 +5,16 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.132-beta.1] - 2026-10-24
+
+### Added
+- **Bedienung im Formular:** Neues Panel „🎛️ Bedienung“ ganz oben im Konfigurationsformular der Instanz: Schalter
+  **Ladefreigabe**, Schieberegler **Stromlimit** (6 A bis zur Obergrenze der Wallbox) und, wo das Gerät es kann, Auswahl
+  **Phasenumschaltung**. Die Elemente zeigen den aktuellen Gerätewert und wirken sofort am Gerät, ohne „Übernehmen“
+  (gleicher Weg wie die Steuervariablen im WebFront). Darüber stehen der Plan (falls vom EMS gemeldet) und ein Hinweis, wer
+  gerade regelt: bei EMS, Tibber usw. warnt er, dass eine Handbedienung beim nächsten Regelschritt überschrieben werden kann
+  (Wunsch Dietmar: „Schalter und Schieberegler im Instanzformular“).
+
 ## [0.9.131-beta.1] - 2026-10-24
 
 ### Fixed
