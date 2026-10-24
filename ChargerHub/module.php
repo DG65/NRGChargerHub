@@ -3154,7 +3154,7 @@ class ChargerHub extends IPSModule
     ];
 
     private const METERHUBVIRTUAL_GUID = '{ADF18291-2E60-4354-92F5-B96863C127C8}';
-    private const EMS_GUID = '{90286A25-E6C9-4A66-BD4E-0CFB707C2C6C}';
+    private const EMS_GUID = '{31C61A7B-28C4-4F97-9651-1A64B3469E3C}';
     private const INVERTERHUB_GUID = '{BBE2C593-1A91-426D-A714-29A9C7E87589}';
     private const CHARGERHUB_GUID = '{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}';
     // Live ermittelt (13.09.2026, gegen Dietmars Instanz), für den weichen
@@ -4922,7 +4922,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.130-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.131-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
