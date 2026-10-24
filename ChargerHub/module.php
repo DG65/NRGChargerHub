@@ -3994,6 +3994,20 @@ class ChargerHub extends IPSModule
             $this->UpdateFormField('LinkDuplicateStatus', 'caption', $this->DuplicateLine((string)$Value));
             return;
         }
+        // Bedienung direkt im Formular (Panel „Bedienung“): wirkt sofort am Gerät, gleicher Weg wie die
+        // Steuervariablen im WebFront — keine Eigenschaft, kein „Übernehmen“ nötig.
+        $formControls = ['FormCtlEnable' => 'ctl_enable', 'FormCtlCurrent' => 'ctl_curr_limit', 'FormCtlPhase' => 'ctl_phase_mode'];
+        if (isset($formControls[$Ident])) {
+            $target = $formControls[$Ident];
+            if ($target === 'ctl_enable') {
+                $Value = (bool)$Value;
+            } else {
+                $Value = (int)$Value;
+            }
+            $this->RequestAction($target, $Value);
+            $this->UpdateFormField('ControlPanelHint', 'caption', $this->ControlPanelHint());
+            return;
+        }
         if ($Ident === 'ManufacturerChanged') {
             $this->UpdateFormField('ChargePointNo', 'visible', (string)$Value === 'charx');
             $this->UpdateFormField('DaheimEnableVia', 'visible', (string)$Value === 'daheimlader');
@@ -4456,6 +4470,58 @@ class ChargerHub extends IPSModule
             return null;
         }
         return ['source' => $source, 'instanceID' => $id];
+    }
+
+    // Hinweiszeile im Bedienpanel: wer regelt, damit Handbedienung nicht blind gegen EMS/Tibber arbeitet.
+    private function ControlPanelHint(): string
+    {
+        $st = $this->ControlState();
+        $names = ['none' => 'Niemand', 'ems' => 'das EMS', 'surplus' => 'das Überschussladen', 'goe-controller' => 'der go-e Controller',
+            'tibber' => 'Tibber', 'p14a' => '§14a', 'marketer' => 'der Direktvermarkter', 'other' => 'ein anderer Regler'];
+        $who = $names[$st['owner']] ?? $st['owner'];
+        if ($st['owner'] === 'none') {
+            return 'ℹ️ Gerade regelt niemand: Änderungen hier bleiben bestehen.';
+        }
+        return '⚠️ Gerade regelt ' . $who . ': ' . $st['reason'] . ' Eine Handbedienung hier kann beim nächsten Regelschritt wieder überschrieben werden.';
+    }
+
+    // Bedienelemente fürs Formular (Schalter/Schieberegler/Auswahl) mit dem aktuellen Gerätewert; nur,
+    // was der Hersteller kann (Variable vorhanden). Wirkung sofort, siehe RequestAction().
+    private function ControlPanelItems(): array
+    {
+        $items = [['type' => 'Label', 'name' => 'ControlPanelHint', 'caption' => $this->ControlPanelHint()]];
+        $plan = (string)$this->GetVarValue('control_plan');
+        if ($plan !== '') {
+            $items[] = ['type' => 'Label', 'caption' => '🗓️ Plan: ' . $plan];
+        }
+        if ($this->FindVarByIdent('ctl_enable')) {
+            $items[] = ['type' => 'CheckBox', 'name' => 'FormCtlEnable', 'caption' => 'Ladefreigabe (wirkt sofort)',
+                'value' => (bool)$this->GetVarValue('ctl_enable'),
+                'onChange' => 'IPS_RequestAction($id, "FormCtlEnable", $FormCtlEnable);'];
+        }
+        if ($this->FindVarByIdent('ctl_curr_limit')) {
+            $max = max(self::MIN_CURRENT, $this->GetMaxCurrentA());
+            $items[] = ['type' => 'Label', 'caption' => 'Stromlimit in Ampere (wirkt sofort, ' . self::MIN_CURRENT . ' bis ' . $max . ' A)'];
+            $items[] = ['type' => 'HorizontalSlider', 'name' => 'FormCtlCurrent', 'minimum' => self::MIN_CURRENT, 'maximum' => $max,
+                'value' => min($max, max(self::MIN_CURRENT, (int)$this->GetVarValue('ctl_curr_limit'))),
+                'onChange' => 'IPS_RequestAction($id, "FormCtlCurrent", $FormCtlCurrent);'];
+        }
+        $phaseVid = $this->FindVarByIdent('ctl_phase_mode');
+        if ($phaseVid) {
+            $profile = (string)(@IPS_GetVariable($phaseVid)['VariableCustomProfile'] ?: @IPS_GetVariable($phaseVid)['VariableProfile']);
+            $options = [];
+            if ($profile !== '' && @IPS_VariableProfileExists($profile)) {
+                foreach (IPS_GetVariableProfile($profile)['Associations'] as $a) {
+                    $options[] = ['caption' => (string)$a['Name'], 'value' => (int)$a['Value']];
+                }
+            }
+            if ($options !== []) {
+                $items[] = ['type' => 'Select', 'name' => 'FormCtlPhase', 'caption' => 'Phasenumschaltung (wirkt sofort)', 'options' => $options,
+                    'value' => (int)$this->GetVarValue('ctl_phase_mode'),
+                    'onChange' => 'IPS_RequestAction($id, "FormCtlPhase", $FormCtlPhase);'];
+            }
+        }
+        return $items;
     }
 
     // managedBy der als Dublette gewählten Zielinstanz, oder null (unbekannt). Das @ fängt keine
@@ -4922,7 +4988,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.131-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.132-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -4959,6 +5025,12 @@ class ChargerHub extends IPSModule
                         ['label' => '🆕🧪 Peblar (Home/Home Plus/Business, experimentell)', 'value' => 'peblar'],
                         ['label' => '🆕🧪 Phoenix Contact CHARX SEC-3xxx (experimentell)', 'value' => 'charx'],
                     ],
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🎛️  Bedienung',
+                    'expanded' => true,
+                    'items'    => $this->ControlPanelItems(),
                 ],
                 [
                     'type'     => 'ExpansionPanel',

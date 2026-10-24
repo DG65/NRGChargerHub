@@ -708,6 +708,25 @@ $ea->prop = ['EnableSurplusCharging' => false, 'ManagedBy' => 'none'];
 check('Regelung: aktives EMS bei ManagedBy none -> Besitzer ems', (new ReflectionMethod($ea, 'ControlState'))->invoke($ea)['owner'] === 'ems');
 unset($GLOBALS['byGuid']['{31C61A7B-28C4-4F97-9651-1A64B3469E3C}']);
 
+// Bedienpanel im Formular: Elemente je nach vorhandenen Steuervariablen, mit aktuellem Wert.
+if (!function_exists('IPS_VariableProfileExists')) { function IPS_VariableProfileExists($n) { return $n === 'CHB.TestPhase'; } }
+if (!function_exists('IPS_GetVariableProfile')) { function IPS_GetVariableProfile($n) { return ['Associations' => [['Value' => 1, 'Name' => 'Einphasig'], ['Value' => 2, 'Name' => 'Dreiphasig']]]; } }
+$GLOBALS['objs'][53040] = ['ObjectIdent' => 'ctl_enable', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => true];
+$GLOBALS['objs'][53041] = ['ObjectIdent' => 'ctl_curr_limit', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => 10];
+$GLOBALS['objs'][53042] = ['ObjectIdent' => 'ctl_phase_mode', 'ObjectType' => 2, 'ParentID' => 786, 'Value' => 2, 'VariableProfile' => 'CHB.TestPhase', 'VariableCustomProfile' => ''];
+$cp = new FailSafeHub(786);
+$cp->prop = ['EnableSurplusCharging' => false, 'ManagedBy' => 'none', 'Manufacturer' => 'goe', 'MaxCurrent' => 0];
+$items = (new ReflectionMethod($cp, 'ControlPanelItems'))->invoke($cp);
+$byName = []; foreach ($items as $it) { if (isset($it['name'])) { $byName[$it['name']] = $it; } }
+check('Bedienpanel: Schalter Ladefreigabe mit aktuellem Wert', ($byName['FormCtlEnable']['type'] ?? '') === 'CheckBox' && $byName['FormCtlEnable']['value'] === true);
+check('Bedienpanel: Schieberegler Stromlimit mit Wert 10 und Grenzen 6 bis 32', ($byName['FormCtlCurrent']['type'] ?? '') === 'HorizontalSlider' && $byName['FormCtlCurrent']['value'] === 10 && $byName['FormCtlCurrent']['minimum'] === 6 && $byName['FormCtlCurrent']['maximum'] === 32);
+check('Bedienpanel: Phasen-Auswahl mit Optionen aus dem Profil und aktuellem Wert', ($byName['FormCtlPhase']['type'] ?? '') === 'Select' && count($byName['FormCtlPhase']['options']) === 2 && $byName['FormCtlPhase']['value'] === 2);
+check('Bedienpanel: Hinweis „niemand regelt“', strpos($byName['ControlPanelHint']['caption'], 'regelt niemand') !== false);
+$cp->prop['ManagedBy'] = 'tibber';
+$h = (new ReflectionMethod($cp, 'ControlPanelHint'))->invoke($cp);
+check('Bedienpanel: Warnhinweis nennt den aktuellen Regler', strpos($h, '⚠️') === 0 && strpos($h, 'Tibber') !== false);
+unset($GLOBALS['objs'][53040], $GLOBALS['objs'][53041], $GLOBALS['objs'][53042]);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);
