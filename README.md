@@ -192,6 +192,8 @@ Letzteres `function_exists`-abgesichert). Haben beide Seiten `managedBy` `none`/
 die Instanz einen Warnstatus (Instanzstatus 206, Variable „Dubletten-Warnung") — rein
 sichtbar, keine automatische Sperre. Die Entscheidung bleibt beim Nutzer.
 
+Die Regler-Hoheit („Wer regelt?“) lässt sich auch ohne Formular umstellen, z. B. von der Wallbox-Detailseite des Dashboards: `CHUB_GetManagedByOptions($id): array` liefert die für diesen Hersteller zulässigen Werte als `[{value, label}]` (`goe-controller` nur beim go-e), `CHUB_SetManagedBy($id, string $value): array` setzt und übernimmt einen zulässigen Wert und liefert `{ok, error, previous, current}`. Unzulässige Werte werden abgelehnt und ändern nichts. Die Übergabelogik der Formular-Umstellung läuft dabei mit, jede Umstellung steht mit alt/neu im Meldungsprotokoll. Aufrufer sichern beide Funktionen mit `function_exists()` ab.
+
 Für dieselbe Dubletten-Situation gibt es außerdem die öffentliche Methode `CHUB_SetActive($id, bool): string` — deaktiviert (oder reaktiviert) Messung UND Steuerung einer Instanz vollständig, mit sichtbarer Rückmeldung. Beim Deaktivieren wird zusätzlich automatisch eine zuvor gesetzte go-e-Zwangs-Aus-Sperre freigegeben und, sofern „Wer regelt?" noch auf dem Default „Niemand" steht, auf „Anderer" umgestellt (ein bewusst gesetzter anderer Wert bleibt unangetastet). Eine laufende Ladung wird dadurch NICHT unterbrochen — nur die eigene Beobachtung/Steuerung endet.
 
 Siehe [CLAUDE.md](CLAUDE.md) für die Konventionen des Verbunds.

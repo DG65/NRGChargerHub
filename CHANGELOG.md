@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.134-beta.1] - 2026-10-25
+
+### Added
+- **Regler-Hoheit per Funktion umstellen:** `CHUB_GetManagedByOptions($id)` liefert die für diesen Hersteller zulässigen Werte
+  für „Wer regelt?“, `CHUB_SetManagedBy($id, $value)` setzt und übernimmt einen zulässigen Wert (Rückgabe `ok`, `error`,
+  `previous`, `current`). Unzulässige Werte werden abgelehnt. Die Übergabelogik wie bei der Umstellung im Formular läuft mit
+  (z. B. Lösen einer Ladesperre), jede Umstellung steht mit alt/neu im Meldungsprotokoll. Gedacht für die Wallbox-Detailseite
+  des Dashboards (Wunsch Dietmar), damit die Kachel nicht selbst Eigenschaften der Instanz setzt.
+
 ## [0.9.133-beta.1] - 2026-10-25
 
 ### Fixed

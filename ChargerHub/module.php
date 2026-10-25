@@ -4439,6 +4439,41 @@ class ChargerHub extends IPSModule
         return $all;
     }
 
+    // Zulässige Werte für „Wer regelt?“ bei diesem Hersteller, als [{value, label}] (öffentlich als
+    // CHUB_GetManagedByOptions, Anfrage Dashboard/Dietmar 25.10.2026): Anzeigen wie das Dashboard sie
+    // braucht, ohne die Liste fest zu verdrahten (go-e Controller gibt es nur beim go-e).
+    public function GetManagedByOptions(): array
+    {
+        $out = [];
+        foreach ($this->ManagedByAllowed() as $key) {
+            $out[] = ['value' => $key, 'label' => self::MANAGEDBY_LABELS[$key]];
+        }
+        return $out;
+    }
+
+    // Stellt die Regler-Hoheit um (öffentlich als CHUB_SetManagedBy). Nimmt NUR zulässige Werte an, setzt die
+    // Einstellung „Wer regelt?“, wendet sie an (dabei läuft die Übergabelogik wie bei der Umstellung im
+    // Formular, z. B. Lösen einer Ladesperre) und schreibt Umstellungen mit alt/neu ins Meldungsprotokoll.
+    // Rückgabe: ['ok' => bool, 'error' => string, 'previous' => string, 'current' => string]. Ändert sonst
+    // nichts an der Instanz. Das alte Kennzeichen „extern geregelt“ wird dabei zurückgesetzt, damit „Niemand“
+    // wirklich „Niemand“ bedeutet.
+    public function SetManagedBy(string $value): array
+    {
+        $previous = $this->GetManagedBy();
+        if (!in_array($value, $this->ManagedByAllowed(), true)) {
+            return ['ok' => false, 'error' => 'Wert „' . $value . '“ ist für diesen Hersteller nicht zulässig.',
+                'previous' => $previous, 'current' => $previous];
+        }
+        if ($value === $previous && !$this->ReadPropertyBoolean('ExternallyManaged')) {
+            return ['ok' => true, 'error' => '', 'previous' => $previous, 'current' => $previous];
+        }
+        IPS_SetProperty($this->InstanceID, 'ManagedBy', $value);
+        IPS_SetProperty($this->InstanceID, 'ExternallyManaged', false);
+        IPS_ApplyChanges($this->InstanceID);
+        $this->LogMessage('Regler-Hoheit umgestellt: „' . $previous . '“ → „' . $value . '“ (über CHUB_SetManagedBy).', KL_NOTIFY);
+        return ['ok' => true, 'error' => '', 'previous' => $previous, 'current' => $value];
+    }
+
     // Aufgelöste Regler-Kennzeichnung. Rückfall auf die Alt-Property
     // ExternallyManaged (bool) für Instanzen von vor 0.9.0. Ist der gespeicherte
     // Wert für den aktuellen Hersteller nicht zulässig (z. B. 'goe-controller'
@@ -5005,7 +5040,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.133-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.134-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],

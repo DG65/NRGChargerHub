@@ -745,6 +745,29 @@ $h = (new ReflectionMethod($cp, 'ControlPanelHint'))->invoke($cp);
 check('Bedienpanel: Warnhinweis nennt den aktuellen Regler', strpos($h, '⚠️') === 0 && strpos($h, 'Tibber') !== false);
 unset($GLOBALS['objs'][53040], $GLOBALS['objs'][53041], $GLOBALS['objs'][53042]);
 
+// Regler-Hoheit per Funktion (CHUB_GetManagedByOptions / CHUB_SetManagedBy), Anfrage Dashboard 25.10.2026.
+if (!defined('KL_NOTIFY')) { define('KL_NOTIFY', 1); }
+$GLOBALS['setProps'] = []; $GLOBALS['applied'] = 0;
+if (!function_exists('IPS_SetProperty')) { function IPS_SetProperty($id, $n, $v) { $GLOBALS['setProps'][$n] = $v; return true; } }
+if (!function_exists('IPS_ApplyChanges')) { function IPS_ApplyChanges($id) { $GLOBALS['applied']++; return true; } }
+$mg = new FailSafeHub(786);
+$mg->prop = ['Manufacturer' => 'keba', 'ManagedBy' => 'none', 'ExternallyManaged' => false];
+$opt = $mg->GetManagedByOptions();
+check('Hoheit: Optionen enthalten Niemand/EMS/Tibber mit Beschriftung, go-e Controller nicht bei KEBA', count(array_filter($opt, fn($o) => $o['value'] === 'tibber' && $o['label'] !== '')) === 1 && count(array_filter($opt, fn($o) => $o['value'] === 'goe-controller')) === 0 && isset($opt[0]['value'], $opt[0]['label']));
+$mg->prop['Manufacturer'] = 'goe';
+check('Hoheit: go-e Controller beim go-e wählbar', count(array_filter($mg->GetManagedByOptions(), fn($o) => $o['value'] === 'goe-controller')) === 1);
+$r = $mg->SetManagedBy('unsinn');
+check('Hoheit: ungültiger Wert wird abgelehnt, nichts gesetzt', $r['ok'] === false && $r['error'] !== '' && $GLOBALS['setProps'] === [] && $GLOBALS['applied'] === 0);
+$mg->prop['Manufacturer'] = 'keba';
+$r = $mg->SetManagedBy('goe-controller');
+check('Hoheit: go-e Controller bei KEBA abgelehnt', $r['ok'] === false && $GLOBALS['applied'] === 0);
+$r = $mg->SetManagedBy('tibber');
+check('Hoheit: gültiger Wert setzt Einstellung, übernimmt und meldet alt/neu', $r['ok'] === true && $r['previous'] === 'none' && $r['current'] === 'tibber' && ($GLOBALS['setProps']['ManagedBy'] ?? '') === 'tibber' && ($GLOBALS['setProps']['ExternallyManaged'] ?? null) === false && $GLOBALS['applied'] === 1);
+check('Hoheit: Umstellung steht im Protokoll', count(array_filter($mg->logs, fn($l) => strpos($l[1], '„none“ → „tibber“') !== false)) === 1);
+$mg->prop['ManagedBy'] = 'ems'; $GLOBALS['applied'] = 0; $GLOBALS['setProps'] = [];
+$r = $mg->SetManagedBy('ems');
+check('Hoheit: gleicher Wert ohne Änderung -> ok, keine Übernahme', $r['ok'] === true && $GLOBALS['applied'] === 0 && $GLOBALS['setProps'] === []);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);
