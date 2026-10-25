@@ -5,6 +5,16 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.133-beta.1] - 2026-10-25
+
+### Fixed
+- **go-e: Leistung 42 949 672,86 W im Archiv:** Die Leistungsregister des go-e sind vorzeichenbehaftet, im Leerlauf meldet das
+  Gerät kleine negative Werte (Messoffset, z. B. −0,1 W). Als vorzeichenlose Zahl gelesen ergab das 42,9 Megawatt. Ein einziger
+  solcher Archivwert machte in der Ladesitzungs-Auswertung des Dashboards aus einer kleinen Ladung „288 kWh“ (Fund Paul,
+  24.10.2026, 15:15). Gesamt- und Phasenleistung werden jetzt vorzeichenrichtig gelesen, negative Werte gelten als 0 W.
+- **Plausibilitätsschutz für alle Hersteller:** Eine Leistung über 1 MW wird nie in eine Variable (und damit ins Archiv)
+  geschrieben. Bereits archivierte Fehlwerte bleiben im Archiv stehen und müssen dort bereinigt werden.
+
 ## [0.9.132-beta.1] - 2026-10-24
 
 ### Added

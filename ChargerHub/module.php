@@ -1546,6 +1546,23 @@ class GoeChargerDriver implements ChargerDriverInterface
         return ($v === 0xFFFFFFFF) ? null : $v;
     }
 
+    // Leistungsregister sind VORZEICHENBEHAFTET: das Gerät meldet im Leerlauf kleine negative Werte (Messoffset,
+    // z. B. −10 = −0,1 W). Als U32 gelesen wurde daraus 0xFFFFFFF6 = 42.949.672,86 W — ein einzelner Archivwert
+    // dieser Größe machte in der Ladesitzungs-Auswertung aus einer kleinen Ladung 288 kWh (Fund Paul,
+    // 24.10.2026). Rückgabe null wie u32() bei unbelegten Registern; negative Leistung gilt als 0 (eine Wallbox
+    // speist nicht ein).
+    private function powerRaw($mb, $hub, $regs, $offset)
+    {
+        $v = $this->u32($mb, $hub, $regs, $offset);
+        if ($v === null) {
+            return null;
+        }
+        if ($v > 0x7FFFFFFF) {
+            $v -= 0x100000000;
+        }
+        return max(0, $v);
+    }
+
     // Erkennt, ob das Gerät 32-Bit-Werte mit vertauschter Wortreihenfolge sendet (Fund baraka/Adam,
     // 20.10.2026: Spannung 224 V erschien als 14 680 064 = 224 x 65 536, Gesamtenergie als
     // 194 124 185,7 kWh statt 9 515,7 kWh). Die go-e-API nennt dafür die Einstellungen msb/msr (Bytes
@@ -1704,7 +1721,7 @@ class GoeChargerDriver implements ChargerDriverInterface
         $hub->SetVarBool('vehicle_plugged', in_array($carState, [2, 3, 4], true));
 
         $power = $mb->readInput(self::REG_POWER_TOTAL, 2);
-        $p     = ($power !== null) ? $this->u32($mb, $hub, $power, 0) : null;
+        $p     = ($power !== null) ? $this->powerRaw($mb, $hub, $power, 0) : null;
         if ($p !== null) {
             $hub->SetVarFloat('power', $p / 100.0); // 0,01 W -> W
         }
@@ -1730,7 +1747,7 @@ class GoeChargerDriver implements ChargerDriverInterface
                     $hub->SetVarFloat('current_l' . $ph, $i / 10.0);
                 }
                 $pr = $mb->readInput(self::REG_POWER_L1 + ($ph - 1) * 2, 2);
-                $pw = ($pr !== null) ? $this->u32($mb, $hub, $pr, 0) : null;
+                $pw = ($pr !== null) ? $this->powerRaw($mb, $hub, $pr, 0) : null;
                 if ($pw !== null) {
                     // Einheit 0,1 W (nicht 0,1 kW wie in der Doku): vorher 1000-fach zu große Werte, z. B.
                     // 4 000 000 W statt 4 000 W (Archiv Dietmar, Firmware 60.6; Rohwerte baraka, Firmware 56.2).
@@ -4988,7 +5005,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.132-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.133-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5900,6 +5917,11 @@ class ChargerHub extends IPSModule
         // Register liefern bei mancher Firmware 0xFF-Füllwerte statt einer
         // Modbus-Exception, als Float32 dekodiert ergibt das NaN.
         if (!is_finite($value)) {
+            return;
+        }
+        // Eine Wallbox-Leistung über 1 MW gibt es nicht: ein solcher Wert ist ein Lesefehler und würde im
+        // Archiv jede spätere Auswertung (Ladesitzungen, Kosten) verfälschen — nicht schreiben.
+        if (strpos($ident, 'power') === 0 && abs($value) > 1000000.0) {
             return;
         }
         $vid = $this->FindVarByIdent($ident);

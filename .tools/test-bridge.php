@@ -38,6 +38,7 @@ function IPS_SetVariableCustomProfile($id, $p) { if (isset($GLOBALS['objs'][$id]
 function IPS_SetInfo($id, $s) {}
 function SetValueBoolean($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function SetValueString($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
+function SetValueFloat($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function GetValueBoolean($id) { return (bool)($GLOBALS['objs'][$id]['Value'] ?? false); }
 function SetValueInteger($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function IPS_DeleteVariable($id) { unset($GLOBALS['objs'][$id]); }
@@ -508,6 +509,23 @@ $pm->set(120, [0x0006, 0x4190 + 0]);                 // Gesamtleistung 0,01 W: 0
 $ph = new FakeHub(); $ph->groups['GoeWordSwap'] = false;
 $goe->readValues($pm, $ph);
 check('go-e Leistung je Phase: Rohwert 40000 = 4000 W (0,1 W), nicht 4 000 000 W', ($ph->v['power_l1'] ?? null) === 4000.0 && ($ph->v['power_l2'] ?? null) === 4000.0 && ($ph->v['power_l3'] ?? null) === 3900.0);
+
+// Kleine NEGATIVE Leistung im Leerlauf (Messoffset, Rohwert −10 = 0xFFFFFFF6) darf nicht als 42 949 672,86 W im Archiv landen
+// (Fund Paul 24.10.2026: Ladesitzung mit 288 kWh).
+$nm = new FakeMb(); $nm->set(100, [2]);
+$nm->set(120, [0xFFFF, 0xFFF6]);                      // Gesamtleistung −10 (0,01 W)
+$nm->set(146, [0xFFFF, 0xFFFB]);                      // Leistung L1 −5 (0,1 W)
+$nh = new FakeHub(); $nh->groups['GoeWordSwap'] = false;
+$goe->readValues($nm, $nh);
+check('go-e: negative Gesamtleistung (−10) wird 0 W, nicht 42 949 672,86 W', ($nh->v['power'] ?? null) === 0.0);
+check('go-e: negative Phasenleistung (−5) wird 0 W', ($nh->v['power_l1'] ?? null) === 0.0);
+// Schutz im Hub: Leistung über 1 MW wird nie geschrieben
+$GLOBALS['objs'][53050] = ['ObjectIdent' => 'power', 'ObjectType' => 2, 'ParentID' => 7860, 'Value' => 123.0];
+$ph2 = new ChargerHub(7860);
+$ph2->SetVarFloat('power', 42949672.86);
+check('Hub: Leistung über 1 MW wird verworfen (alter Wert bleibt)', $GLOBALS['objs'][53050]['Value'] === 123.0);
+$ph2->SetVarFloat('power', 3200.0);
+check('Hub: plausible Leistung wird geschrieben', $GLOBALS['objs'][53050]['Value'] === 3200.0);
 
 // Sichtbarer Hinweis im Formular
 $hf = new ChargerHub(783);
