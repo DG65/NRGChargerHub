@@ -768,6 +768,24 @@ $mg->prop['ManagedBy'] = 'ems'; $GLOBALS['applied'] = 0; $GLOBALS['setProps'] = 
 $r = $mg->SetManagedBy('ems');
 check('Hoheit: gleicher Wert ohne Änderung -> ok, keine Übernahme', $r['ok'] === true && $GLOBALS['applied'] === 0 && $GLOBALS['setProps'] === []);
 
+// Archivierung: Zähler (energy_total) bekommt beim ERSTEN Einschalten Aggregationstyp 1, andere nicht, bereits Archiviertes bleibt unangetastet.
+$GLOBALS['logged'] = []; $GLOBALS['aggSet'] = [];
+if (!function_exists('AC_SetLoggingStatus')) {
+    function AC_GetLoggingStatus($a, $v) { return $GLOBALS['logged'][$v] ?? false; }
+    function AC_SetLoggingStatus($a, $v, $e) { $GLOBALS['logged'][$v] = $e; return true; }
+    function AC_SetAggregationType($a, $v, $t) { $GLOBALS['aggSet'][$v] = $t; return true; }
+}
+$GLOBALS['byGuid']['{43192F0B-135B-4CE7-A0A7-1475603F3060}'] = [999];
+$ah = new ChargerHub(7862);
+$sa = new ReflectionMethod($ah, 'SetArchive');
+$sa->invoke($ah, 61001, true, true);
+check('Archiv: energy_total beim ersten Einschalten -> Zähler (Typ 1)', ($GLOBALS['aggSet'][61001] ?? null) === 1 && ($GLOBALS['logged'][61001] ?? false) === true);
+$sa->invoke($ah, 61002, true, false);
+check('Archiv: normale Variable -> Typ bleibt Standard (nicht gesetzt)', !isset($GLOBALS['aggSet'][61002]) && ($GLOBALS['logged'][61002] ?? false) === true);
+$GLOBALS['aggSet'] = []; $sa->invoke($ah, 61001, true, true);
+check('Archiv: schon archivierte Variable -> Typ wird NICHT erneut gesetzt (keine Reaggregation)', $GLOBALS['aggSet'] === []);
+unset($GLOBALS['byGuid']['{43192F0B-135B-4CE7-A0A7-1475603F3060}']);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

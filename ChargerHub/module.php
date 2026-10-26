@@ -5040,7 +5040,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.134-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.135-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5872,7 +5872,10 @@ class ChargerHub extends IPSModule
         if ($reg !== '') {
             @IPS_SetInfo($vid, (string)$reg);
         }
-        $this->SetArchive($vid, $archive && !$this->ReadPropertyBoolean('DisableArchiving'));
+        // Kumulative Energiezähler (Gesamtenergie, Energie je RFID-Karte) werden als Zähler archiviert (Aggregationstyp 1),
+        // alles andere bleibt beim Standard. energy_session springt je Sitzung zurück und ist KEIN Zähler.
+        $isCounter = ($ident === 'energy_total') || (bool)preg_match('/^card\d+_energy$/', $ident);
+        $this->SetArchive($vid, $archive && !$this->ReadPropertyBoolean('DisableArchiving'), $isCounter);
     }
 
     private function EnsureCategory($key)
@@ -5923,7 +5926,7 @@ class ChargerHub extends IPSModule
     // Forum-Wunsch sieckendieck/Mike, 16.09.2026) — nicht nur das Einschalten
     // überspringen, sonst bliebe eine schon aktive Archivierung nach dem
     // nachträglichen Umschalten der Property unverändert aktiv.
-    private function SetArchive($vid, bool $enable = true)
+    private function SetArchive($vid, bool $enable = true, bool $counter = false)
     {
         // {43192F0B-...} ist die GUID des Kernel-Moduls "Archive Control" — live
         // verifiziert 29.08.2026. Vorher stand hier eine falsche GUID
@@ -5942,6 +5945,12 @@ class ChargerHub extends IPSModule
         // das teure ApplyChanges am Archiv bei jedem Übernehmen.
         if ((bool)@AC_GetLoggingStatus($archiveID, $vid) !== $enable) {
             AC_SetLoggingStatus($archiveID, $vid, $enable);
+            // Nur beim ERSTEN Einschalten: Zähler als Aggregationstyp 1 festlegen. Eine schon archivierte Variable
+            // behält ihren Typ (eine nachträgliche Änderung würde „Reaggregation“ im Archiv auslösen). Wichtig
+            // für die Geräte-Übernahme: der MigrationsHub zieht den Typ der neuen Variable auf die Alt-Variable nach.
+            if ($enable && $counter && function_exists('AC_SetAggregationType')) {
+                @AC_SetAggregationType($archiveID, $vid, 1);
+            }
             IPS_ApplyChanges($archiveID);
         }
     }

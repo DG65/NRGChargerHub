@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.135-beta.1] - 2026-10-26
+
+### Fixed
+- **Energiezähler im Archiv als Zähler:** „Energie gesamt“ (`energy_total`) und die Energie je RFID-Karte werden beim ersten
+  Einschalten der Archivierung mit dem Aggregationstyp „Zähler“ angelegt, nicht mehr mit dem Standard (Momentanwert). Bei der
+  Geräte-Übernahme vom alten go-eCharger-Modul zieht der MigrationsHub den Typ der neuen Variable auf die Alt-Variable nach;
+  vorher bekam sie deshalb den falschen Typ, und Verbrauchsauswertungen lasen Zählerstände als Momentanwerte (Fund 26.10.2026).
+  Bereits archivierte Variablen behalten ihren Typ (eine Änderung würde im Archiv eine Reaggregation auslösen).
+
 ## [0.9.134-beta.1] - 2026-10-25
 
 ### Added
