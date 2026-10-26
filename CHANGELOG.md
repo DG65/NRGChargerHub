@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.136-beta.1] - 2026-10-26
+
+### Added
+- **Geräte-Übernahme vom alten go-eCharger-Modul:** `CHUB_GetIdentMapping` liefert für die vier Leistungs-Idents
+  (`powerToCarTotal`, `powerToCarLineL1/L2/L3`) das additive Feld `archiveFactor` = 1000.0. Das Alt-Modul speichert die Leistung in
+  kW, der ChargerHub in W; der Übernehmende (Gerätetausch/MigrationsHub) multipliziert damit jeden archivierten Wert der
+  Alt-Variable (fehlt das Feld: 1.0). Ohne diese Umrechnung stand die übernommene Historie 1000-fach zu klein im Archiv
+  (Fund Dietmar, 26.10.2026; Wunsch Dietmar).
+
 ## [0.9.135-beta.1] - 2026-10-26
 
 ### Fixed

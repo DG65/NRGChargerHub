@@ -94,13 +94,13 @@ MeterHubDiscovery.
 Wer von diesem verbreiteten Fremdmodul (github.com/IPSCoyote/GO-eCharger, GUID
 `{B4624A42-...}`) auf ChargerHub umsteigt, kann über **MigrationsHub** die Historie
 übernehmen (siehe „Einbindung in den Modul-Verbund" unten). Folgende Ident-Zuordnung wurde am
-Quellcode des Fremdmoduls verifiziert (Stand 03.08.2026, MigrationsHub-Sitzung):
+Quellcode des Fremdmoduls verifiziert (Stand 03.08.2026, MigrationsHub-Sitzung). Das Alt-Modul speichert die Leistung in kW, der ChargerHub in W: `CHUB_GetIdentMapping` liefert dafür je Leistungs-Ident das additive Feld `archiveFactor` (1000.0), der Übernehmende multipliziert jeden archivierten Wert der Alt-Variable damit (fehlt das Feld, gilt 1.0):
 
 | Alt-Ident (GO-eCharger) | Neu-Ident (ChargerHub)    | Hinweis                              |
 | ------------------------ | -------------------------- | ------------------------------------- |
 | `status`                 | `state`                    |                                        |
-| `powerToCarLineL1/L2/L3` | `power_l1`/`power_l2`/`power_l3` |                                  |
-| `powerToCarTotal`        | `power`                     |                                        |
+| `powerToCarLineL1/L2/L3` | `power_l1`/`power_l2`/`power_l3` | Alt-Modul in kW → `archiveFactor` 1000 |
+| `powerToCarTotal`        | `power`                     | Alt-Modul in kW → `archiveFactor` 1000 |
 | `ampToCarLineL1/L2/L3`   | `current_l1`/`current_l2`/`current_l3` |                            |
 | `energyTotal`            | `energy_total`              |                                        |
 | `energyLoadCycle`        | `energy_session`            |                                        |

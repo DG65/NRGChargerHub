@@ -786,6 +786,12 @@ $GLOBALS['aggSet'] = []; $sa->invoke($ah, 61001, true, true);
 check('Archiv: schon archivierte Variable -> Typ wird NICHT erneut gesetzt (keine Reaggregation)', $GLOBALS['aggSet'] === []);
 unset($GLOBALS['byGuid']['{43192F0B-135B-4CE7-A0A7-1475603F3060}']);
 
+// Geräte-Übernahme: Leistung des alten Moduls in kW -> archiveFactor 1000 (nur Leistungs-Idents), sonst kein Faktor.
+$im = (new ChargerHub(7863))->GetIdentMapping('{B4624A42-F80A-4975-B692-7FB4D06CC805}', ['powerToCarTotal', 'powerToCarLineL1', 'powerToCarLineL2', 'powerToCarLineL3', 'energyTotal', 'ampToCarLineL1']);
+check('Mapping: vier Leistungs-Idents tragen archiveFactor 1000', count(array_filter($im, fn($e) => ($e['archiveFactor'] ?? null) === 1000.0)) === 4);
+check('Mapping: energyTotal/ampToCarLineL1 ohne archiveFactor (Fehlen = 1.0)', !isset($im['energyTotal']['archiveFactor']) && !isset($im['ampToCarLineL1']['archiveFactor']));
+check('Mapping: Neu-Ident und Typ bleiben unverändert (power_l2/Float)', ($im['powerToCarLineL2']['ident'] ?? '') === 'power_l2' && ($im['powerToCarLineL2']['type'] ?? null) === VARIABLETYPE_FLOAT);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

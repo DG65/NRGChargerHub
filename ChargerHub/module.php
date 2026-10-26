@@ -4674,11 +4674,18 @@ class ChargerHub extends IPSModule
             $map['energyChargedCard' . $n] = ['card' . ($n - 1) . '_energy', VARIABLETYPE_FLOAT];
         }
 
+        // Das alte Modul speichert die Leistung zum Fahrzeug in kW, der ChargerHub in W (Profil NRG.Watt). Wer
+        // die Archivwerte der Alt-Variable übernimmt, muss sie mit 'archiveFactor' multiplizieren (additives
+        // Feld, fehlt = 1.0; Wunsch Dietmar 26.10.2026, Gerätetausch wertet es aus).
+        $kwToW = ['powerToCarTotal', 'powerToCarLineL1', 'powerToCarLineL2', 'powerToCarLineL3'];
         $result = [];
         foreach ($foreignIdents as $oldIdent) {
             if (isset($map[$oldIdent])) {
                 [$newIdent, $type] = $map[$oldIdent];
                 $result[$oldIdent] = ['ident' => $newIdent, 'type' => $type];
+                if (in_array($oldIdent, $kwToW, true)) {
+                    $result[$oldIdent]['archiveFactor'] = 1000.0;
+                }
             }
         }
         return $result;
@@ -5040,7 +5047,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.135-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.136-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
