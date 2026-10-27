@@ -5,6 +5,21 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.9.137-beta.1] - 2026-10-27
+
+### Changed
+- **Archivieren ist jetzt eine bewusste Entscheidung (Store-Review-Checkliste 9k):** Neue Einstellung „Variablen archivieren“
+  (Panel „Polling“), Standard **aus**. Neue Instanzen archivieren erst, wenn der Nutzer es einschaltet. **Bestandsinstanzen
+  archivieren wie bisher** (beim ersten Übernehmen nach dem Update erkannt, daran ändert sich nichts); dort bleibt „Archivierung
+  deaktivieren“ sichtbar. Eine von außen eingeschaltete Archivierung (z. B. durch die Geräte-Übernahme des MigrationsHub) wird
+  nicht mehr abgeschaltet. Das Dashboard (Verlaufsgrafiken, Ladesitzungen) braucht archivierte Werte, der Hinweis im Formular
+  nennt das.
+
+### Added
+- **Rückmeldung im Bedienpanel:** Schalter und Regler im Panel „Bedienung“ melden das Ergebnis („✅ Ladefreigabe: An gesetzt“
+  oder „⚠️ … konnte nicht gesetzt werden“, bei inaktiver Instanz oder Vorführmodus „nicht ausgeführt“), statt bei einem
+  Fehlschlag still zurückzuspringen (Store-Review-Checkliste 13).
+
 ## [0.9.136-beta.1] - 2026-10-26
 
 ### Added

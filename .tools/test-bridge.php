@@ -792,6 +792,30 @@ check('Mapping: vier Leistungs-Idents tragen archiveFactor 1000', count(array_fi
 check('Mapping: energyTotal/ampToCarLineL1 ohne archiveFactor (Fehlen = 1.0)', !isset($im['energyTotal']['archiveFactor']) && !isset($im['ampToCarLineL1']['archiveFactor']));
 check('Mapping: Neu-Ident und Typ bleiben unverändert (power_l2/Float)', ($im['powerToCarLineL2']['ident'] ?? '') === 'power_l2' && ($im['powerToCarLineL2']['type'] ?? null) === VARIABLETYPE_FLOAT);
 
+// Archivieren: Standard aus, Bestandsinstanz archiviert wie bisher, „deaktivieren“ schaltet aktiv ab (Checkliste 9k).
+$ar = new ChargerHub(7864);
+$ard = new ReflectionMethod($ar, 'ArchivingDecision');
+$ar->prop = ['ArchiveVariables' => false, 'DisableArchiving' => false];
+check('Archiv: neue Instanz (Standard) -> nichts anfassen (skip)', $ard->invoke($ar) === 'skip');
+$ar->prop['ArchiveVariables'] = true;
+check('Archiv: Nutzer schaltet „Variablen archivieren“ ein -> on', $ard->invoke($ar) === 'on');
+$ar->prop = ['ArchiveVariables' => false, 'DisableArchiving' => false];
+$ar->WriteAttributeBoolean('ArchiveLegacyOn', true);
+check('Archiv: Bestandsinstanz archiviert wie bisher -> on', $ard->invoke($ar) === 'on');
+$ar->prop['DisableArchiving'] = true;
+check('Archiv: Bestandsinstanz mit „deaktivieren“ -> off (aktiv abschalten)', $ard->invoke($ar) === 'off');
+// Bestandsinstanz erkennen: Kinder vorhanden -> legacy, keine Kinder -> neu
+$GLOBALS['objs'][62000] = ['ObjectIdent' => 'x', 'ObjectType' => 2, 'ParentID' => 7865];
+$old = new ChargerHub(7865); $old->prop = ['Manufacturer' => 'keba'];
+$new = new ChargerHub(7866); $new->prop = ['Manufacturer' => 'keba'];
+check('Archiv: Instanz mit vorhandenen Variablen gilt als Bestandsinstanz', count(IPS_GetChildrenIDs(7865)) > 0 && count(IPS_GetChildrenIDs(7866)) === 0);
+// Echter ApplyChanges-Lauf (inaktive Instanz, endet früh nach der Variablenpflege): Bestandsinstanz -> ArchiveLegacyOn, neue -> aus, einmalig.
+foreach ([[$old, true], [$new, false]] as [$h, $expectLegacy]) {
+    $h->prop = ['Manufacturer' => 'keba', 'Active' => false, 'Host' => '', 'ConnectionType' => 'direct', 'DisableArchiving' => false, 'ArchiveVariables' => false];
+    try { $h->ApplyChanges(); } catch (\Throwable $e) { /* Prüfstand-Lücken (Profile/Variablen) sind hier unerheblich, es zählt die Erkennung davor */ }
+    check('Archiv: ApplyChanges erkennt ' . ($expectLegacy ? 'Bestandsinstanz' : 'neue Instanz') . ' einmalig', $h->ReadAttributeBoolean('ArchiveMigrated') === true && $h->ReadAttributeBoolean('ArchiveLegacyOn') === $expectLegacy);
+}
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

@@ -89,6 +89,10 @@ Wallbox-Typen (Modbus-TCP-Port 502) und legt gefundene Geräte per Klick als Cha
 mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an — analog zu InverterHubDiscovery/
 MeterHubDiscovery.
 
+## Archivierung
+
+Der ChargerHub archiviert Messwerte und Zähler **nur, wenn der Nutzer es einschaltet** (Formular, Panel „Polling“: „Variablen archivieren“, Standard aus). Das Dashboard (Verlaufsgrafiken, Ladesitzungen, Kosten) und der MigrationsHub bei einem Gerätewechsel brauchen archivierte Werte. Kumulative Energiezähler (Gesamtenergie, Energie je RFID-Karte) werden als Zähler (Aggregationstyp 1) archiviert. Instanzen, die schon vor dieser Einstellung archivierten, archivieren wie bisher weiter; dort erscheint zusätzlich „Archivierung deaktivieren“. Eine von außen eingeschaltete Archivierung (etwa durch die Geräte-Übernahme) schaltet der ChargerHub nicht ab.
+
 ## Migration vom go-eCharger-Modul (IPSCoyote/GO-eCharger)
 
 Wer von diesem verbreiteten Fremdmodul (github.com/IPSCoyote/GO-eCharger, GUID

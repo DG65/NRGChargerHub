@@ -3220,6 +3220,9 @@ class ChargerHub extends IPSModule
         // Für ReleaseForceLockOnHandoff() — merkt sich den zuletzt angewendeten
         // „Wer regelt?"-Wert, um den ÜBERGANG none→(etwas anderes) zu erkennen.
         $this->RegisterAttributeString('PrevManagedBy', 'none');
+        // Einmalige Erkennung „Bestandsinstanz“: hatte die Instanz beim ersten Übernehmen nach dem Update schon Variablen, archiviert sie wie bisher.
+        $this->RegisterAttributeBoolean('ArchiveMigrated', false);
+        $this->RegisterAttributeBoolean('ArchiveLegacyOn', false);
         // Regelungsstatus (Vertrag 1.9): wer regelt gerade, seit wann — siehe UpdateControlState().
         $this->RegisterAttributeString('ControlOwnerKey', '');
         $this->RegisterAttributeInteger('ControlSince', 0);
@@ -3258,6 +3261,9 @@ class ChargerHub extends IPSModule
         // MeterHub) — auf Wunsch abschaltbar (Forum, sieckendieck/Mike,
         // 16.09.2026), betrifft dann ALLE Variablen dieser Instanz.
         $this->RegisterPropertyBoolean('DisableArchiving', false);
+        // Archivieren ist ein bewusster Entschluss des Nutzers (Store-Review-Checkliste 9k): Standard AUS. Bestandsinstanzen,
+        // die schon vor dieser Einstellung archivierten, behalten ihr Verhalten (Attribut ArchiveLegacyOn), siehe ArchivingDecision().
+        $this->RegisterPropertyBoolean('ArchiveVariables', false);
         // Verbindungsweg (SUITE.md 9j, Verbund-Abstimmung mit InverterHub/
         // MeterHub, 17./18.09.2026): 'direct' = bisheriger eigener
         // Socket-Client (Standard, unverändert), 'gateway' = Symcons
@@ -3404,6 +3410,12 @@ class ChargerHub extends IPSModule
         $this->WriteAttributeString('DriverFlags', '{}');
         if (!$this->ReadPropertyBoolean('PlugTimes')) {
             $this->WriteAttributeInteger('PlugState', -1); // beim erneuten Einschalten neu beobachten
+        }
+
+        // Bestandsinstanz erkennen, BEVOR Variablen angelegt werden: eine neue Instanz hat noch keine Kinder.
+        if (!$this->ReadAttributeBoolean('ArchiveMigrated')) {
+            $this->WriteAttributeBoolean('ArchiveLegacyOn', count(@IPS_GetChildrenIDs($this->InstanceID) ?: []) > 0);
+            $this->WriteAttributeBoolean('ArchiveMigrated', true);
         }
 
         $this->CreateProfiles();
@@ -4016,12 +4028,20 @@ class ChargerHub extends IPSModule
         $formControls = ['FormCtlEnable' => 'ctl_enable', 'FormCtlCurrent' => 'ctl_curr_limit', 'FormCtlPhase' => 'ctl_phase_mode'];
         if (isset($formControls[$Ident])) {
             $target = $formControls[$Ident];
-            if ($target === 'ctl_enable') {
-                $Value = (bool)$Value;
-            } else {
-                $Value = (int)$Value;
+            $Value = ($target === 'ctl_enable') ? (bool)$Value : (int)$Value;
+            if (!$this->ReadPropertyBoolean('Active') || $this->ReadPropertyBoolean('DemoMode')) {
+                $this->UpdateFormField('ControlPanelFeedback', 'caption', '⚠️ Nicht ausgeführt: die Instanz ist inaktiv oder im Vorführmodus.');
+                return;
             }
             $this->RequestAction($target, $Value);
+            // writeControl setzt die Variable nur bei erfolgreichem Schreiben (siehe unten): Abgleich = Rückmeldung.
+            $now = $this->GetVarValue($target);
+            $okWrite = ($target === 'ctl_enable') ? ((bool)$now === $Value) : ((int)$now === $Value);
+            $names = ['ctl_enable' => 'Ladefreigabe', 'ctl_curr_limit' => 'Stromlimit', 'ctl_phase_mode' => 'Phasenumschaltung'];
+            $shown = ($target === 'ctl_enable') ? ($Value ? 'An' : 'Aus') : (string)$Value . ($target === 'ctl_curr_limit' ? ' A' : '');
+            $this->UpdateFormField('ControlPanelFeedback', 'caption', $okWrite
+                ? '✅ ' . $names[$target] . ': ' . $shown . ' gesetzt.'
+                : '⚠️ ' . $names[$target] . ' konnte nicht gesetzt werden (Gerät antwortet nicht oder lehnt den Wert ab), Einzelheiten im Meldungen-Log.');
             $this->UpdateFormField('ControlPanelHint', 'caption', $this->ControlPanelHint());
             return;
         }
@@ -4541,7 +4561,8 @@ class ChargerHub extends IPSModule
     // was der Hersteller kann (Variable vorhanden). Wirkung sofort, siehe RequestAction().
     private function ControlPanelItems(): array
     {
-        $items = [['type' => 'Label', 'name' => 'ControlPanelHint', 'caption' => $this->ControlPanelHint()]];
+        $items = [['type' => 'Label', 'name' => 'ControlPanelHint', 'caption' => $this->ControlPanelHint()],
+            ['type' => 'Label', 'name' => 'ControlPanelFeedback', 'caption' => ' ']];
         $plan = (string)$this->GetVarValue('control_plan');
         if ($plan !== '') {
             $items[] = ['type' => 'Label', 'caption' => '🗓️ Plan: ' . $plan];
@@ -5047,7 +5068,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.136-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.9.137-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5129,8 +5150,10 @@ class ChargerHub extends IPSModule
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'NumberSpinner', 'name' => 'IntervalFast', 'caption' => 'Lese-Intervall (Sekunden)', 'minimum' => 2, 'maximum' => 300, 'suffix' => 's'],
-                        ['type' => 'CheckBox', 'name' => 'DisableArchiving', 'caption' => '🆕 Archivierung deaktivieren'],
-                        ['type' => 'Label', 'caption' => 'Betrifft ALLE Variablen dieser Instanz. Bereits aktiv archivierte Werte werden beim nächsten Übernehmen automatisch abgeschaltet, ihre bisherige Historie bleibt im Archiv erhalten. ⚠️ Nur aktivieren, wenn ChargerHub eigenständig läuft: andere NRG-Stack-Module (z. B. Dashboard-Verlaufsgrafiken, MigrationsHub bei einem späteren Wechsel) können archivierte Historie brauchen.'],
+                        ['type' => 'CheckBox', 'name' => 'ArchiveVariables', 'caption' => '🆕 Variablen archivieren (Verlauf; nötig für Ladesitzungen und Kosten im Dashboard)'],
+                        ['type' => 'Label', 'caption' => 'Standard: aus. Archiviert werden nur die Messwerte und Zähler dieser Instanz. ℹ️ Andere NRG-Stack-Module brauchen archivierte Werte: das Dashboard (Verlaufsgrafiken, Ladesitzungen, Kosten) und der MigrationsHub bei einem späteren Gerätewechsel. Das Einschalten wirkt beim nächsten Übernehmen.'],
+                        ['type' => 'CheckBox', 'name' => 'DisableArchiving', 'caption' => 'Archivierung deaktivieren (diese Instanz archiviert wie bisher)', 'visible' => $this->ReadAttributeBoolean('ArchiveLegacyOn')],
+                        ['type' => 'Label', 'caption' => 'Nur bei Instanzen sichtbar, die vor dieser Einstellung schon archivierten. Bereits aktiv archivierte Werte werden beim nächsten Übernehmen abgeschaltet, ihre bisherige Historie bleibt im Archiv erhalten. ⚠️ Nur abschalten, wenn ChargerHub eigenständig läuft: Dashboard-Verlaufsgrafiken, Ladesitzungen und ein späterer Gerätewechsel können archivierte Historie brauchen.', 'visible' => $this->ReadAttributeBoolean('ArchiveLegacyOn')],
                     ],
                 ],
                 [
@@ -5882,7 +5905,12 @@ class ChargerHub extends IPSModule
         // Kumulative Energiezähler (Gesamtenergie, Energie je RFID-Karte) werden als Zähler archiviert (Aggregationstyp 1),
         // alles andere bleibt beim Standard. energy_session springt je Sitzung zurück und ist KEIN Zähler.
         $isCounter = ($ident === 'energy_total') || (bool)preg_match('/^card\d+_energy$/', $ident);
-        $this->SetArchive($vid, $archive && !$this->ReadPropertyBoolean('DisableArchiving'), $isCounter);
+        $decision = $archive ? $this->ArchivingDecision() : ($this->ReadPropertyBoolean('DisableArchiving') ? 'off' : 'skip');
+        if ($decision === 'on') {
+            $this->SetArchive($vid, true, $isCounter);
+        } elseif ($decision === 'off') {
+            $this->SetArchive($vid, false);
+        }
     }
 
     private function EnsureCategory($key)
@@ -5933,6 +5961,20 @@ class ChargerHub extends IPSModule
     // Forum-Wunsch sieckendieck/Mike, 16.09.2026) — nicht nur das Einschalten
     // überspringen, sonst bliebe eine schon aktive Archivierung nach dem
     // nachträglichen Umschalten der Property unverändert aktiv.
+    // Archivieren: 'on' = einschalten, 'off' = aktiv abschalten (nur wenn der Nutzer „Archivierung deaktivieren“ gewählt hat),
+    // 'skip' = nichts anfassen (Standard bei neuen Instanzen: eine von außen eingeschaltete Archivierung, z. B. durch die
+    // Geräte-Übernahme, wird NICHT abgeschaltet). Bestandsinstanzen archivieren wie bisher, solange „deaktivieren“ aus ist.
+    private function ArchivingDecision(): string
+    {
+        if ($this->ReadPropertyBoolean('DisableArchiving')) {
+            return 'off';
+        }
+        if ($this->ReadPropertyBoolean('ArchiveVariables') || $this->ReadAttributeBoolean('ArchiveLegacyOn')) {
+            return 'on';
+        }
+        return 'skip';
+    }
+
     private function SetArchive($vid, bool $enable = true, bool $counter = false)
     {
         // {43192F0B-...} ist die GUID des Kernel-Moduls "Archive Control" — live
