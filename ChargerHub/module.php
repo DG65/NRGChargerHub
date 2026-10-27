@@ -1,0 +1,6132 @@
+<?php
+
+// ===========================================================================
+// ChargerHub — generisches Modbus-TCP-Framework für Wallboxen verschiedener
+// Hersteller. Ein Modul, ein Auswahlfeld „Wallbox-Typ" — je nach Auswahl
+// werden die passenden Register und Bedienelemente freigeschaltet.
+//
+// Aufbau analog zu InverterHub/MeterHub:
+//   CHUB_ModbusTcpClient        — gemeinsame Modbus-TCP-Grundfunktionen
+//   ChargerDriverInterface — Vertrag, den jeder Wallbox-Treiber erfüllt
+//   KebaDriver / AlfenDriver / HeidelbergDriver / GoeChargerDriver
+//   ChargerHub              — Hauptmodul, lädt den Treiber laut Manufacturer-Property
+//
+// WICHTIG: Alle Registeradressen der vier Treiber stammen aus den jeweiligen
+// öffentlichen Hersteller-Dokumentationen, sind aber NOCH NICHT an echter
+// Hardware verifiziert (anders als bei InverterHub/MeterHub, wo viele Quirks
+// live bestätigt sind). Vor Produktiveinsatz bitte die Werte gegen ein reales
+// Gerät prüfen und Rückmeldungen einpflegen.
+//
+// Schreibzugriff (Ladefreigabe, Stromlimit) ist Kernfunktion von ChargerHub
+// (Unterschied zu MeterHub, das nur liest) — das Interface ist daher näher an
+// InverterHub. Der endgültige CHUB_GetFunctions-Schreib-Vertrag (welche Felder
+// EMS zum Steuern nutzt) ist laut CLAUDE.md noch offen und mit der EMS-Sitzung
+// abzustimmen; die hier registrierten Ident-Namen sind ein erster, änderbarer
+// Vorschlag.
+// ===========================================================================
+
+class CHUB_ModbusTcpClient
+{
+    public $host;
+    public $port;
+    public $unitId;
+
+    // Klartext-Grund des letzten fehlgeschlagenen Schreibzugriffs (writeSingle/
+    // writeMultiple) — von der aufrufenden Instanz nach jedem Schreibversuch
+    // auslesbar, damit ein stiller false-Rückgabewert nicht mehr unbegründet bleibt.
+    public $lastWriteError = '';
+
+    // Roh-Protokoll der Schreibzugriffe dieses Clients (Anfrage/Antwort als Hex) für die
+    // Fehlersuche; die Instanz gibt es nur aus, wenn „Schreibbefehle protokollieren“ an ist.
+    public $writeTrace = [];
+
+    // Dauerhafte statt einer für jeden Zugriff neuen Verbindung (Property „PersistentConnection“,
+    // von GetModbusClient() gesetzt). Fund sieckendieck, 22.09.2026: eine DaheimLader Touch PRO
+    // ließ sich per ChargerHub trotz bit-identischer Schreibanfrage nicht starten/stoppen — mit
+    // sehr langem Lese-Intervall (kaum noch Verbindungen) ging es sofort. Das ständige Verbinden/
+    // Trennen brachte offenbar den kleinen Modbus-Server der Box aus dem Tritt. Die Verbindung wird
+    // über Host+Port geteilt (auch über mehrere ChargerHub-Instanzen zum selben Gerät hinweg, z. B.
+    // mehrere CHARX-Ladepunkte an einer IP), Zugriffe darauf per IPS-Semaphore serialisiert.
+    public $persistent = false;
+
+    private $batchSock = null;
+    private static array $persistentSockets = [];
+
+    public function beginBatch()
+    {
+        $this->endBatch();
+        $s = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($s !== false) {
+            stream_set_timeout($s, 3);
+            $this->batchSock = $s;
+        }
+    }
+
+    public function endBatch()
+    {
+        if ($this->batchSock !== null) {
+            @fclose($this->batchSock);
+            $this->batchSock = null;
+        }
+    }
+
+    public function __construct($host, $port, $unitId)
+    {
+        $this->host   = $host;
+        $this->port   = $port;
+        $this->unitId = $unitId;
+    }
+
+    public function readHolding($startReg, $count)
+    {
+        return $this->modbusRead(0x03, $startReg, $count);
+    }
+
+    public function readInput($startReg, $count)
+    {
+        return $this->modbusRead(0x04, $startReg, $count);
+    }
+
+    private function persistentKey(): string
+    {
+        return $this->host . ':' . $this->port;
+    }
+
+    // Liefert eine offene, noch nutzbare dauerhafte Verbindung zu Host+Port (neu verbunden, falls
+    // keine vorhanden oder die vorhandene tot ist) — geteilt über alle Client-Objekte, die auf
+    // dasselbe Gerät zeigen, damit ein zweiter Poll oder eine zweite Instanz sie weiterverwendet
+    // statt selbst erneut zu verbinden.
+    private function getPersistentSocket()
+    {
+        $key = $this->persistentKey();
+        $s   = self::$persistentSockets[$key] ?? null;
+        if (is_resource($s)) {
+            $meta = @stream_get_meta_data($s);
+            if ($meta !== false && empty($meta['eof']) && empty($meta['timed_out'])) {
+                return $s;
+            }
+            @fclose($s);
+            unset(self::$persistentSockets[$key]);
+        }
+        $s = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($s !== false) {
+            stream_set_timeout($s, 3);
+            self::$persistentSockets[$key] = $s;
+        }
+        return $s;
+    }
+
+    // Verwirft eine als kaputt erkannte dauerhafte Verbindung, damit der nächste Zugriff neu
+    // verbindet statt eine tote Verbindung wiederzuverwenden.
+    private function dropPersistentSocket(): void
+    {
+        $key = $this->persistentKey();
+        if (isset(self::$persistentSockets[$key])) {
+            @fclose(self::$persistentSockets[$key]);
+            unset(self::$persistentSockets[$key]);
+        }
+    }
+
+    // Führt $body($sock) aus und kümmert sich um Verbindungsaufbau/-abbau je nach Modus:
+    // Batch (bestehende Verbindung, siehe beginBatch()) > dauerhaft (geteilt, per Semaphore
+    // serialisiert, bei Fehler verworfen) > wie bisher eine frische Verbindung je Aufruf.
+    private function withSocket(callable $body)
+    {
+        if ($this->batchSock !== null) {
+            return $body($this->batchSock, false);
+        }
+        if (!$this->persistent) {
+            $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+            if ($sock === false) {
+                return $body(false, false);
+            }
+            stream_set_timeout($sock, 3);
+            $result = $body($sock, false);
+            @fclose($sock);
+            return $result;
+        }
+
+        $sem = 'CHUB_Modbus_' . $this->persistentKey();
+        if (!@IPS_SemaphoreEnter($sem, 5000)) {
+            return $body(false, false); // Gerät gerade anderweitig belegt — kein Grund, ewig zu warten.
+        }
+        try {
+            $sock = $this->getPersistentSocket();
+            $result = $body($sock, true);
+            if ($result === null || $result === false) {
+                $this->dropPersistentSocket();
+            }
+            return $result;
+        } finally {
+            @IPS_SemaphoreLeave($sem);
+        }
+    }
+
+    private function modbusRead($fc, $startReg, $count)
+    {
+        return $this->withSocket(function ($sock, bool $isPersistent) use ($fc, $startReg, $count) {
+            if ($sock === false) {
+                return null;
+            }
+
+            $tid  = mt_rand(1, 65535);
+            $pdu  = pack('Cnn', $fc, $startReg, $count);
+            $mbap = pack('nnn', $tid, 0, strlen($pdu) + 1) . chr($this->unitId);
+
+            @fwrite($sock, $mbap . $pdu);
+
+            $response = '';
+            $deadline = microtime(true) + 3.0;
+            while (microtime(true) < $deadline) {
+                $chunk = @fread($sock, 512);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $response .= $chunk;
+                if (strlen($response) >= 9) {
+                    if (ord($response[7]) & 0x80) {
+                        break; // Modbus-Exception (9-Byte-Antwort)
+                    }
+                    $byteCount = ord($response[8]);
+                    if (strlen($response) >= 9 + $byteCount) {
+                        break;
+                    }
+                }
+            }
+
+            if (strlen($response) < 9) {
+                return null;
+            }
+
+            // Transaktions-ID prüfen (MBAP-Header, erste 2 Bytes) — Fund der
+            // InverterHub-Sitzung (12.09.2026) an ihrer eigenen, unabhängigen
+            // Modbus-Basisklasse: im Batch-/dauerhaften Modus (eine wiederverwendete
+            // Verbindung für mehrere Zugriffe, siehe beginBatch()/$persistent) wurde
+            // dort nie geprüft, ob eine eintreffende Antwort tatsächlich zur
+            // zuletzt gestellten Anfrage gehört. Trifft die Antwort eines
+            // vorherigen, bereits als Timeout gewerteten Reads verspätet doch
+            // noch ein, würde sie sonst dem nächsten Read im selben Zyklus als
+            // Ergebnis untergeschoben — zwei fremde Registerhälften könnten so
+            // als High-/Low-Wort eines 32-Bit-Werts zusammengesetzt werden (bei
+            // InverterHub real beobachtet: 261,5 MW PV-Leistung nachts).
+            $rtid = (ord($response[0]) << 8) | ord($response[1]);
+            if ($rtid !== $tid) {
+                return null;
+            }
+
+            $rfc = ord($response[7]);
+            if ($rfc & 0x80 || $rfc !== $fc) {
+                return null;
+            }
+
+            $byteCount = ord($response[8]);
+            $data      = substr($response, 9, $byteCount);
+
+            $regs = [];
+            for ($i = 0; $i < $count && ($i * 2 + 1) < strlen($data); $i++) {
+                $regs[$i] = (ord($data[$i * 2]) << 8) | ord($data[$i * 2 + 1]);
+            }
+            return $regs;
+        });
+    }
+
+    public function writeSingle($reg, $value)
+    {
+        $this->lastWriteError = '';
+        $pdu  = pack('Cnn', 0x06, $reg, $value & 0xFFFF);
+        $mbap = pack('nnn', mt_rand(1, 65535), 0, strlen($pdu) + 1) . chr($this->unitId);
+        $resp = $this->withSocket(function ($sock) use ($mbap, $pdu) {
+            if ($sock === false) {
+                $this->lastWriteError = 'Verbindung fehlgeschlagen';
+                return false;
+            }
+            @fwrite($sock, $mbap . $pdu);
+            return @fread($sock, 64);
+        });
+        $this->writeTrace[] = 'FC06 Reg ' . $reg . ' Wert ' . ($value & 0xFFFF) . ' | Unit ' . $this->unitId . ' | Anfrage ' . bin2hex($mbap . $pdu) . ' | Antwort ' . bin2hex((string)$resp);
+
+        return $this->CheckWriteResponse($resp, 0x06);
+    }
+
+    public function writeMultiple($startReg, $values)
+    {
+        $this->lastWriteError = '';
+        $count     = count($values);
+        $byteCount = $count * 2;
+        $dataPart  = '';
+        foreach ($values as $v) {
+            $dataPart .= pack('n', $v & 0xFFFF);
+        }
+        $pdu  = pack('CnnC', 0x10, $startReg, $count, $byteCount) . $dataPart;
+        $mbap = pack('nnn', mt_rand(1, 65535), 0, strlen($pdu) + 1) . chr($this->unitId);
+        $resp = $this->withSocket(function ($sock) use ($mbap, $pdu) {
+            if ($sock === false) {
+                $this->lastWriteError = 'Verbindung fehlgeschlagen';
+                return false;
+            }
+            @fwrite($sock, $mbap . $pdu);
+            return @fread($sock, 64);
+        });
+        $this->writeTrace[] = 'FC16 Reg ' . $startReg . ' Werte [' . implode(',', array_map(fn ($v) => $v & 0xFFFF, $values)) . '] | Unit ' . $this->unitId . ' | Anfrage ' . bin2hex($mbap . $pdu) . ' | Antwort ' . bin2hex((string)$resp);
+
+        return $this->CheckWriteResponse($resp, 0x10);
+    }
+
+    // Wertet die Modbus-TCP-Antwort auf einen Schreibzugriff aus und trägt bei
+    // Misserfolg eine Klartext-Ursache in $lastWriteError ein (Timeout, leere
+    // Antwort, oder eine echte Modbus-Exception mit Exception-Code laut
+    // Spezifikation) — bislang wurde jeder dieser Fälle undiagnostizierbar als
+    // simples false durchgereicht.
+    private function CheckWriteResponse($resp, int $expectedFc): bool
+    {
+        if ($resp === false || $resp === '') {
+            $this->lastWriteError = 'Keine Antwort vom Gerät (Timeout)';
+            return false;
+        }
+        if (strlen($resp) < 8) {
+            $this->lastWriteError = 'Antwort zu kurz (' . strlen($resp) . ' Byte)';
+            return false;
+        }
+        $fc = ord($resp[7]);
+        if ($fc === $expectedFc) {
+            return true;
+        }
+        if ($fc === ($expectedFc | 0x80) && strlen($resp) >= 9) {
+            $excCode = ord($resp[8]);
+            $labels = [
+                1 => 'Illegal Function (FC nicht unterstützt)',
+                2 => 'Illegal Data Address (Register nicht vorhanden)',
+                3 => 'Illegal Data Value (Wert außerhalb des zulässigen Bereichs)',
+                4 => 'Slave Device Failure',
+                6 => 'Slave Device Busy',
+            ];
+            $this->lastWriteError = 'Modbus-Exception Code ' . $excCode . ' (' . ($labels[$excCode] ?? 'unbekannt') . ')';
+            return false;
+        }
+        $this->lastWriteError = 'Unerwarteter Function Code in Antwort: 0x' . dechex($fc);
+        return false;
+    }
+
+    public function u16($regs, $offset)
+    {
+        return isset($regs[$offset]) ? ($regs[$offset] & 0xFFFF) : 0;
+    }
+
+    public function s16($regs, $offset)
+    {
+        $v = $this->u16($regs, $offset);
+        return $v > 32767 ? $v - 65536 : $v;
+    }
+
+    public function u32($regs, $offset)
+    {
+        return (($this->u16($regs, $offset) << 16) | $this->u16($regs, $offset + 1));
+    }
+
+    public function s32($regs, $offset)
+    {
+        $v = $this->u32($regs, $offset);
+        return $v > 2147483647 ? $v - 4294967296 : $v;
+    }
+
+    // 32-Bit mit getauschter Wortreihenfolge (CDAB) — go-eCharger-Firmware 60.3
+    // hatte laut offizieller Modbus-Doku vertauschte Bytes, seit 60.4 behoben.
+    public function u32sw($regs, $offset)
+    {
+        return (($this->u16($regs, $offset + 1) << 16) | $this->u16($regs, $offset));
+    }
+
+    public function readStr($regs, $offset, int $regCount)
+    {
+        $s = '';
+        for ($i = 0; $i < $regCount; $i++) {
+            $r  = $this->u16($regs, $offset + $i);
+            $s .= chr(($r >> 8) & 0xFF) . chr($r & 0xFF);
+        }
+        return rtrim($s, "\x00 ");
+    }
+
+    // IEEE-754 Float32 über 2 Register, Big-Endian (ABCD) — Standard bei Alfen.
+    public function readFloat32($regs, $offset)
+    {
+        $hi  = $this->u16($regs, $offset);
+        $lo  = $this->u16($regs, $offset + 1);
+        $raw = pack('nn', $hi, $lo);
+        $val = unpack('G', $raw);
+        return (float)($val[1] ?? 0.0);
+    }
+
+    public function writeFloat32($startReg, float $value)
+    {
+        $raw  = pack('G', $value);
+        $w    = unpack('n2', $raw);
+        return $this->writeMultiple($startReg, [$w[1], $w[2]]);
+    }
+
+    public function writeDouble64($startReg, float $value)
+    {
+        $raw = pack('E', $value);
+        $w   = unpack('n4', $raw);
+        return $this->writeMultiple($startReg, [$w[1], $w[2], $w[3], $w[4]]);
+    }
+
+    // IEEE-754 Float64 (Double) über 4 Register, Big-Endian (Reserve für
+    // künftige Treiber mit Float64-Energiezählern, wie PAC2200 in MeterHub).
+    public function readDouble64($regs, $offset)
+    {
+        $raw = pack(
+            'nnnn',
+            $this->u16($regs, $offset),
+            $this->u16($regs, $offset + 1),
+            $this->u16($regs, $offset + 2),
+            $this->u16($regs, $offset + 3)
+        );
+        $val = unpack('E', $raw);
+        return (float)($val[1] ?? 0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CHUB_ModbusAsciiClient — Modbus ASCII über einen rohen TCP-Socket, für ABL
+// eMH1/eMH2/eMH3 (Fund der Community, 15.09.2026, Forum-Thread ChargerHub):
+// ABL spricht KEIN binäres Modbus TCP, sondern Modbus ASCII über RS485 —
+// Nutzer binden das über einen reinen RS485-zu-Ethernet-Wandler ein, der die
+// seriellen ASCII-Bytes 1:1 durchreicht (kein Protokoll-Gateway). Frame:
+// ":" + Hex-Text-Payload + Hex-LRC + CRLF. Erbt von CHUB_ModbusTcpClient nur
+// wegen der gemeinsamen u16/u32/Konstruktor-Helfer — die eigentliche
+// Übertragung (readHolding/writeSingle/writeMultiple) ist komplett neu, da
+// das Byte-Format nichts mit MBAP/binärem Modbus zu tun hat.
+class CHUB_ModbusAsciiClient extends CHUB_ModbusTcpClient
+{
+    // Longitudinal Redundancy Check: Zweierkomplement der Bytesumme modulo
+    // 256 — Standard-Prüfsumme von Modbus ASCII (per Hand gegen das
+    // PDF-Beispiel „:010300030001F8" nachgerechnet: Summe 0x08, LRC 0xF8).
+    private function lrc(string $bytes): int
+    {
+        $sum = 0;
+        for ($i = 0; $i < strlen($bytes); $i++) {
+            $sum += ord($bytes[$i]);
+        }
+        return (0x100 - ($sum & 0xFF)) & 0xFF;
+    }
+
+    private function buildFrame(string $pdu): string
+    {
+        return ':' . strtoupper(bin2hex($pdu)) . strtoupper(sprintf('%02X', $this->lrc($pdu))) . "\r\n";
+    }
+
+    // Liest einen vollständigen Frame bis CRLF, entfernt das Start-Zeichen
+    // und prüft die LRC. Start-Zeichen laut Modbus-ASCII-Standard ist ":" für
+    // BEIDE Richtungen — manche ABL-Geräte weichen laut Community-Berichten
+    // vom Standard ab und senden in Antworten wohl ">" statt ":" (das
+    // ABL-eigene Protokoll-PDF selbst nutzt ">" nur als Lesehilfe für
+    // "Antwort", nicht zwangsläufig als echtes Wire-Byte — deshalb werden
+    // hier vorsichtshalber beide Zeichen akzeptiert statt nur eines).
+    private function readAsciiFrame($sock): ?string
+    {
+        $buf      = '';
+        $deadline = microtime(true) + 3.0;
+        while (microtime(true) < $deadline) {
+            $chunk = @fread($sock, 512);
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            $buf .= $chunk;
+            if (strpos($buf, "\r\n") !== false) {
+                break;
+            }
+        }
+        $pos = strpos($buf, "\r\n");
+        if ($pos === false) {
+            return null;
+        }
+        $line = ltrim(substr($buf, 0, $pos), ':>');
+        if (strlen($line) < 4 || strlen($line) % 2 !== 0) {
+            return null;
+        }
+        $bytes = @hex2bin($line);
+        if ($bytes === false || strlen($bytes) < 2) {
+            return null;
+        }
+        $lrcByte = ord(substr($bytes, -1));
+        $payload = substr($bytes, 0, -1);
+        if ($this->lrc($payload) !== $lrcByte) {
+            return null; // Prüfsumme falsch -> Frame verwerfen, nicht raten
+        }
+        return $payload;
+    }
+
+    public function readHolding($startReg, $count)
+    {
+        return $this->asciiRead(0x03, $startReg, $count);
+    }
+
+    public function readInput($startReg, $count)
+    {
+        return $this->asciiRead(0x04, $startReg, $count);
+    }
+
+    private function asciiRead($fc, $startReg, $count)
+    {
+        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($sock === false) {
+            return null;
+        }
+        stream_set_timeout($sock, 3);
+
+        $pdu = chr($this->unitId) . chr($fc) . pack('n', $startReg) . pack('n', $count);
+        @fwrite($sock, $this->buildFrame($pdu));
+        $response = $this->readAsciiFrame($sock);
+        fclose($sock);
+
+        if ($response === null || strlen($response) < 3) {
+            return null;
+        }
+        $rFc = ord($response[1]);
+        if ($rFc & 0x80 || $rFc !== $fc) {
+            return null;
+        }
+        $byteCount = ord($response[2]);
+        $data      = substr($response, 3, $byteCount);
+
+        $regs = [];
+        for ($i = 0; $i < $count && ($i * 2 + 1) < strlen($data); $i++) {
+            $regs[$i] = (ord($data[$i * 2]) << 8) | ord($data[$i * 2 + 1]);
+        }
+        return $regs;
+    }
+
+    // ABL unterstützt laut Protokoll-PDF nur FC 0x03 (read) und 0x10 (write
+    // multiple) — kein FC 0x06. Ein Einzelregister-Schreiben läuft deshalb
+    // (wie beim go-eCharger) über writeMultiple() mit einem Wert.
+    public function writeSingle($reg, $value)
+    {
+        return $this->writeMultiple($reg, [$value]);
+    }
+
+    public function writeMultiple($startReg, $values)
+    {
+        $this->lastWriteError = '';
+        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($sock === false) {
+            $this->lastWriteError = "Verbindung fehlgeschlagen: $errstr ($errno)";
+            return false;
+        }
+        stream_set_timeout($sock, 3);
+
+        $count    = count($values);
+        $dataPart = '';
+        foreach ($values as $v) {
+            $dataPart .= pack('n', $v & 0xFFFF);
+        }
+        $pdu = chr($this->unitId) . chr(0x10) . pack('n', $startReg) . pack('n', $count) . chr($count * 2) . $dataPart;
+        @fwrite($sock, $this->buildFrame($pdu));
+        $response = $this->readAsciiFrame($sock);
+        fclose($sock);
+
+        if ($response === null) {
+            $this->lastWriteError = 'Keine Antwort vom Gerät (Timeout oder Prüfsummenfehler)';
+            return false;
+        }
+        if (strlen($response) < 2) {
+            $this->lastWriteError = 'Antwort zu kurz';
+            return false;
+        }
+        $rFc = ord($response[1]);
+        if ($rFc === 0x10) {
+            return true;
+        }
+        if ($rFc === 0x90 && strlen($response) >= 3) {
+            $this->lastWriteError = 'Modbus-Exception Code ' . ord($response[2]);
+            return false;
+        }
+        $this->lastWriteError = 'Unerwarteter Function Code in Antwort: 0x' . dechex($rFc);
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CHUB_ModbusGatewayClient — Fassade für Symcons NATIVES Modbus-Gateway-Modul
+// (SendDataToParent/ForwardData) als ZUSÄTZLICHER Verbindungsweg für Nutzer
+// mit eingebautem Symbox-RS485-Port, siehe SUITE.md 9j — ERSETZT NICHT den
+// bestehenden direkten Socket-Weg (CHUB_ModbusTcpClient), nur eine Option
+// mehr (Property "ConnectionType").
+//
+// Verbund-Abstimmung mit InverterHub/MeterHub (17./18.09.2026): identisches
+// Interface wie CHUB_ModbusTcpClient (readHolding/readInput/writeSingle/
+// writeMultiple/Konstruktor), damit KEIN Treiber angepasst werden muss —
+// nur GetModbusClient() wählt die Klasse. Modbus ASCII (ABL) bleibt bewusst
+// außen vor: Symcons natives Modul kennt laut eigener Doku nur „RTU
+// (seriell binär) und TCP/IP", kein ASCII-Framing.
+//
+// LESEZUGRIFF (18.09.2026): Schema für Function 3/4 verbundweit geklärt und
+// gegen das offizielle Symcon-Referenzmodul verifiziert (github.com/symcon/
+// SymconBC/blob/master/EM24-DIN/module.php) — MeterHub hat denselben Weg
+// bereits live (0.29.8-beta.1). WICHTIG, live an echter Hardware von
+// MeterHub bestätigt: die Unit-/Slave-ID steht NICHT im Anfrage-Buffer,
+// sondern ist Property ("DeviceID") einer dazwischenliegenden nativen
+// Gateway-Splitter-Instanz — unsere eigene "UnitId"-Property greift im
+// Symbox-Modus NICHT, der Nutzer muss die ChargerHub-Instanz stattdessen im
+// Objektbaum unter die passende Splitter-Instanz hängen (I/O-Auswahl oben
+// im Instanz-Formular). Wie diese Verknüpfung technisch hergestellt werden
+// soll (ConnectParent() ist laut InverterHub ungeeignet — legt ungefragt
+// eine neue Parent-Instanz an), ist noch offen.
+//
+// SCHREIBZUGRIFF weiterhin STUB: Das offizielle Referenzmodul deckt nur
+// lesende Zugriffe ab (reiner Zähler), keine Schreib-Beispiele — die
+// "Data"-Kodierung für Function 16 ist damit nicht belegt, nur eine
+// Vermutung. Wird erst übernommen, sobald MeterHub/InverterHub das anhand
+// eines eigenen Tests bestätigen — ein falsch kodierter Schreibzugriff wäre
+// an echter Hardware ein echtes Risiko.
+class CHUB_ModbusGatewayClient extends CHUB_ModbusTcpClient
+{
+    // Vom aufrufenden Modul übergebener Aufruf von $this->SendDataToParent() —
+    // diese Client-Klasse ist bewusst kein IPSModule (siehe Konstruktor-
+    // Kompatibilität mit CHUB_ModbusTcpClient), kann die SDK-Methode also
+    // nicht selbst aufrufen. Siehe GetModbusClient().
+    private $sendDataToParent;
+
+    private static bool $writeStubLoggedOnce = false;
+
+    // Vom aufrufenden Modul gesetzter Log-Callback (diese Klasse hat kein $this->LogMessage):
+    // function (string $text). Store-Review-Konvention 12.10.2026: Logging nur über die
+    // Modulklasse, nie direkt über die globale Log-Funktion.
+    public $logger = null;
+
+    public function __construct($host, $port, $unitId, ?callable $sendDataToParent = null)
+    {
+        parent::__construct($host, $port, $unitId);
+        $this->sendDataToParent = $sendDataToParent;
+    }
+
+    private function logWriteStub(): void
+    {
+        if (self::$writeStubLoggedOnce) {
+            return;
+        }
+        self::$writeStubLoggedOnce = true;
+        if ($this->logger !== null) {
+            ($this->logger)(
+                'Symbox-Gateway: Schreibzugriffe über "Symbox-Gateway" sind noch nicht implementiert — das ' .
+                'offizielle Symcon-Referenzmodul deckt nur Lesezugriffe ab (siehe SUITE.md 9j). ' .
+                'Ladefreigabe/Stromlimit funktionieren über diesen Verbindungsweg noch nicht.'
+            );
+        }
+    }
+
+    private function gatewayRead(int $function, $startReg, int $count): ?array
+    {
+        if ($this->sendDataToParent === null) {
+            return null;
+        }
+        $payload = json_encode([
+            'DataID'   => '{E310B701-4AE7-458E-B618-EC13A1A6F6A8}',
+            'Function' => $function,
+            'Address'  => $startReg,
+            'Quantity' => $count,
+            'Data'     => '',
+        ]);
+        try {
+            $response = ($this->sendDataToParent)($payload);
+        } catch (\Throwable $e) {
+            // Kein Parent verknüpft, oder Parent nicht bereit — kein Fatal,
+            // wie bei den anderen Clients ein stiller null-Rückgabewert.
+            return null;
+        }
+        if ($response === false || $response === null || $response === '') {
+            return null;
+        }
+        // Laut Referenzmodul: rohe Binärdaten, die ersten 2 Byte übersprungen
+        // (vermutlich Byte-Count wie bei binärem Modbus), Rest als 16-Bit-
+        // Worte big-endian.
+        $words = @unpack('n*', substr((string)$response, 2));
+        if ($words === false) {
+            return null;
+        }
+        $regs = array_values($words); // unpack() liefert 1-indiziert
+        if (count($regs) < $count) {
+            return null;
+        }
+        return array_slice($regs, 0, $count);
+    }
+
+    public function readHolding($startReg, $count)
+    {
+        return $this->gatewayRead(3, $startReg, $count);
+    }
+
+    public function readInput($startReg, $count)
+    {
+        return $this->gatewayRead(4, $startReg, $count);
+    }
+
+    public function writeSingle($reg, $value)
+    {
+        $this->logWriteStub();
+        $this->lastWriteError = 'Schreibzugriffe über "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
+        return false;
+    }
+
+    public function writeMultiple($startReg, $values)
+    {
+        $this->logWriteStub();
+        $this->lastWriteError = 'Schreibzugriffe über "Symbox-Gateway" noch nicht implementiert (siehe SUITE.md 9j).';
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChargerDriverInterface — Vertrag, den jeder Wallbox-Treiber erfüllt
+// ---------------------------------------------------------------------------
+
+interface ChargerDriverInterface
+{
+    /**
+     * Immer aktive Basisvariablen.
+     * [ident, caption, type(F/I/B/S), profile, archive, group, reg]
+     */
+    public function getBaseVars();
+
+    /**
+     * Optionale Variablengruppen, je Property-Name (Checkbox in der Instanz).
+     * ['GroupXYZ' => ['caption' => '...', 'vars' => [...]]]
+     */
+    public function getOptionalGroups();
+
+    /** Custom-Profile, die dieser Treiber anlegt: [name => [type, suffix, min, max, step, digits]] */
+    public function getProfiles();
+
+    /** Enum-Profile (Assoziationen): [name => [wert => [label, farbe]]] */
+    public function getEnumProfiles();
+
+    /** Liest alle Werte. Rückgabe: Verbindung erfolgreich? */
+    public function readValues($mb, $hub);
+
+    /** Verarbeitet einen Schreibzugriff (RequestAction) auf ein Steuer-Ident. */
+    public function writeControl($mb, $hub, string $ident, $value);
+}
+
+// ---------------------------------------------------------------------------
+// CHUB_MqttMiniClient — minimaler MQTT-3.1.1-Client (nur QoS 0, keine
+// Persistenz zwischen Aufrufen) für die go-e-RFID-Kartenzähler, die nur über
+// MQTT verfügbar sind (siehe GoeChargerDriver-Kommentar). Bewusst KEINE
+// Abhängigkeit von einer fremden Symcon-"MQTT Client"-Instanz (Splitter) —
+// exakt dasselbe Prinzip wie CHUB_ModbusTcpClient: eigener roher Socket,
+// Verbindung wird bei jedem Poll neu aufgebaut (kein Zustand über
+// Timer-Aufrufe hinweg, siehe dortiger Kommentar). Da go-e seine Werte als
+// RETAINED Topics veröffentlicht, liefert der Broker den aktuellen Stand
+// sofort nach dem SUBSCRIBE — ein Neuaufbau pro Poll ist dafür ausreichend.
+// PUBACK für QoS 1 wird bewusst NICHT gesendet (kurzlebige Verbindung, der
+// Broker liefert beim nächsten Poll ohnehin erneut — unschädlich, da wir nur
+// den letzten Stand je Topic übernehmen, keine Zustellgarantie brauchen).
+class CHUB_MqttMiniClient
+{
+    private $host;
+    private $port;
+    private $lastError = '';
+
+    public function __construct(string $host, int $port)
+    {
+        $this->host = $host;
+        $this->port = $port;
+    }
+
+    public function getLastError(): string
+    {
+        return $this->lastError;
+    }
+
+    // Verbindet, abonniert $topicFilters, sammelt für $budgetSec Sekunden
+    // eingehende PUBLISH-Nachrichten und trennt wieder. Rückgabe:
+    // [['topic' => string, 'payload' => string], ...]
+    public function fetch(array $topicFilters, string $clientId, string $username = '', string $password = '', float $budgetSec = 2.5): array
+    {
+        $this->lastError = '';
+        $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
+        if ($sock === false) {
+            $this->lastError = "Verbindung fehlgeschlagen: $errstr ($errno)";
+            return [];
+        }
+        stream_set_timeout($sock, 3);
+
+        @fwrite($sock, $this->buildConnect($clientId, $username, $password));
+        $connAck = $this->readPacket($sock, 3.0);
+        if ($connAck === null || $connAck['type'] !== 2) {
+            $this->lastError = 'CONNACK fehlgeschlagen (keine/unvollständige Antwort)';
+            @fclose($sock);
+            return [];
+        }
+        $returnCode = ord($connAck['body'][1] ?? "\xFF");
+        if ($returnCode !== 0) {
+            $labels = [
+                1 => 'nicht akzeptierte Protokollversion',
+                2 => 'Client-ID abgelehnt',
+                3 => 'Server nicht verfügbar',
+                4 => 'Benutzername/Passwort falsch',
+                5 => 'nicht autorisiert',
+            ];
+            $this->lastError = 'CONNACK-Fehlercode ' . $returnCode . ' (' . ($labels[$returnCode] ?? 'unbekannt') . ')';
+            @fclose($sock);
+            return [];
+        }
+
+        @fwrite($sock, $this->buildSubscribe($topicFilters, 1));
+        // SUBACK abwarten, aber Inhalt nicht auswerten — reicht als Bestätigung,
+        // dass der Broker die Anfrage verarbeitet hat.
+        $this->readPacket($sock, 2.0);
+
+        $results = [];
+        $deadline = microtime(true) + $budgetSec;
+        while (microtime(true) < $deadline) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0) {
+                break;
+            }
+            $pkt = $this->readPacket($sock, $remaining);
+            if ($pkt === null) {
+                break; // Timeout ohne weitere Daten — fertig.
+            }
+            if ($pkt['type'] === 3) { // PUBLISH
+                $parsed = $this->parsePublish($pkt['flags'], $pkt['body']);
+                if ($parsed !== null) {
+                    $results[] = $parsed;
+                }
+            }
+        }
+
+        @fclose($sock);
+        return $results;
+    }
+
+    private function buildConnect(string $clientId, string $username = '', string $password = ''): string
+    {
+        $protoName = $this->encodeStr('MQTT');
+        $flags     = 0x02; // Clean Session
+        $payload   = $this->encodeStr($clientId);
+        if ($username !== '') {
+            $flags   |= 0x80; // Username Flag
+            $payload .= $this->encodeStr($username);
+            if ($password !== '') {
+                $flags   |= 0x40; // Password Flag
+                $payload .= $this->encodeStr($password);
+            }
+        }
+        $keepAlive = pack('n', 60);
+        $varHeader = $protoName . "\x04" . chr($flags) . $keepAlive;
+        $remaining = $this->encodeLength(strlen($varHeader) + strlen($payload));
+        return "\x10" . $remaining . $varHeader . $payload;
+    }
+
+    private function buildSubscribe(array $topicFilters, int $packetId): string
+    {
+        $varHeader = pack('n', $packetId);
+        $payload   = '';
+        foreach ($topicFilters as $t) {
+            $payload .= $this->encodeStr($t) . "\x00"; // QoS 0 angefragt
+        }
+        $remaining = $this->encodeLength(strlen($varHeader) + strlen($payload));
+        return "\x82" . $remaining . $varHeader . $payload;
+    }
+
+    private function parsePublish(int $flags, string $body)
+    {
+        if (strlen($body) < 2) {
+            return null;
+        }
+        $topicLen = (ord($body[0]) << 8) | ord($body[1]);
+        if (strlen($body) < 2 + $topicLen) {
+            return null;
+        }
+        $topic  = substr($body, 2, $topicLen);
+        $offset = 2 + $topicLen;
+        $qos    = ($flags >> 1) & 0x03;
+        if ($qos > 0) {
+            $offset += 2; // Packet Identifier überspringen (nicht benötigt)
+        }
+        $payload = substr($body, $offset);
+        return ['topic' => $topic, 'payload' => $payload];
+    }
+
+    // Liest genau EIN vollständiges MQTT-Kontrollpaket (Fixed Header +
+    // Remaining Length + Body) oder gibt null zurück, wenn innerhalb von
+    // $timeoutSec nichts Vollständiges ankommt.
+    private function readPacket($sock, float $timeoutSec)
+    {
+        $deadline = microtime(true) + max($timeoutSec, 0.1);
+        $first = $this->readExact($sock, 1, $deadline);
+        if ($first === null) {
+            return null;
+        }
+        $type  = (ord($first) >> 4) & 0x0F;
+        $flags = ord($first) & 0x0F;
+
+        $multiplier = 1;
+        $remaining  = 0;
+        do {
+            $b = $this->readExact($sock, 1, $deadline);
+            if ($b === null) {
+                return null;
+            }
+            $byte = ord($b);
+            $remaining += ($byte & 0x7F) * $multiplier;
+            $multiplier *= 128;
+        } while (($byte & 0x80) !== 0);
+
+        $body = $remaining > 0 ? $this->readExact($sock, $remaining, $deadline) : '';
+        if ($body === null) {
+            return null;
+        }
+        return ['type' => $type, 'flags' => $flags, 'body' => $body];
+    }
+
+    private function readExact($sock, int $len, float $deadline)
+    {
+        $buf = '';
+        while (strlen($buf) < $len) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0 || feof($sock)) {
+                return null;
+            }
+            stream_set_timeout($sock, (int)max(1, ceil($remaining)));
+            $chunk = @fread($sock, $len - strlen($buf));
+            if ($chunk === false || $chunk === '') {
+                $meta = @stream_get_meta_data($sock);
+                if (!empty($meta['timed_out'])) {
+                    return null;
+                }
+                continue;
+            }
+            $buf .= $chunk;
+        }
+        return $buf;
+    }
+
+    private function encodeStr(string $s): string
+    {
+        return pack('n', strlen($s)) . $s;
+    }
+
+    private function encodeLength(int $len): string
+    {
+        $out = '';
+        do {
+            $byte = $len % 128;
+            $len  = intdiv($len, 128);
+            if ($len > 0) {
+                $byte |= 0x80;
+            }
+            $out .= chr($byte);
+        } while ($len > 0);
+        return $out;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KebaDriver — KEBA KeContact P30/P40, Modbus TCP, Unit-ID standardmäßig 255.
+// Registeradressen und Eigenheiten gegen die evcc-Referenzimplementierung
+// (charger/keba-modbus.go, an realer Hardware erprobt) abgeglichen:
+// - ALLE Werte sind 32-Bit-Werte über 2 Register (auch Status/Kabelstatus) —
+//   ein 1-Register-Read liefert nur das (immer leere) High-Word.
+// - Gelesen wird per FC 0x03 (Holding), geschrieben per FC 0x06.
+// - KEBA unterstützt keine Block-Reads über Wertegrenzen hinweg — jeder
+//   Datenpunkt wird einzeln gelesen.
+// - 1036 ist die GESAMT-Energie, die Sitzungsenergie liegt auf 1502.
+// - Ladefreigabe: Holding 5014 (P30). P40-Geräte haben kein 5014 und werden
+//   über das Stromlimit 5004 freigegeben/gesperrt (evcc-Erkenntnis) — hier
+//   noch nicht gesondert behandelt.
+// Weiterhin UNGETESTET an echter Hardware in diesem Modul.
+// ---------------------------------------------------------------------------
+
+class KebaDriver implements ChargerDriverInterface
+{
+    // Holding-Register (FC 0x03), alle Werte U32 über 2 Register
+    const REG_STATE        = 1000; // 0=Startet,1=Nicht bereit,2=Bereit,3=Lädt,4=Fehler,5=Unterbrochen
+    const REG_CABLE_STATE  = 1004; // 0=kein Kabel,1=Kabel an Station,3=verriegelt,5=+Fahrzeug,7=verriegelt+Fahrzeug
+    const REG_CURRENTS     = 1008; // 1008/1010/1012 = L1/L2/L3 in mA (je einzeln lesen!)
+    const REG_SERIAL       = 1014;
+    const REG_FIRMWARE     = 1018;
+    const REG_POWER        = 1020; // mW
+    const REG_ENERGY_TOTAL = 1036; // 0,1 Wh (P40 < FW 1.2.1: fälschlich Wh)
+    const REG_VOLTAGES     = 1040; // 1040/1042/1044 = L1/L2/L3 in V
+    const REG_ENERGY_SESS  = 1502; // 0,1 Wh — Energie der aktuellen Ladesitzung
+
+    // Schreibbare Holding-Register (FC 0x06)
+    const REG_CURR_LIMIT   = 5004; // mA, 0 oder 6000–63000
+    const REG_ENABLE       = 5014; // 0/1 — Ladefreigabe (P30)
+
+    const STATES = [
+        0 => 'Startet', 1 => 'Nicht bereit', 2 => 'Bereit', 3 => 'Lädt',
+        4 => 'Fehler', 5 => 'Unterbrochen',
+    ];
+
+    const CABLE_STATES = [
+        0 => 'Kein Kabel', 1 => 'Kabel an Station', 3 => 'Kabel verriegelt',
+        5 => 'Kabel + Fahrzeug', 7 => 'Verriegelt + Fahrzeug',
+    ];
+
+    // Einzelner U32-Datenpunkt (2 Register). KEBA lehnt Reads über
+    // Wertegrenzen ab, daher kein Block-Read.
+    private function u32At($mb, int $reg)
+    {
+        $r = $mb->readHolding($reg, 2);
+        if ($r === null) {
+            return null;
+        }
+        $v = $mb->u32($r, 0);
+        // 0xFFFFFFFF = unbelegtes Register (Füllwert statt Exception, wie an
+        // go-e-Firmware beobachtet) — nicht als Messwert übernehmen.
+        return ($v === 0xFFFFFFFF) ? null : $v;
+    }
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',      'Verbindung',           'B', '~Alert.Reversed',  true, 'errors', ''],
+            ['state',          'Ladestatus',            'I', 'CHB.KebaState',   true,  'device', 'Holding 1000-1001 (U32)'],
+            ['cable_state',    'Kabelstatus',           'I', 'CHB.KebaCable',   true, 'device', 'Holding 1004-1005 (U32)'],
+            ['vehicle_plugged','Fahrzeug verbunden',    'B', 'CHB.Connected',   true, 'device', 'abgeleitet: Kabelstatus >= 5'],
+            ['power',          'Ladeleistung',          'F', 'NRG.Watt',        true,  'device', 'Holding 1020-1021 (mW)'],
+            ['energy_total',   'Energie gesamt',        'F', 'NRG.kWh',         true,  'device', 'Holding 1036-1037 (0,1 Wh)'],
+            ['energy_session', 'Energie akt. Sitzung',  'F', 'CHB.kWhSession',  true,  'device', 'Holding 1502-1503 (0,1 Wh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Strom/Spannung je Phase', 'vars' => [
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 1008-1009 (mA)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 1010-1011 (mA)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 1012-1013 (mA)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 1040-1041 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 1042-1043 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 1044-1045 (V)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',   'Seriennummer',     'S', '', false, 'device', 'Holding 1014-1015 (U32)'],
+                ['dev_firmware', 'Firmware-Version', 'S', '', false, 'device', 'Holding 1018-1019 (U32)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',       'Ladefreigabe',   'B', '~Switch',          true,  'control', 'RW Holding 5014 (P30)'],
+                ['ctl_curr_limit',   'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true,  'control', 'RW Holding 5004 (mA)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            // Eigenes Suffix, damit die MeterHub-Zählersuche (matcht auf
+            // normalisiertes Suffix "kwh") den Sitzungswert NICHT als
+            // Energiezähler aufnimmt — der springt je Ladevorgang zurück.
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = ($k === 3) ? 0x27D07F : (($k === 4) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        $cable = [];
+        foreach (self::CABLE_STATES as $k => $label) {
+            $cable[$k] = [$label, in_array($k, [5, 7], true) ? 0x27D07F : 0x7A8A99];
+        }
+        return ['CHB.KebaState' => $states, 'CHB.KebaCable' => $cable];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $state = $this->u32At($mb, self::REG_STATE);
+        $ok    = ($state !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+        $hub->SetVarInt('state', $state);
+
+        $cable = $this->u32At($mb, self::REG_CABLE_STATE);
+        if ($cable !== null) {
+            $hub->SetVarInt('cable_state', $cable);
+            // 5/7 = Kabel an Station UND Fahrzeug angesteckt
+            $hub->SetVarBool('vehicle_plugged', $cable >= 5);
+        }
+
+        $power = $this->u32At($mb, self::REG_POWER);
+        if ($power !== null) {
+            $hub->SetVarFloat('power', $power / 1000.0); // mW -> W
+        }
+
+        $etot = $this->u32At($mb, self::REG_ENERGY_TOTAL);
+        if ($etot !== null) {
+            $hub->SetVarFloat('energy_total', $etot / 10000.0); // 0,1 Wh -> kWh
+        }
+
+        $esess = $this->u32At($mb, self::REG_ENERGY_SESS);
+        if ($esess !== null) {
+            $hub->SetVarFloat('energy_session', $esess / 10000.0);
+        }
+
+        if ($hub->GroupActive('GroupPhases')) {
+            foreach ([1, 2, 3] as $ph) {
+                $i = $this->u32At($mb, self::REG_CURRENTS + ($ph - 1) * 2);
+                if ($i !== null) {
+                    $hub->SetVarFloat('current_l' . $ph, $i / 1000.0); // mA -> A
+                }
+                $u = $this->u32At($mb, self::REG_VOLTAGES + ($ph - 1) * 2);
+                if ($u !== null) {
+                    $hub->SetVarFloat('voltage_l' . $ph, (float)$u);
+                }
+            }
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $sn = $this->u32At($mb, self::REG_SERIAL);
+            if ($sn !== null) {
+                $hub->SetVarStr('dev_serial', (string)$sn);
+            }
+            $fw = $this->u32At($mb, self::REG_FIRMWARE);
+            if ($fw !== null) {
+                // U32 wie 30107 = Version 3.1.7 (evcc-Deutung: Ziffernfolge)
+                $hub->SetVarStr('dev_firmware', (string)$fw);
+            }
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                $val = (bool)$value ? 1 : 0;
+                if ($mb->writeSingle(self::REG_ENABLE, $val)) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(0, min($hub->GetMaxCurrentA(), (int)$value));
+                $mA  = ($amp === 0) ? 0 : max(6000, $amp * 1000);
+                if ($mb->writeSingle(self::REG_CURR_LIMIT, $mA)) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AlfenDriver — Alfen Eve Single/Double Pro-line, NG9xx. Registeradressen
+// laut Alfen "Modbus TCP/RTU Slave Register Table", in 0.9.96 gegen die
+// funktionierende Symcon-Vorlage eines Forum-Nutzers (Eve Single) korrigiert.
+// Schreibzugriffe (Limit/Freigabe/Phasen) von uns noch nicht an Hardware
+// geprüft; das Register-Schema (1210 Float FC16, 1215 U16 FC6) stammt aus der
+// Vorlage. Nur Sockel 1 (Basisadresse ohne Offset) wird bedient; Eve Double
+// bräuchte für Sockel 2 dieselben Adressen +0x80, das ist hier bewusst noch
+// nicht umgesetzt.
+// ---------------------------------------------------------------------------
+
+class AlfenDriver implements ChargerDriverInterface
+{
+    // Meter-Register (FC 0x03, lesend), Basis 300 — Float32 (2 Register).
+    // Adressen korrigiert in 0.9.96 nach Alfens Registertabelle (Vorlage von tkpage,
+    // Forum 20.09.2026): L1-N/L2-N/L3-N = 306/308/310, Strom L1/L2/L3 = 320/322/324.
+    // Die früheren Adressen 308.. bzw. 322.. lagen je ein Register zu weit.
+    const REG_VOLTAGE_L1  = 306;
+    const REG_VOLTAGE_L2  = 308;
+    const REG_VOLTAGE_L3  = 310;
+    const REG_CURRENT_L1  = 320;
+    const REG_CURRENT_L2  = 322;
+    const REG_CURRENT_L3  = 324;
+    const REG_POWER_SUM   = 344; // W
+
+    // Sockel-Status (Basis 1200), Sockel 1
+    const REG_AVAILABILITY   = 1200; // U16: 0=nicht betriebsbereit,1=betriebsbereit,2=in Betrieb
+    const REG_ACTUAL_CURRENT = 1206; // Float32, tatsächlich angewandtes Stromlimit (A)
+    const REG_SETPOINT_TTL   = 1208; // U32, verbleibende Gültigkeit des Sollwerts (s), zählt rückwärts (nur gelesen)
+    const REG_SETPOINT_CURR  = 1210; // Float32, Modbus-Slave-Stromlimit (A) — schreiben (FC 0x10)
+    // Läuft die Gültigkeit ab, fällt die Box auf ihren Standard-/Sicherheitsstrom zurück (Auskunft
+    // tkpage, 21.09.2026; Dauer an der Box einstellbar). Deshalb wird ein von uns gesetzter Sollwert
+    // kurz vor Ablauf erneuert.
+    const REFRESH_BELOW_S    = 120;
+    // 1208 (U32 Gültigkeitsdauer des Setpoints), 1212 (Float32 Sicherheitsstrom des Lastmanagements)
+    // und 1214 (U16 „Sollwert berücksichtigt“) werden bewusst NICHT geschrieben: 1212/1214 sind
+    // laut Registertabelle nur lesbar; der frühere Schreibzugriff darauf war falsch.
+    const REG_PHASES         = 1215; // U16, RW: 1 = einphasig, 3 = dreiphasig laden (FC 0x06)
+
+    const AVAIL_LABELS = [0 => 'Nicht betriebsbereit', 1 => 'Betriebsbereit', 2 => 'In Betrieb'];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',   'Verbindung',        'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',       'Sockel-Status',      'I', 'CHB.AlfenAvail',  true,  'device', 'Holding 1200'],
+            ['power',       'Ladeleistung',       'F', 'NRG.Watt',        true,  'device', 'Holding 344'],
+            ['actual_curr', 'Angewandtes Limit',  'F', 'NRG.Ampere',      true, 'device', 'Holding 1206'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 306'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 308'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 310'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 320'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 322'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 324'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',    true,  'control', 'RW Holding 1210'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'F', 'NRG.Ampere', true,  'control', 'RW Holding 1210'],
+            ]],
+            // Erprobt an einer Eve Single (tkpage): 1 = einphasig, 3 = dreiphasig in Register 1215.
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (1/3 Phasen)', 'vars' => [
+                ['ctl_phase_mode', 'Phasenmodus', 'I', 'CHB.AlfenPhaseMode', true, 'control', 'RW Holding 1215 (1 = einphasig, 3 = dreiphasig)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'   => [VARIABLETYPE_FLOAT, ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.Volt'   => [VARIABLETYPE_FLOAT, ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere' => [VARIABLETYPE_FLOAT, ' A', 0.0, 80.0, 0.1, 1],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $avail = [];
+        foreach (self::AVAIL_LABELS as $k => $label) {
+            $avail[$k] = [$label, $k === 2 ? 0x27D07F : 0x7A8A99];
+        }
+        return [
+            'CHB.AlfenAvail'     => $avail,
+            'CHB.AlfenPhaseMode' => [1 => ['Einphasig', 0x7A8A99], 3 => ['Dreiphasig', 0x27D07F]],
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $state = $mb->readHolding(self::REG_AVAILABILITY, 1);
+        $ok    = ($state !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+        $hub->SetVarInt('state', $mb->u16($state, 0));
+
+        $power = $mb->readHolding(self::REG_POWER_SUM, 2);
+        if ($power !== null) {
+            $hub->SetVarFloat('power', $mb->readFloat32($power, 0));
+        }
+
+        $actual = $mb->readHolding(self::REG_ACTUAL_CURRENT, 2);
+        if ($actual !== null) {
+            $hub->SetVarFloat('actual_curr', $mb->readFloat32($actual, 0));
+        }
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $v1 = $mb->readHolding(self::REG_VOLTAGE_L1, 2);
+            $v2 = $mb->readHolding(self::REG_VOLTAGE_L2, 2);
+            $v3 = $mb->readHolding(self::REG_VOLTAGE_L3, 2);
+            $i1 = $mb->readHolding(self::REG_CURRENT_L1, 2);
+            $i2 = $mb->readHolding(self::REG_CURRENT_L2, 2);
+            $i3 = $mb->readHolding(self::REG_CURRENT_L3, 2);
+            if ($v1 !== null) { $hub->SetVarFloat('voltage_l1', $mb->readFloat32($v1, 0)); }
+            if ($v2 !== null) { $hub->SetVarFloat('voltage_l2', $mb->readFloat32($v2, 0)); }
+            if ($v3 !== null) { $hub->SetVarFloat('voltage_l3', $mb->readFloat32($v3, 0)); }
+            if ($i1 !== null) { $hub->SetVarFloat('current_l1', $mb->readFloat32($i1, 0)); }
+            if ($i2 !== null) { $hub->SetVarFloat('current_l2', $mb->readFloat32($i2, 0)); }
+            if ($i3 !== null) { $hub->SetVarFloat('current_l3', $mb->readFloat32($i3, 0)); }
+        }
+
+        // Sollwert erneuern, solange er von uns stammt: gültig (Restzeit > 0), bald ablaufend und
+        // der Wert in Register 1210 entspricht dem, den wir zuletzt geschrieben haben (Freigabe an:
+        // Limit, mindestens 6 A; Freigabe aus: 0 A). Ein fremder Sollwert wird nicht verlängert.
+        if ($hub->GroupActive('GroupControl')) {
+            $ttl = $mb->readHolding(self::REG_SETPOINT_TTL, 2);
+            $sp  = $mb->readHolding(self::REG_SETPOINT_CURR, 2);
+            if ($ttl !== null && $sp !== null) {
+                $remaining = $mb->u32($ttl, 0);
+                $current   = $mb->readFloat32($sp, 0);
+                $ours      = ((bool)$hub->GetVarValue('ctl_enable'))
+                    ? max(6.0, (float)$hub->GetVarValue('ctl_curr_limit')) : 0.0;
+                if ($remaining > 0 && $remaining < self::REFRESH_BELOW_S && abs($current - $ours) < 0.05) {
+                    $mb->writeFloat32(self::REG_SETPOINT_CURR, $ours);
+                }
+            }
+        }
+
+        if ($hub->GroupActive('GroupPhaseSwitch')) {
+            $ph = $mb->readHolding(self::REG_PHASES, 1);
+            if ($ph !== null && in_array($mb->u16($ph, 0), [1, 3], true)) {
+                $hub->SetVarInt('ctl_phase_mode', $mb->u16($ph, 0));
+                $hub->SetPhaseInfo($mb->u16($ph, 0), -1);
+            }
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                $enable = (bool)$value;
+                // Ladefreigabe = Stromlimit-Sollwert (0 A, wenn Freigabe entzogen wird).
+                $limit = $enable ? max(6.0, (float)$hub->GetVarValue('ctl_curr_limit')) : 0.0;
+                if ($mb->writeFloat32(self::REG_SETPOINT_CURR, $limit)) {
+                    $hub->SetVarBool('ctl_enable', $enable);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(0.0, min((float)$hub->GetMaxCurrentA(), (float)$value));
+                if ($mb->writeFloat32(self::REG_SETPOINT_CURR, $amp)) {
+                    $hub->SetVarFloat('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $mode = ((int)$value === 1) ? 1 : 3;
+                if ($mb->writeSingle(self::REG_PHASES, $mode)) {
+                    $hub->SetVarInt('ctl_phase_mode', $mode);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HeidelbergDriver — Heidelberg Energy Control. Registeradressen laut
+// Heidelberg "Modbus Register Map" (offizielles PDF, weit verbreitet u. a.
+// in evcc/openWB) — UNGETESTET an echter Hardware, bitte verifizieren.
+// Standard Unit-ID 1, alle Register FC 0x03 lesend / FC 0x06 schreibend.
+// ---------------------------------------------------------------------------
+
+class HeidelbergDriver implements ChargerDriverInterface
+{
+    const REG_VERSION      = 4;
+    const REG_STATE        = 5;  // 2=Kein Fahrzeug,3=Fahrzeug erkannt,4=bereit,5=lädt,6=Fehler,7=lädt(reduziert),8=lädt(abgeschlossen)
+    const REG_CURRENTS     = 6;  // 6/7/8 = L1/L2/L3, 0,1 A
+    const REG_TEMP         = 9;  // 0,1 °C
+    const REG_VOLTAGES     = 10; // 10/11/12 = L1/L2/L3, V
+    const REG_POWER        = 14; // W
+
+    const REG_STANDBY_CTL  = 257; // 4 = Standby-Steuerung aktivieren (einmalig setzen)
+    const REG_CURR_LIMIT   = 261; // 0,1 A: 0=Laden gesperrt, 60–320 = 6,0–32,0 A
+
+    const STATES = [
+        2 => 'Kein Fahrzeug', 3 => 'Fahrzeug erkannt', 4 => 'Bereit', 5 => 'Lädt',
+        6 => 'Fehler', 7 => 'Lädt (reduziert)', 8 => 'Lädt (abgeschlossen)',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected', 'Verbindung',  'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',     'Ladestatus',  'I', 'CHB.HdbState',    true,  'device', 'Holding 5'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', 'CHB.Connected', true, 'device', 'abgeleitet: Status 3-8 (ohne 6)'],
+            ['power',     'Leistung',    'F', 'NRG.Watt',        true,  'device', 'Holding 14'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Spannung/Strom je Phase + Temperatur', 'vars' => [
+                ['current_l1', 'Strom L1',      'F', 'NRG.Ampere', true, 'phases', 'Holding 6'],
+                ['current_l2', 'Strom L2',      'F', 'NRG.Ampere', true, 'phases', 'Holding 7'],
+                ['current_l3', 'Strom L3',      'F', 'NRG.Ampere', true, 'phases', 'Holding 8'],
+                ['voltage_l1', 'Spannung L1',   'F', 'NRG.Volt',   true, 'phases', 'Holding 10'],
+                ['voltage_l2', 'Spannung L2',   'F', 'NRG.Volt',   true, 'phases', 'Holding 11'],
+                ['voltage_l3', 'Spannung L3',   'F', 'NRG.Volt',   true, 'phases', 'Holding 12'],
+                ['pcb_temp',   'PCB-Temperatur','F', 'NRG.Celsius',true, 'device', 'Holding 9'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',   true,  'control', 'RW Holding 261'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to32', true,  'control', 'RW Holding 261'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'          => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.Volt'          => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'        => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'NRG.Celsius'       => [VARIABLETYPE_FLOAT,   ' °C', -20.0, 100.0, 0.1, 1],
+            'CHB.Ampere6to32'   => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = in_array($k, [5, 7, 8], true) ? 0x27D07F : (($k === 6) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        return ['CHB.HdbState' => $states];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $state = $mb->readHolding(self::REG_STATE, 1);
+        $ok    = ($state !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+        $st = $mb->u16($state, 0);
+        $hub->SetVarInt('state', $st);
+        // 2 = kein Fahrzeug; 3-8 = Fahrzeug erkannt/lädt/fertig (6 = Fehler,
+        // dort ist der Steckzustand unbekannt -> nicht als verbunden werten).
+        $hub->SetVarBool('vehicle_plugged', in_array($st, [3, 4, 5, 7, 8], true));
+
+        $power = $mb->readHolding(self::REG_POWER, 1);
+        if ($power !== null) {
+            $hub->SetVarFloat('power', (float)$mb->u16($power, 0));
+        }
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $curr = $mb->readHolding(self::REG_CURRENTS, 3);
+            if ($curr !== null) {
+                $hub->SetVarFloat('current_l1', $mb->u16($curr, 0) / 10.0);
+                $hub->SetVarFloat('current_l2', $mb->u16($curr, 1) / 10.0);
+                $hub->SetVarFloat('current_l3', $mb->u16($curr, 2) / 10.0);
+            }
+            $volt = $mb->readHolding(self::REG_VOLTAGES, 3);
+            if ($volt !== null) {
+                $hub->SetVarFloat('voltage_l1', (float)$mb->u16($volt, 0));
+                $hub->SetVarFloat('voltage_l2', (float)$mb->u16($volt, 1));
+                $hub->SetVarFloat('voltage_l3', (float)$mb->u16($volt, 2));
+            }
+            $temp = $mb->readHolding(self::REG_TEMP, 1);
+            if ($temp !== null) {
+                $hub->SetVarFloat('pcb_temp', $mb->s16($temp, 0) / 10.0);
+            }
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        // Standby-Steuerung vor dem ersten Schreibzugriff einmalig aktivieren
+        // (laut Heidelberg-Doku Voraussetzung für externe Stromvorgabe).
+        $mb->writeSingle(self::REG_STANDBY_CTL, 4);
+
+        switch ($ident) {
+            case 'ctl_enable':
+                $enable = (bool)$value;
+                $limit  = $enable ? max(6, (int)$hub->GetVarValue('ctl_curr_limit')) : 0;
+                if ($mb->writeSingle(self::REG_CURR_LIMIT, $limit * 10)) {
+                    $hub->SetVarBool('ctl_enable', $enable);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                // 0 = Laden sperren (siehe Profil CHB.Ampere6to32, das 0 erlaubt);
+                // sonst laut Doku nur 6–32 A gültig.
+                $amp = (int)$value === 0 ? 0 : max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                if ($mb->writeSingle(self::REG_CURR_LIMIT, $amp * 10)) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GoeChargerDriver — go-eCharger Gemini/HOME+ (API v2, Modbus TCP; muss laut
+// offizieller Doku erst über App/HTTP-API aktiviert werden). Registeradressen
+// gemäß offizieller Doku https://github.com/goecharger/go-eCharger-API-v2
+// (modbus-de.md, Stand des dortigen main-Branchs), am 2026-07-22 abgerufen —
+// im Unterschied zu den anderen drei Treibern also gegen die verbindliche
+// Herstellerquelle geprüft, aber weiterhin NICHT an echter Hardware getestet.
+//
+// Wichtige Eigenheiten laut Doku:
+// - FC 0x06 (Preset Single Register) wird NICHT unterstützt — Schreiben
+//   erfolgt immer über FC 0x16 (writeMultiple), auch für ein einzelnes
+//   Register.
+// - Registeradressen hier sind die "wire format"-Adressen (Wert in Klammern
+//   in der Doku, z. B. 200 für ALLOW/40201) — dieselbe 0-basierte Konvention
+//   wie bei den anderen drei Treibern.
+// - Firmware 60.3 hatte laut Doku eine vertauschte Byte-Reihenfolge bei
+//   32-Bit-Werten, seit 60.4 behoben; die API-Doku nennt außerdem die
+//   einstellbaren Optionen msb/msr. Eine vertauschte Wortreihenfolge wird seit
+//   0.9.119 an der Netzspannung erkannt (detectWordOrder()) und gemeldet, aber nicht
+//   ausgeglichen; die Option „getauscht erzwingen" bleibt als manuelle Übersteuerung.
+// - Ladefreigabe: FORCE_STATE (Register 337) ist laut HTTP-API-Doku (api key
+//   "frc") die für Automatisierung vorgesehene R/W-Steuerung
+//   (Neutral=0, Off=1, On=2) — nicht das ebenfalls vorhandene ALLOW-Register
+//   (200), das laut HTTP-API nur lesend ("alw") als reiner Status gedacht ist.
+// ---------------------------------------------------------------------------
+
+class GoeChargerDriver implements ChargerDriverInterface
+{
+    // Holding-Register (FC 0x03 lesend, FC 0x16 schreibend)
+    const REG_ALLOW           = 200; // U16, RO-Status laut HTTP-API (alw) — nur informativ
+    const REG_ACCESS_STATE    = 201; // U16: 0=Offen,1=RFID/App,2=Strompreis/automatisch,3=Scheduler
+    const REG_CABLE_LOCK_MODE = 204; // U16: 0=Verriegelt solange Auto an,1=Autom. entriegeln,2=Immer verriegelt
+    const REG_AMPERE_MAX      = 211; // U16, absolutes Maximum (App-Einstellung)
+    const REG_LED_BRIGHTNESS  = 206; // U16, 0-255
+    const REG_AMPERE_VOLATILE = 299; // U16, 6-32A, NICHT im EEPROM gespeichert — für Automatisierung vorgesehen
+    const REG_PHASE_SWITCH    = 332; // U16 (api key psm): 0=Auto,1=1-phasig,2=3-phasig (ab FW 55.5)
+    const REG_ENERGY_LIMIT    = 333; // Float64, 4 Register (api key dwo): Wh, Inf = kein Limit (ab FW 55.5)
+    const REG_FORCE_STATE     = 337; // U16: 0=Neutral (automatisch/App),1=Aus (erzwungen),2=An (erzwungen)
+
+    // Input-Register (FC 0x04, nur lesend)
+    const REG_CAR_STATE   = 100; // U16: 0=unbekannt/defekt,1=bereit(kein Fzg),2=lädt,3=wartet auf Fzg,4=beendet(Fzg verbunden)
+    const REG_PP_CABLE    = 101; // U16: 13-32=Kabel-Ampere-Codierung, 0=kein Kabel
+    const REG_FWV         = 105; // ASCII, 2 Register (4 Byte)
+    const REG_ERROR       = 107; // U16: 1=RCCB,3=Phasenstörung,8=Erdungsfehler,10=INTERNAL(Standard bei Fehler)
+    const REG_VOLT_L1     = 108; // U32, 2 Register, V
+    const REG_VOLT_L2     = 110;
+    const REG_VOLT_L3     = 112;
+    const REG_AMP_L1      = 114; // U32, 2 Register, 0,1 A
+    const REG_AMP_L2      = 116;
+    const REG_AMP_L3      = 118;
+    const REG_POWER_TOTAL = 120; // U32, 2 Register, 0,01 W
+    const REG_ENERGY_TOTAL  = 128; // U32, 2 Register, 0,1 kWh (Gesamt seit Inbetriebnahme)
+    const REG_ENERGY_CHARGE = 132; // U32, 2 Register, Deka-Wattsekunden (Ws*10) — aktuelle/letzte Ladesitzung
+    const REG_VOLT_N      = 144;
+    const REG_POWER_L1    = 146; // U32, 2 Register, 0,1 W (die Doku nennt 0,1 kW, die Geräte liefern aber 0,1 W: Archivwerte WB 2 Firmware 60.6 und Rohwerte baraka Firmware 56.2, 20.10.2026)
+    const REG_POWER_L2    = 148;
+    const REG_POWER_L3    = 150;
+    const REG_ADAPTER     = 202; // U16: 0=kein Adapter, 1=16A-Adapter
+    const REG_UNLOCKED_BY = 203; // U16: Nummer der RFID-Karte des akt. Ladevorgangs
+    const REG_PHASES      = 205; // U16 Bitmaske: Bits 0-2 = L1/L2/L3 NACH dem Schütz
+    const REG_SNR         = 304; // ASCII, 6 Register (12 Byte)
+
+    const CAR_STATES = [
+        0 => 'Unbekannt / Ladestation defekt', 1 => 'Bereit, kein Fahrzeug', 2 => 'Fahrzeug lädt',
+        3 => 'Wartet auf Fahrzeug', 4 => 'Ladung beendet, Fahrzeug verbunden',
+    ];
+
+    const ERRORS = [
+        0 => 'Kein Fehler', 1 => 'RCCB (Fehlerstromschutzschalter)', 3 => 'Phasenstörung',
+        8 => 'Erdungsfehler', 10 => 'Interner Fehler',
+    ];
+
+    const PHASE_MODES = [0 => 'Automatisch', 1 => '1-phasig', 2 => '3-phasig'];
+    const ACCESS_MODES = [0 => 'Offen', 1 => 'RFID/App', 2 => 'Strompreis/automatisch', 3 => 'Scheduler'];
+    const CABLE_LOCK_MODES = [0 => 'Verriegelt solange Auto angesteckt', 1 => 'Nach Ladevorgang entriegeln', 2 => 'Immer verriegelt'];
+
+    // U32 mit optionalem Wort-Swap. Rückgabe null bei 0xFFFFFFFF: Unbelegte
+    // Register beantwortet die go-e-Firmware mit 0xFF-Füllwerten statt einer
+    // Modbus-Exception (an echtem go-e Controller verifiziert, MeterHub-
+    // Befund) — ungefiltert landete daraus z. B. eine Leistung von
+    // 42.949.672,95 W in einer archivierten Variable.
+    private function u32($mb, $hub, $regs, $offset)
+    {
+        if ($hub->GroupActive('GoeWordSwap')) {
+            $v = $mb->u32sw($regs, $offset);
+        } elseif ($hub->GetDriverFlag('goe_order_mismatch')) {
+            // Gerät sendet die Wörter vertauscht und der Nutzer hat nichts ausgeglichen: keine
+            // Phantasiewerte (Spannung 14 Mio. V) in Variablen und Archiv schreiben, siehe detectWordOrder().
+            return null;
+        } else {
+            $v = $mb->u32($regs, $offset);
+        }
+        return ($v === 0xFFFFFFFF) ? null : $v;
+    }
+
+    // Leistungsregister sind VORZEICHENBEHAFTET: das Gerät meldet im Leerlauf kleine negative Werte (Messoffset,
+    // z. B. −10 = −0,1 W). Als U32 gelesen wurde daraus 0xFFFFFFF6 = 42.949.672,86 W — ein einzelner Archivwert
+    // dieser Größe machte in der Ladesitzungs-Auswertung aus einer kleinen Ladung 288 kWh (Fund Paul,
+    // 24.10.2026). Rückgabe null wie u32() bei unbelegten Registern; negative Leistung gilt als 0 (eine Wallbox
+    // speist nicht ein).
+    private function powerRaw($mb, $hub, $regs, $offset)
+    {
+        $v = $this->u32($mb, $hub, $regs, $offset);
+        if ($v === null) {
+            return null;
+        }
+        if ($v > 0x7FFFFFFF) {
+            $v -= 0x100000000;
+        }
+        return max(0, $v);
+    }
+
+    // Erkennt, ob das Gerät 32-Bit-Werte mit vertauschter Wortreihenfolge sendet (Fund baraka/Adam,
+    // 20.10.2026: Spannung 224 V erschien als 14 680 064 = 224 x 65 536, Gesamtenergie als
+    // 194 124 185,7 kWh statt 9 515,7 kWh). Die go-e-API nennt dafür die Einstellungen msb/msr (Bytes
+    // bzw. Register vertauschen, seit Firmware 60.4 einstellbar; Firmware 60.3 hatte es vertauscht).
+    // Es wird NICHT automatisch ausgeglichen (Entscheidung Dietmar, 20.10.2026: Ursache am Gerät
+    // beheben, keine Folgeprobleme durch halb korrigierte Werte): bei erkannter Vertauschung werden die
+    // betroffenen 32-Bit-Werte nicht in Variablen geschrieben (u32() liefert null), im Formular steht
+    // ein Hinweis (siehe GoeOrderHintItems()) und einmal ein Eintrag im Meldungen-Log. Maßstab ist die
+    // Netzspannung (100-300 V): normal [0, V], vertauscht [V, 0]. Nur eindeutige Muster entscheiden;
+    // 0 V oder gemischte Werte lassen den bisherigen Stand unverändert. Die Prüfung läuft bei jedem
+    // Lesezyklus, damit eine am Gerät korrigierte Einstellung ohne „Übernehmen“ folgt. Wer die
+    // Einstellung am Gerät nicht ändern kann, setzt die Option „Wortreihenfolge getauscht erzwingen“;
+    // sie hat Vorrang und schaltet die Erkennung ab.
+    private function detectWordOrder($mb, $hub): void
+    {
+        if ($hub->GroupActive('GoeWordSwap')) {
+            return;
+        }
+        $vr = $mb->readInput(self::REG_VOLT_L1, 6); // L1, L2, L3 je 2 Register
+        if ($vr === null) {
+            return;
+        }
+        $swapped = 0;
+        $normal  = 0;
+        for ($i = 0; $i < 3; $i++) {
+            $w0 = $mb->u16($vr, $i * 2);
+            $w1 = $mb->u16($vr, $i * 2 + 1);
+            if ($w1 === 0 && $w0 >= 100 && $w0 <= 300) {
+                $swapped++;
+            } elseif ($w0 === 0 && $w1 >= 100 && $w1 <= 300) {
+                $normal++;
+            }
+        }
+        $mismatch = $hub->GetDriverFlag('goe_order_mismatch');
+        if ($swapped > 0 && $normal === 0 && !$mismatch) {
+            $hub->SetDriverFlag('goe_order_mismatch', true);
+            $hub->LogNote('go-e: Das Gerät sendet 32-Bit-Werte mit vertauschter Wortreihenfolge (Spannung kommt als Wert x 65536 an). Die betroffenen Werte werden nicht übernommen. Bitte in der go-e-App unter Einstellungen > API Einstellungen „Register tauschen“ und „Bytes tauschen“ ausschalten (Standard) oder in ChargerHub „Wortreihenfolge getauscht erzwingen“ setzen.');
+        } elseif ($normal > 0 && $swapped === 0 && $mismatch) {
+            $hub->SetDriverFlag('goe_order_mismatch', false);
+            $hub->LogNote('go-e: Die Wortreihenfolge der 32-Bit-Werte stimmt wieder (Einstellung am Gerät geändert); die Werte werden wieder übernommen.');
+        }
+    }
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',      'Verbindung',            'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',          'Ladestatus',             'I', 'CHB.GoeCarState', true,  'device', 'Input 100'],
+            ['vehicle_plugged','Fahrzeug verbunden',     'B', 'CHB.Connected',   true, 'device', 'abgeleitet: CAR_STATE 2/3/4'],
+            ['power',          'Ladeleistung',           'F', 'NRG.Watt',        true,  'device', 'Input 120-121 (0,01 W)'],
+            ['energy_session', 'Energie akt. Sitzung',   'F', 'CHB.kWhSession',  true,  'device', 'Input 132-133 (Deka-Ws)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Spannung/Strom/Leistung je Phase', 'vars' => [
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Input 108-109 (V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Input 110-111 (V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Input 112-113 (V)'],
+                ['voltage_n',  'Spannung N',  'F', 'NRG.Volt',   true, 'phases', 'Input 144-145 (V)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Input 114-115 (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Input 116-117 (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Input 118-119 (0,1 A)'],
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Input 146-147 (U32, 0,1 W)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Input 148-149 (U32, 0,1 W)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Input 150-151 (U32, 0,1 W)'],
+                ['phases_charging', 'Genutzte Phasen (nach Schütz)', 'I', 'CHB.GoePhaseCount', true, 'phases', 'Input 205 (Bitmaske)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',    'Seriennummer',        'S', '', false, 'device', 'Input 304-309 (ASCII)'],
+                ['dev_firmware',  'Firmware-Version',    'S', '', false, 'device', 'Input 105-106 (ASCII)'],
+                ['energy_total',  'Energie gesamt',      'F', 'NRG.kWh', true, 'device', 'Input 128-129 (0,1 kWh)'],
+                ['dev_error',     'Fehlercode',          'I', 'CHB.GoeError', true, 'errors', 'Input 107'],
+                ['cable_current', 'Kabel-Strombegrenzung','I', 'CHB.Ampere6to32', true, 'device', 'Input 101 (13-32, 0=kein Kabel)'],
+                ['adapter',       'Adapter angesteckt',  'B', '~Switch', true, 'device', 'Input 202 (1=16A-Adapter)'],
+                ['unlocked_by',   'Entsperrt durch RFID-Karte', 'I', '', true, 'device', 'Input 203'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit, Phasen, Energie-Limit …)', 'vars' => [
+                ['ctl_enable',       'Ladefreigabe',        'B', '~Switch',           true,  'control', 'RW Holding 337 (FORCE_STATE)'],
+                ['ctl_curr_limit',   'Stromlimit (A)',      'I', 'CHB.Ampere6to32',   true,  'control', 'RW Holding 299 (AMPERE_VOLATILE)'],
+                ['ctl_phase_mode',   'Phasenumschaltung',   'I', 'CHB.GoePhaseMode',  true,  'control', 'RW Holding 332 (psm, ab FW 55.5)'],
+                ['ctl_access',       'Zugangskontrolle',    'I', 'CHB.GoeAccess',     false, 'control', 'RW Holding 201 (ACCESS_STATE)'],
+                ['ctl_cable_lock',   'Kabelverriegelung',   'I', 'CHB.GoeCableLock',  false, 'control', 'RW Holding 204'],
+                ['ctl_energy_limit', 'Energie-Limit Ladevorgang', 'F', 'CHB.kWhLimit', true,  'control', 'RW Holding 333-336 (dwo, Float64 Wh) — 0 oder negativ eingeben, um das Limit zu deaktivieren'],
+                ['ctl_led',          'LED-Helligkeit',      'I', 'CHB.Led255',        false, 'control', 'RW Holding 206 (0-255)'],
+            ]],
+            // Keine eigenen Variablen — reine Konfigurations-Checkbox (nutzt die
+            // generische Datenpunkt-Gruppen-Infrastruktur mit). Default AUS, da
+            // nur die veraltete Firmware 60.3 betroffen ist.
+            'GoeWordSwap' => ['caption' => 'Wortreihenfolge getauscht erzwingen (nur wenn „Register tauschen“ in der go-e-App nicht ausgeschaltet werden kann; sonst zeigt ChargerHub bei vertauschter Reihenfolge einen Hinweis)', 'vars' => [], 'default' => false],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'        => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'         => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            // Eigenes Suffix: hält die MeterHub-Zählersuche vom rückspringenden
+            // Sitzungswert fern (siehe KebaDriver::getProfiles).
+            'CHB.kWhSession'  => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'NRG.Volt'        => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'      => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere6to32' => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
+            // Suffix bewusst NICHT " kWh": hält die MeterHub-Zählersuche fern
+            // (Limit-Sollwert, kein Zählerstand).
+            'CHB.kWhLimit'    => [VARIABLETYPE_FLOAT,   ' kWh (Limit)', 0.0, 200.0, 0.5, 1],
+            'CHB.Led255'      => [VARIABLETYPE_INTEGER, '', 0, 255, 5, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::CAR_STATES as $k => $label) {
+            $states[$k] = [$label, $k === 2 ? 0x27D07F : (($k === 0) ? 0xE74C3C : 0x7A8A99)];
+        }
+        $errors = [];
+        foreach (self::ERRORS as $k => $label) {
+            $errors[$k] = [$label, $k === 0 ? 0x7A8A99 : 0xE74C3C];
+        }
+        $mk = function (array $map, $activeColor = 0x2BB3C0) {
+            $out = [];
+            foreach ($map as $k => $label) {
+                $out[$k] = [$label, $k === 0 ? 0x7A8A99 : $activeColor];
+            }
+            return $out;
+        };
+        return [
+            'CHB.GoeCarState'   => $states,
+            'CHB.GoeError'      => $errors,
+            'CHB.GoePhaseMode'  => $mk(self::PHASE_MODES),
+            'CHB.GoeAccess'     => $mk(self::ACCESS_MODES),
+            'CHB.GoeCableLock'  => $mk(self::CABLE_LOCK_MODES),
+            'CHB.GoePhaseCount' => [
+                0 => ['0 Phasen', 0x7A8A99], 1 => ['1 Phase', 0x2BB3C0],
+                2 => ['2 Phasen', 0x2BB3C0], 3 => ['3 Phasen', 0x27D07F],
+            ],
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $car = $mb->readInput(self::REG_CAR_STATE, 1);
+        $ok  = ($car !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+        $this->detectWordOrder($mb, $hub);
+        $carState = $mb->u16($car, 0);
+        $hub->SetVarInt('state', $carState);
+        // 2=lädt, 3=wartet auf Fahrzeug(-Freigabe), 4=Ladung beendet+verbunden
+        $hub->SetVarBool('vehicle_plugged', in_array($carState, [2, 3, 4], true));
+
+        $power = $mb->readInput(self::REG_POWER_TOTAL, 2);
+        $p     = ($power !== null) ? $this->powerRaw($mb, $hub, $power, 0) : null;
+        if ($p !== null) {
+            $hub->SetVarFloat('power', $p / 100.0); // 0,01 W -> W
+        }
+
+        $energy = $mb->readInput(self::REG_ENERGY_CHARGE, 2);
+        $e      = ($energy !== null) ? $this->u32($mb, $hub, $energy, 0) : null;
+        if ($e !== null) {
+            // Deka-Wattsekunden (Ws*10) -> kWh: Ws = Rohwert*10, kWh = Ws/3.600.000
+            $hub->SetVarFloat('energy_session', $e * 10.0 / 3600000.0);
+        }
+
+        $phMask = null; // Phasenmaske nach dem Schütz (Register 205), falls gelesen
+        if ($hub->GroupActive('GroupPhases')) {
+            foreach ([1, 2, 3] as $ph) {
+                $vr = $mb->readInput(self::REG_VOLT_L1 + ($ph - 1) * 2, 2);
+                $v  = ($vr !== null) ? $this->u32($mb, $hub, $vr, 0) : null;
+                if ($v !== null) {
+                    $hub->SetVarFloat('voltage_l' . $ph, (float)$v);
+                }
+                $ir = $mb->readInput(self::REG_AMP_L1 + ($ph - 1) * 2, 2);
+                $i  = ($ir !== null) ? $this->u32($mb, $hub, $ir, 0) : null;
+                if ($i !== null) {
+                    $hub->SetVarFloat('current_l' . $ph, $i / 10.0);
+                }
+                $pr = $mb->readInput(self::REG_POWER_L1 + ($ph - 1) * 2, 2);
+                $pw = ($pr !== null) ? $this->powerRaw($mb, $hub, $pr, 0) : null;
+                if ($pw !== null) {
+                    // Einheit 0,1 W (nicht 0,1 kW wie in der Doku): vorher 1000-fach zu große Werte, z. B.
+                    // 4 000 000 W statt 4 000 W (Archiv Dietmar, Firmware 60.6; Rohwerte baraka, Firmware 56.2).
+                    $hub->SetVarFloat('power_l' . $ph, $pw / 10.0); // 0,1 W -> W
+                }
+            }
+            $nr = $mb->readInput(self::REG_VOLT_N, 2);
+            $nv = ($nr !== null) ? $this->u32($mb, $hub, $nr, 0) : null;
+            if ($nv !== null) {
+                $hub->SetVarFloat('voltage_n', (float)$nv);
+            }
+            $phm = $mb->readInput(self::REG_PHASES, 1);
+            if ($phm !== null && $mb->u16($phm, 0) !== 0xFFFF) {
+                // Bits 0-2 = L1/L2/L3 NACH dem Schütz -> Anzahl aktiver Phasen
+                $mask = $mb->u16($phm, 0) & 0x07;
+                $phMask = $mask;
+                $hub->SetVarInt('phases_charging', substr_count(decbin($mask), '1'));
+            }
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $sn = $mb->readInput(self::REG_SNR, 6);
+            if ($sn !== null) {
+                $hub->SetVarStr('dev_serial', $mb->readStr($sn, 0, 6));
+            }
+            $fw = $mb->readInput(self::REG_FWV, 2);
+            if ($fw !== null) {
+                // Die 4-Byte-Zeichenkette hängt an derselben Wortreihenfolge wie die 32-Bit-Werte: bei
+                // einer go-e mit Firmware 56.2 und vertauschter Reihenfolge kam „.256“ statt „56.2“ an
+                // (Fund baraka/Adam, 20.10.2026). Erzwungene Option: Wörter tauschen; erkannte Vertauschung
+                // ohne Ausgleich: nicht übernehmen (wie die 32-Bit-Werte).
+                if ($hub->GroupActive('GoeWordSwap')) {
+                    $hub->SetVarStr('dev_firmware', $mb->readStr([$mb->u16($fw, 1), $mb->u16($fw, 0)], 0, 2));
+                } elseif (!$hub->GetDriverFlag('goe_order_mismatch')) {
+                    $hub->SetVarStr('dev_firmware', $mb->readStr($fw, 0, 2));
+                }
+            }
+            $etotR = $mb->readInput(self::REG_ENERGY_TOTAL, 2);
+            $etot  = ($etotR !== null) ? $this->u32($mb, $hub, $etotR, 0) : null;
+            if ($etot !== null) {
+                $hub->SetVarFloat('energy_total', $etot / 10.0);
+            }
+            $err = $mb->readInput(self::REG_ERROR, 1);
+            if ($err !== null && $mb->u16($err, 0) !== 0xFFFF) {
+                $hub->SetVarInt('dev_error', $mb->u16($err, 0));
+            }
+            $pp = $mb->readInput(self::REG_PP_CABLE, 1);
+            if ($pp !== null && $mb->u16($pp, 0) !== 0xFFFF) {
+                $hub->SetVarInt('cable_current', $mb->u16($pp, 0));
+            }
+            $ad = $mb->readInput(self::REG_ADAPTER, 1);
+            if ($ad !== null && $mb->u16($ad, 0) !== 0xFFFF) {
+                $hub->SetVarBool('adapter', $mb->u16($ad, 0) === 1);
+            }
+            $ub = $mb->readInput(self::REG_UNLOCKED_BY, 1);
+            if ($ub !== null && $mb->u16($ub, 0) !== 0xFFFF) {
+                $hub->SetVarInt('unlocked_by', $mb->u16($ub, 0));
+            }
+        }
+
+        // Steuerwerte vom Gerät zurücklesen — so zeigen die ctl_*-Variablen
+        // auch Änderungen aus App/Cloud/anderen Reglern, nicht nur eigene.
+        if ($hub->GroupActive('GroupControl')) {
+            $frc = $mb->readHolding(self::REG_FORCE_STATE, 1);
+            if ($frc !== null && $mb->u16($frc, 0) !== 0xFFFF) {
+                // FORCE_STATE: 0=Neutral (Gerät/App entscheidet), 1=Aus, 2=An.
+                // Als Bool: nur der erzwungene Aus-Zustand gilt als "gesperrt".
+                $hub->SetVarBool('ctl_enable', $mb->u16($frc, 0) !== 1);
+            }
+            $amp = $mb->readHolding(self::REG_AMPERE_VOLATILE, 1);
+            if ($amp !== null && $mb->u16($amp, 0) !== 0xFFFF) {
+                $hub->SetVarInt('ctl_curr_limit', $mb->u16($amp, 0));
+            }
+            $psm = $mb->readHolding(self::REG_PHASE_SWITCH, 1);
+            if ($psm !== null && $mb->u16($psm, 0) <= 2) {
+                $hub->SetVarInt('ctl_phase_mode', $mb->u16($psm, 0));
+                // psm 1 = einphasig, 2 = dreiphasig erzwungen; 0 = Auto, dann ist die
+                // aktuelle Phasenzahl aus diesem Register nicht ablesbar (unbekannt).
+                // Vertragsfeld 'phases' = tatsächlich ladende Phasen: bevorzugt aus der Phasenmaske nach dem
+                // Schütz (Register 205, auch im Automatikmodus), sonst der erzwungene Modus (psm 1/2).
+                if ($phMask === null) {
+                    $phm2 = $mb->readInput(self::REG_PHASES, 1);
+                    if ($phm2 !== null && $mb->u16($phm2, 0) !== 0xFFFF) {
+                        $phMask = $mb->u16($phm2, 0) & 0x07;
+                    }
+                }
+                $actualPh = ($phMask !== null) ? substr_count(decbin($phMask), '1') : 0;
+                $forcedPh = $mb->u16($psm, 0) === 1 ? 1 : ($mb->u16($psm, 0) === 2 ? 3 : 0);
+                $hub->SetPhaseInfo(($actualPh === 1 || $actualPh === 3) ? $actualPh : $forcedPh, 1);
+            }
+            $acc = $mb->readHolding(self::REG_ACCESS_STATE, 1);
+            if ($acc !== null && $mb->u16($acc, 0) <= 3) {
+                $hub->SetVarInt('ctl_access', $mb->u16($acc, 0));
+            }
+            $cul = $mb->readHolding(self::REG_CABLE_LOCK_MODE, 1);
+            if ($cul !== null && $mb->u16($cul, 0) <= 2) {
+                $hub->SetVarInt('ctl_cable_lock', $mb->u16($cul, 0));
+            }
+            $led = $mb->readHolding(self::REG_LED_BRIGHTNESS, 1);
+            if ($led !== null && $mb->u16($led, 0) <= 255) {
+                $hub->SetVarInt('ctl_led', $mb->u16($led, 0));
+            }
+            $lim = $mb->readHolding(self::REG_ENERGY_LIMIT, 4);
+            if ($lim !== null) {
+                $wh = $mb->readDouble64($lim, 0);
+                // Live bestätigt (26.08.2026): 0 als Anzeige für "kein Limit"
+                // war nicht von einem ECHTEN 0-Wh-Limit ("Dein Limit von 0 kWh
+                // wurde erreicht" in der go-e-App, Ladung komplett blockiert)
+                // zu unterscheiden — beides zeigte "0,0 kWh". -1 als Sentinel
+                // für "kein Limit" (Inf/NaN laut Doku), da 0 ein gültiger,
+                // ECHTER Limit-Wert ist. Zusammen mit der neuen Profil-
+                // Assoziation unten zeigt das jetzt eindeutig "Kein Limit" an.
+                //
+                // Live erneut aufgetreten (27.08.2026): das Register selbst
+                // stand wieder auf echtem 0 Wh und blockierte das Laden in der
+                // go-e-App, OHNE dass unser eigener Schreibpfad (RequestAction
+                // 'ctl_energy_limit', schreibt bei 0/negativ immer Inf) das
+                // ausgelöst hätte. Der go-e fällt selbstständig (Neustart,
+                // Firmware, o. ä.) auf sein Werks-Default 0 zurück. Da unsere
+                // eigene Oberfläche eine echte 0 als Limit gar nicht zulässt
+                // (0/negativ bedeutet bei uns immer "deaktivieren" -> Inf),
+                // ist ein gelesenes echtes 0 hier IMMER ein Geräte-Rücksprung,
+                // nie ein gewollter Nutzerwert — automatisch heilen.
+                if ($wh === 0.0) {
+                    $mb->writeDouble64(self::REG_ENERGY_LIMIT, INF);
+                    $wh = INF;
+                }
+                $hub->SetVarFloat('ctl_energy_limit', is_finite($wh) ? $wh / 1000.0 : -1.0);
+            }
+        }
+
+        return true;
+    }
+
+    // go-e unterstützt FC 0x06 nicht (siehe Klassenkommentar) — jeder
+    // Schreibzugriff muss über writeMultiple (FC 0x16) laufen, auch für ein
+    // einzelnes Register.
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                $val = (bool)$value ? 2 : 1; // FORCE_STATE: 1=Aus (erzwungen), 2=An (erzwungen)
+                if ($mb->writeMultiple(self::REG_FORCE_STATE, [$val])) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                if ($mb->writeMultiple(self::REG_AMPERE_VOLATILE, [$amp])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $val = (int)$value;
+                if ($val < 0 || $val > 2) { return; }
+                if ($mb->writeMultiple(self::REG_PHASE_SWITCH, [$val])) {
+                    $hub->SetVarInt('ctl_phase_mode', $val);
+                }
+                break;
+
+            case 'ctl_access':
+                $val = (int)$value;
+                if ($val < 0 || $val > 3) { return; }
+                if ($mb->writeMultiple(self::REG_ACCESS_STATE, [$val])) {
+                    $hub->SetVarInt('ctl_access', $val);
+                }
+                break;
+
+            case 'ctl_cable_lock':
+                $val = (int)$value;
+                if ($val < 0 || $val > 2) { return; }
+                if ($mb->writeMultiple(self::REG_CABLE_LOCK_MODE, [$val])) {
+                    $hub->SetVarInt('ctl_cable_lock', $val);
+                }
+                break;
+
+            case 'ctl_energy_limit':
+                $kwh = max(0.0, (float)$value);
+                // 0 = Limit deaktivieren -> laut Doku Float64 Inf schreiben.
+                $wh  = ($kwh <= 0.0) ? INF : $kwh * 1000.0;
+                if ($mb->writeDouble64(self::REG_ENERGY_LIMIT, $wh)) {
+                    $hub->SetVarFloat('ctl_energy_limit', $kwh);
+                }
+                break;
+
+            case 'ctl_led':
+                $val = max(0, min(255, (int)$value));
+                if ($mb->writeMultiple(self::REG_LED_BRIGHTNESS, [$val])) {
+                    $hub->SetVarInt('ctl_led', $val);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AblDriver — ABL eMH1/eMH2/eMH3, Modbus ASCII (siehe CHUB_ModbusAsciiClient).
+// Registeradressen aus dem öffentlichen ABL-Dokument "EVCC2/3 API subset for
+// external applications" (05 0015 20 Rev. B) — UNGETESTET an echter Hardware,
+// entstanden aus einer konkreten Forum-Anfrage (15.09.2026, tissenm/Michael).
+//
+// Bewusste Auslassung: das Register 0x0005 "Modify state" (Sprung zwischen
+// internen Zuständen A1/E0/E2/F1) wird NICHT implementiert — ein falscher
+// Zustandswechsel ohne Testhardware wäre ein echtes Sicherheitsrisiko, nicht
+// nur ein falscher Messwert. Ladefreigabe läuft stattdessen ausschließlich
+// über das gut dokumentierte Icmax-Register (0x0014): laut ABL-Doku
+// "Definition of current" indiziert der Wert 100% (0x03E8) explizit "kein
+// Strom erlaubt" — ein sauberer, dokumentierter Weg zum Pausieren, ohne die
+// Zustandsmaschine anzufassen.
+//
+// Kein Energiezähler in diesem API-Auszug — 'power' wird daher aus den drei
+// Phasenströmen geschätzt (Annahme 230 V, keine echte Leistungsmessung).
+// Der Zustands-Byte-Wert (0xA0.."0xF0) stammt aus einem community-erstellten
+// Symcon-JSON-Template, NICHT aus Abschnitt 3.4 des ABL-PDFs (das eine
+// andere, nicht direkt passende Zustandsliste A1/B1/B2/C2.../F11 nennt) —
+// vor Produktiveinsatz gegen echte Hardware verifizieren.
+// ---------------------------------------------------------------------------
+
+class AblDriver implements ChargerDriverInterface
+{
+    // R2, Bits siehe PDF 0x0001 — hier nur für device_id/config ungenutzt,
+    // Haupt-Lesezugriff läuft über 0x0033 (State + Ströme, 1A-Auflösung).
+    const REG_READ_CURRENT_AMPS = 0x0033; // R3: State + Ic1/Ic2/Ic3 in A
+    const REG_SET_ICMAX         = 0x0014; // W1: Duty-Cycle Icmax in 0,1 %
+
+    // Register-Wert 0x03E8 (100,0 %) heißt laut ABL-Doku explizit "kein
+    // Strom erlaubt" — das ist unser "Ladefreigabe aus", kein Ladestrom-Wert.
+    const ICMAX_OFF = 0x03E8;
+
+    // Byte-Wert aus dem community-Template (siehe Klassenkommentar oben),
+    // nicht aus Abschnitt 3.4 des offiziellen PDFs.
+    const STATES = [
+        0x00 => 'Status unbekannt',
+        0xA0 => 'A0 – Outlet geblockt, EV wird erkannt',
+        0xA1 => 'A1 – Outlet wartet auf Fahrzeug',
+        0xA2 => 'A2 – Outlet reserviert',
+        0xB0 => 'B0 – Fahrzeug erkannt, Authentifizierung gescheitert',
+        0xB1 => 'B1 – Fahrzeug erkannt, Authentifizierung',
+        0xB2 => 'B2 – Outlet kann Energie bereitstellen',
+        0xB3 => 'B3 – Fahrzeug hat Ladung beendet/unterbrochen',
+        0xC2 => 'C2 – Outlet lädt',
+        0xE0 => 'E0 – Outlet geblockt, kein Fahrzeug erkannt',
+        0xE2 => 'E2 – Outlet im Bootvorgang',
+        0xF0 => 'F – Fehler',
+    ];
+
+    private function iCmaxRegisterFor(int $amps): int
+    {
+        // IEC 61851-1 Duty-Cycle-Tabelle (ABL-PDF Annex 3.2): zwei lineare
+        // Abschnitte, Register = Duty-Cycle-% * 10.
+        $duty = ($amps <= 51) ? ($amps / 0.6) : (($amps / 2.5) + 64);
+        $reg  = (int)round($duty * 10);
+        return max(0x0050, min(0x03E8, $reg));
+    }
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',        'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',           'Ladestatus',        'I', 'CHB.AblState',    true, 'device', 'Holding 0x0033 (Byte 1)'],
+            ['vehicle_plugged', 'Fahrzeug verbunden','B', 'CHB.Connected',   true, 'device', 'abgeleitet: Status B*/C*'],
+            ['power',           'Ladeleistung (geschätzt)', 'F', 'NRG.Watt', true, 'device', 'geschätzt aus Ic1..Ic3 × 230 V (kein Leistungsregister in diesem API-Auszug)'],
+            ['energy_total',    'Energie gesamt (geschätzt/integriert)', 'F', 'NRG.kWh', true, 'device', 'aufintegriert aus der geschätzten Leistung (kein Energiezählerregister in diesem API-Auszug) — keine Gerätemessung'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Strom je Phase', 'vars' => [
+                ['current_l1', 'Strom L1', 'F', 'NRG.Ampere', true, 'phases', 'Holding 0x0033 (Byte 3)'],
+                ['current_l2', 'Strom L2', 'F', 'NRG.Ampere', true, 'phases', 'Holding 0x0034 (Byte 0)'],
+                ['current_l3', 'Strom L3', 'F', 'NRG.Ampere', true, 'phases', 'Holding 0x0034 (Byte 1)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'RW Holding 0x0014 (100,0 % = kein Strom erlaubt)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 0x0014 (Duty-Cycle laut IEC 61851-1)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = ($k === 0xC2) ? 0x27D07F : (($k === 0xF0) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        return ['CHB.AblState' => $states];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $r = $mb->readHolding(self::REG_READ_CURRENT_AMPS, 3);
+        $ok = ($r !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $state = $mb->u16($r, 1) >> 8; // Register 1, oberes Byte
+        $hub->SetVarInt('state', $state);
+        $hub->SetVarBool('vehicle_plugged', ($state & 0xF0) === 0xB0 || ($state & 0xF0) === 0xC0);
+
+        // Ströme (0x50 = 80 dezimal = "Phasenstrommesser nicht verfügbar/State A", nicht als 80 A übernehmen).
+        $i1raw = $mb->u16($r, 1) & 0xFF;
+        $i2raw = $mb->u16($r, 2) >> 8;
+        $i3raw = $mb->u16($r, 2) & 0xFF;
+        $i1 = ($i1raw <= 0x50) ? $i1raw : null;
+        $i2 = ($i2raw <= 0x50) ? $i2raw : null;
+        $i3 = ($i3raw <= 0x50) ? $i3raw : null;
+
+        if ($hub->GroupActive('GroupPhases')) {
+            if ($i1 !== null) {
+                $hub->SetVarFloat('current_l1', (float)$i1);
+            }
+            if ($i2 !== null) {
+                $hub->SetVarFloat('current_l2', (float)$i2);
+            }
+            if ($i3 !== null) {
+                $hub->SetVarFloat('current_l3', (float)$i3);
+            }
+        }
+
+        $sumA = ($i1 ?: 0) + ($i2 ?: 0) + ($i3 ?: 0);
+        $powerW = $sumA * 230.0;
+        $hub->SetVarFloat('power', $powerW);
+
+        // Kein Energiezählerregister in diesem API-Auszug — Software-
+        // Energiezählung durch Aufintegrieren der (bereits geschätzten)
+        // Leistung, siehe ChargerHub::IntegrateEnergyWh(). Bleibt eine
+        // Schätzung, keine Gerätemessung.
+        $wh = $hub->IntegrateEnergyWh($powerW);
+        $hub->SetVarFloat('energy_total', $wh / 1000.0);
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                if ((bool)$value) {
+                    // Zuletzt bekanntes Stromlimit (oder Minimum) wieder anfordern.
+                    $amp = max(6, (int)$hub->GetVarValue('ctl_curr_limit'));
+                    $ok  = $mb->writeMultiple(self::REG_SET_ICMAX, [$this->iCmaxRegisterFor($amp)]);
+                } else {
+                    $ok = $mb->writeMultiple(self::REG_SET_ICMAX, [self::ICMAX_OFF]);
+                }
+                if ($ok) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                // Solange die Ladefreigabe aus ist (Register steht auf "kein Strom
+                // erlaubt"), nur den gemerkten Wert aktualisieren, nicht ans Gerät
+                // schreiben — sonst würde das Setzen des Stromlimits versehentlich
+                // die Ladefreigabe wieder aktivieren (dasselbe Register regelt beides).
+                if (!$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
+                if ($mb->writeMultiple(self::REG_SET_ICMAX, [$this->iCmaxRegisterFor($amp)])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DaheimLaderDriver — DaheimLader Smart/Touch/Smart PRO/Touch PRO/Business PRO
+// (Hersteller DaheimLaden GmbH), aus einer Forum-Anfrage entstanden
+// (15.09.2026, sieckendieck). Anders als ABL ganz normales binäres Modbus TCP
+// (Standard-MBAP, FC 0x03/0x10) — läuft über den gemeinsamen
+// CHUB_ModbusTcpClient wie KEBA/Alfen/Heidelberg. Registeradressen aus dem
+// öffentlichen Hersteller-PDF "DaheimLader Modbus/TCP-Spezifikation"
+// (28.07.2026) — UNGETESTET an echter Hardware.
+//
+// Ladezustand/Kabelstatus/Fehlercode/Ströme/Leistungen/Zählerstand/Spannungen
+// liegen als ein zusammenhängender Registerblock 0..113 — ein einziger
+// Lesezugriff deckt fast alles ab. Nur die Phasenumschaltung (184..188, laut
+// Doku PRO-exklusiv) braucht einen zweiten, optionalen Lesezugriff.
+// ---------------------------------------------------------------------------
+
+class DaheimLaderDriver implements ChargerDriverInterface
+{
+    const REG_BLOCK_START = 0;
+    const REG_BLOCK_COUNT = 114; // deckt Register 0..113 ab
+
+    const REG_SERIAL       = 38; // Länge lt. Doku 16 Byte, Registerlücke bis 54 legt aber 16 Register nahe
+    const REG_CARD_ID      = 54;
+    const REG_SAFE_CURRENT = 87; // WR, 0,1 A — nicht bei PRO
+    const REG_TIMEOUT      = 89; // WR, Sekunden — nicht bei PRO
+    const REG_CURR_LIMIT   = 91; // WR, 0,1 A
+    const REG_CHARGE_MODE  = 93; // WR — 0=Plug&Charge, 1=Authentifizierung
+    const REG_CHARGE_CMD   = 95; // WO — 1=Start, 2=Stopp
+
+    const REG_PHASE_STATUS = 184; // RO, nur PRO
+    const REG_PHASE_CMD    = 186; // WR, nur PRO
+    const REG_PHASE_RESULT = 188; // RO, nur PRO
+
+    // W/R, 0=aus/1=an, Standard AN laut Doku — NICHT auf PRO beschränkt
+    // (anders als 184/186/188, die explizit "nur PRO" gekennzeichnet sind).
+    // Fund aus dem Forum (sieckendieck/Mike, 15.09.2026): die Wallbox regelt
+    // die Phasenzahl werkseitig selbst nach der aktuellen Ladeleistung
+    // (>=4,2 kW dreiphasig, 1,4-4,2 kW einphasig, <1,4 kW Pause) — das
+    // könnte einen manuellen Umschaltbefehl über ctl_phase_mode kurz danach
+    // wieder überschreiben, wenn diese Automatik aktiv bleibt.
+    const REG_AUTO_PHASE_SWITCH = 0x300A;
+
+    const STATES = [
+        1 => 'Standby', 2 => 'Verbunden', 3 => 'Startbereit', 4 => 'Laden',
+        5 => 'Startfehler', 6 => 'Ladeende', 7 => 'Systemfehler',
+        8 => 'Terminladung', 9 => 'Firmware-Upgrade', 10 => 'Einschalten',
+    ];
+
+    const ERRORS = [
+        0 => 'Kein Fehler', 11 => 'CP-Spannungsfehler', 12 => 'Not-Aus gedrückt',
+        13 => 'Unterspannung', 14 => 'Überspannung', 15 => 'Übertemperatur',
+        16 => 'Zählerfehler', 17 => 'Fehlerhafte Erdung/Leckage',
+        18 => 'Ausgangskurzschluss', 19 => 'Überstrom', 21 => 'Fahrzeug lädt nicht',
+        22 => 'Fahrzeug nicht erkannt', 23 => 'Relais klebt',
+        24 => 'Leckageprüfgerät defekt', 25 => 'PE-Fehler', 26 => 'Start fehlgeschlagen',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',          'B', '~Alert.Reversed',   true,  'errors', ''],
+            ['state',           'Ladestatus',          'I', 'CHB.DaheimState',   true,  'device', 'Holding 0'],
+            ['vehicle_plugged', 'Fahrzeug verbunden',  'B', 'CHB.Connected',     true,  'device', 'Holding 2 (Kabelstatus)'],
+            ['error_code',      'Fehlercode',          'I', 'CHB.DaheimError',   true,  'errors', 'Holding 4'],
+            ['power',           'Ladeleistung',        'F', 'NRG.Watt',          true,  'device', 'Holding 12-13 (U32, W)'],
+            ['energy_total',    'Energie gesamt',      'F', 'NRG.kWh',           true,  'device', 'Holding 28-29 (U32, 0,1 kWh)'],
+            ['energy_session',  'Energie akt. Sitzung','F', 'CHB.kWhSession',    true,  'device', 'Holding 72 (0,1 kWh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Strom/Spannung/Leistung je Phase', 'vars' => [
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 6 (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 8 (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 10 (0,1 A)'],
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Holding 16-17 (U32, W)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Holding 20-21 (U32, W)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Holding 24-25 (U32, W)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 109 (0,1 V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 111 (0,1 V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 113 (0,1 V)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',   'Seriennummer',     'S', '', false, 'device', 'Holding 38 ff. (String)'],
+                ['ladezeit_sek', 'Ladezeit (Sek.)',  'I', '', true,  'device', 'Holding 78-79 (U32, Sekunden)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',            'Ladefreigabe',   'B', '~Switch', true, 'control', 'WO Holding 95 (1=Start, 2=Stopp)'],
+                ['ctl_curr_limit',        'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 91 (0,1 A)'],
+                ['ctl_auto_phase_switch', '🆕 Automatische Phasenumschaltung (werkseitig an)', 'B', '~Switch', true, 'control', 'RW Holding 0x300A (0=aus, 1=an). Nicht bei jedem Modell vorhanden: ist das Register nicht lesbar, wird die Variable ausgeblendet'],
+            ]],
+            // Nur Smart PRO/Touch PRO/Business PRO — auf Nicht-PRO-Geräten
+            // liefert der Lesezugriff schlicht keine gültigen Werte (Register
+            // existiert dort laut Doku nicht), Variablen bleiben dann leer.
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (nur PRO-Modelle)', 'vars' => [
+                ['phase_status', 'Aktive Phasen',       'I', 'CHB.DaheimPhaseStatus', true, 'device',  'Holding 184 (nur PRO)'],
+                // Gruppe 'control' (nicht 'phaseswitch'!) ist Pflicht, sonst
+                // bindet weder RegisterVar() noch SetControlActions() eine
+                // Aktion — Symptom: Ident lässt sich zwar per Skript
+                // schreiben, in Konsole/WebFront fehlt aber jeder Schalter
+                // (Fund aus dem Forum, sieckendieck/Mike, 15.09.2026:
+                // "Phasenwechsel funktioniert nicht" — Ursache war NICHT die
+                // Wallbox, sondern diese falsche Gruppen-Zuordnung).
+                ['ctl_phase_mode', 'Phasenmodus (1/3)', 'I', 'CHB.DaheimPhaseCmd',    true, 'control', 'WR Holding 186 (nur PRO)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = ($k === 4) ? 0x27D07F : (in_array($k, [5, 7], true) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        $errors = [];
+        foreach (self::ERRORS as $k => $label) {
+            $errors[$k] = [$label, ($k === 0) ? 0x7A8A99 : 0xE74C3C];
+        }
+        return [
+            'CHB.DaheimState'       => $states,
+            'CHB.DaheimError'       => $errors,
+            'CHB.DaheimPhaseStatus' => [1 => ['1-phasig', 0x7A8A99], 3 => ['3-phasig', 0x27D07F]],
+            'CHB.DaheimPhaseCmd'    => [1 => ['1-phasig', 0x7A8A99], 3 => ['3-phasig', 0x27D07F]],
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $r  = $mb->readHolding(self::REG_BLOCK_START, self::REG_BLOCK_COUNT);
+        $ok = ($r !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $hub->SetVarInt('state', $mb->u16($r, 0));
+        $hub->SetVarBool('vehicle_plugged', $mb->u16($r, 2) === 1);
+        $hub->SetVarInt('error_code', $mb->u16($r, 4));
+        $hub->SetVarFloat('power', (float)$mb->u32($r, 12));
+        $hub->SetVarFloat('energy_total', $mb->u32($r, 28) / 10.0);
+        $hub->SetVarFloat('energy_session', $mb->u16($r, 72) / 10.0);
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $hub->SetVarFloat('current_l1', $mb->u16($r, 6) / 10.0);
+            $hub->SetVarFloat('current_l2', $mb->u16($r, 8) / 10.0);
+            $hub->SetVarFloat('current_l3', $mb->u16($r, 10) / 10.0);
+            $hub->SetVarFloat('power_l1', (float)$mb->u32($r, 16));
+            $hub->SetVarFloat('power_l2', (float)$mb->u32($r, 20));
+            $hub->SetVarFloat('power_l3', (float)$mb->u32($r, 24));
+            $hub->SetVarFloat('voltage_l1', $mb->u16($r, 109) / 10.0);
+            $hub->SetVarFloat('voltage_l2', $mb->u16($r, 111) / 10.0);
+            $hub->SetVarFloat('voltage_l3', $mb->u16($r, 113) / 10.0);
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $hub->SetVarStr('dev_serial', $mb->readStr($r, self::REG_SERIAL, 16));
+            $hub->SetVarInt('ladezeit_sek', $mb->u32($r, 78));
+        }
+
+        // Freigabe über Stromlimit (Register 91): Zustand aus dem Register ablesen.
+        if ($hub->GroupActive('GroupControl') && $hub->GetDaheimEnableVia() === 'limit') {
+            $lim = $mb->u16($r, self::REG_CURR_LIMIT);
+            $hub->SetVarBool('ctl_enable', $lim >= 60);
+            if ($lim >= 60) {
+                $hub->SetVarInt('ctl_curr_limit', (int)round($lim / 10));
+            }
+        }
+
+        if ($hub->GroupActive('GroupPhaseSwitch')) {
+            $ps = $mb->readHolding(self::REG_PHASE_STATUS, 1);
+            if ($ps !== null) {
+                $hub->SetVarInt('phase_status', $mb->u16($ps, 0));
+                // Register 184 gibt es laut Doku nur bei PRO-Modellen und meldet die aktuelle Phasenzahl
+                // (1 = einphasig, 3 = dreiphasig): damit sind Phasenzahl und Umschaltbarkeit vom Gerät belegt.
+                if ($mb->u16($ps, 0) === 1 || $mb->u16($ps, 0) === 3) {
+                    $hub->SetPhaseInfo($mb->u16($ps, 0), 1);
+                }
+            }
+        }
+
+        // Eigener Lesezugriff, da weit außerhalb des großen Blocks 0..113.
+        if ($hub->GroupActive('GroupControl')) {
+            // Nach dem ersten Fehlschlag nicht mehr pollen (bis zum nächsten „Übernehmen“): Seit
+            // 0.9.79 lief dieser Lesezugriff bei jedem Poll ins Leere (Modbus-Exception 2, „Register
+            // nicht vorhanden“, Touch PRO von sieckendieck), und ab da ließ sich die Box über
+            // ChargerHub nicht mehr starten/stoppen — direkt per Modbus schon. Ob der Dauerfehler
+            // die Ursache ist, ist noch nicht bestätigt; ein Register, das die Box nicht kennt,
+            // muss aber ohnehin nicht ständig abgefragt werden.
+            if (!$hub->GetDriverFlag('no_auto_phase_switch')) {
+                $auto = $mb->readHolding(self::REG_AUTO_PHASE_SWITCH, 1);
+                if ($auto !== null) {
+                    $hub->SetVarBool('ctl_auto_phase_switch', $mb->u16($auto, 0) === 1);
+                    $hub->SetVarHidden('ctl_auto_phase_switch', false);
+                } else {
+                    $hub->SetDriverFlag('no_auto_phase_switch', true);
+                    $hub->SetVarHidden('ctl_auto_phase_switch', true);
+                }
+            } else {
+                $hub->SetVarHidden('ctl_auto_phase_switch', true);
+            }
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                if ($hub->GetDaheimEnableVia() === 'limit') {
+                    // Wie evcc (charger/daheimladen.go): Freigabe = Stromlimit (mindestens 6 A),
+                    // Sperre = 0,1 A. „0" wäre nach einem Neustart eine Freigabe (Autostart),
+                    // deshalb 1. evcc wartet vorher 1 s, weil die Box zu schnelle Befehle verwirft.
+                    usleep(1000000);
+                    $amp10 = (bool)$value ? max(60, min($hub->GetMaxCurrentA(), max(6, (int)$hub->GetVarValue('ctl_curr_limit'))) * 10) : 1;
+                    if ($mb->writeMultiple(self::REG_CURR_LIMIT, [$amp10])) {
+                        $hub->SetVarBool('ctl_enable', (bool)$value);
+                    }
+                    break;
+                }
+                $cmd = (bool)$value ? 1 : 2; // 1=Start, 2=Stopp
+                if ($mb->writeMultiple(self::REG_CHARGE_CMD, [$cmd])) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                // Im Limit-Modus ist das Register zugleich die Freigabe: bei gesperrter Freigabe
+                // (0,1 A) nur merken, nicht schreiben, sonst würde das Limit die Ladung freigeben.
+                if ($hub->GetDaheimEnableVia() === 'limit' && !$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
+                if ($mb->writeMultiple(self::REG_CURR_LIMIT, [$amp * 10])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $mode = ((int)$value === 1) ? 1 : 3;
+                if ($mb->writeMultiple(self::REG_PHASE_CMD, [$mode])) {
+                    $hub->SetVarInt('ctl_phase_mode', $mode);
+                }
+                break;
+
+            case 'ctl_auto_phase_switch':
+                $val = (bool)$value ? 1 : 0;
+                if ($mb->writeMultiple(self::REG_AUTO_PHASE_SWITCH, [$val])) {
+                    $hub->SetVarBool('ctl_auto_phase_switch', (bool)$value);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FoxEssDriver — Fox ESS EV Charger (Modelle A/L/C, laut Forum-Anfrage),
+// binäres Modbus TCP, Registeradressen aus dem öffentlichen Hersteller-PDF
+// "Fox ESS EV Charger Modbus TCP Protocol 1.6" (12.08.2024) — UNGETESTET an
+// echter Hardware. Alle gelesenen Register (0x1000..0x1031) liegen laut PDF
+// lückenlos hintereinander — ein einziger Lesezugriff deckt alles ab, wie
+// beim DaheimLader-Treiber.
+//
+// Fund beim Umsetzen: Das PDF widerspricht sich bei 0x1010 "Current Phase
+// Sequence" selbst — der Fließtext (Abschnitt 2.17) nennt Type "UINT32",
+// die Registerliste (Abschnitt 2, mit Reg Num/Len-Spalte) weist ihr aber
+// nur 1 Register/2 Byte zu, UND das nächste Register (0x1011 Max Supported
+// Power) folgt exakt eine Adresse später — bei echtem UINT32 gäbe es dort
+// eine Kollision. Der Registerliste (in sich widerspruchsfrei) gefolgt,
+// nicht dem vermutlich fehlerhaften Fließtext — bitte bei Gelegenheit an
+// echter Hardware verifizieren.
+// ---------------------------------------------------------------------------
+
+class FoxEssDriver implements ChargerDriverInterface
+{
+    const REG_BLOCK_START = 0x1000;
+    const REG_BLOCK_COUNT = 50; // deckt 0x1000..0x1031 ab (siehe Klassenkommentar)
+
+    const REG_MAX_CURR_LIMIT = 0x3001; // W/R, 0,1 A
+    const REG_CHARGE_CMD     = 0x4001; // W — 0=keine Aktion, 1=Start, 2=Stopp
+    const REG_PHASE_CMD      = 0x4002; // W, nur wenn an Phasenumschalt-Box angeschlossen
+
+    const STATES = [
+        0 => 'Bereit (kein Fahrzeug)', 1 => 'Verbunden', 2 => 'Startet',
+        3 => 'Lädt', 4 => 'Pausiert', 5 => 'Beendet', 6 => 'Fehler',
+        7 => 'Reserviert', 8 => 'Gesperrt',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',         'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',           'Ladestatus',         'I', 'CHB.FoxEssState', true, 'device', 'Holding 0x1003'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', 'CHB.Connected',   true, 'device', 'Holding 0x1005 (CC Status)'],
+            ['power',           'Ladeleistung',       'F', 'NRG.Watt',       true, 'device', 'Holding 0x100E (0,1 kW)'],
+            ['energy_total',    'Energie gesamt',     'F', 'NRG.kWh',        true, 'device', 'Holding 0x1016-0x1017 (U32, 0,1 kWh)'],
+            ['energy_session',  'Energie akt. Sitzung', 'F', 'CHB.kWhSession', true, 'device', 'Holding 0x1018-0x1019 (U32, 0,1 kWh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Holding 0x1008 (0,1 V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Holding 0x1009 (0,1 V)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Holding 0x100A (0,1 V)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Holding 0x100B (0,1 A)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Holding 0x100C (0,1 A)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Holding 0x100D (0,1 A)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',     'Seriennummer',        'S', '', false, 'device', 'Holding 0x1022 ff. (ASCII)'],
+                ['dev_model',      'Modellcode',          'S', '', false, 'device', 'Holding 0x101E ff. (ASCII)'],
+                ['dev_firmware',   'Firmware-Version',    'S', '', false, 'device', 'Holding 0x1001'],
+                ['error_code',     'Systemfehler (Bits)', 'I', '', true,  'errors', 'Holding 0x101A-0x101B (U32-Bitmaske, siehe PDF Appendix 2)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'WO Holding 0x4001 (1=Start, 2=Stopp)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 0x3001 (0,1 A)'],
+            ]],
+            // Nur wirksam, wenn die Wallbox an eine externe Phasenumschalt-Box
+            // angeschlossen ist (laut PDF-Hinweis zu 0x1010/0x4002).
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (nur mit Phasenumschalt-Box)', 'vars' => [
+                ['phase_status',   'Aktive Phasen',     'I', 'CHB.FoxEssPhaseStatus', true, 'device', 'Holding 0x1010'],
+                ['ctl_phase_mode', 'Phasenmodus',       'I', 'CHB.FoxEssPhaseCmd',    true, 'control', 'WO Holding 0x4002'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $color = ($k === 3) ? 0x27D07F : (in_array($k, [6], true) ? 0xE74C3C : 0x7A8A99);
+            $states[$k] = [$label, $color];
+        }
+        $phaseLabels = [0 => ['Dreiphasig', 0x27D07F], 1 => ['L2', 0x7A8A99], 2 => ['L3', 0x7A8A99]];
+        return [
+            'CHB.FoxEssState'       => $states,
+            'CHB.FoxEssPhaseStatus' => $phaseLabels,
+            'CHB.FoxEssPhaseCmd'    => $phaseLabels,
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $r  = $mb->readHolding(self::REG_BLOCK_START, self::REG_BLOCK_COUNT);
+        $ok = ($r !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $hub->SetVarInt('state', $mb->u16($r, 3));
+        $hub->SetVarBool('vehicle_plugged', $mb->u16($r, 5) === 1);
+        $hub->SetVarFloat('power', $mb->u16($r, 14) * 100.0); // 0,1 kW -> W
+        $hub->SetVarFloat('energy_total', $mb->u32($r, 22) / 10.0);
+        $hub->SetVarFloat('energy_session', $mb->u32($r, 24) / 10.0);
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $hub->SetVarFloat('voltage_l1', $mb->u16($r, 8) / 10.0);
+            $hub->SetVarFloat('voltage_l2', $mb->u16($r, 9) / 10.0);
+            $hub->SetVarFloat('voltage_l3', $mb->u16($r, 10) / 10.0);
+            $hub->SetVarFloat('current_l1', $mb->u16($r, 11) / 10.0);
+            $hub->SetVarFloat('current_l2', $mb->u16($r, 12) / 10.0);
+            $hub->SetVarFloat('current_l3', $mb->u16($r, 13) / 10.0);
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $hub->SetVarStr('dev_serial', $mb->readStr($r, 34, 16));
+            $hub->SetVarStr('dev_model', $mb->readStr($r, 30, 4));
+            $sw = $mb->u16($r, 1);
+            $hub->SetVarStr('dev_firmware', (($sw >> 8) & 0xFF) . '.' . ($sw & 0xFF));
+            $hub->SetVarInt('error_code', $mb->u32($r, 26));
+        }
+
+        if ($hub->GroupActive('GroupPhaseSwitch')) {
+            $hub->SetVarInt('phase_status', $mb->u16($r, 16));
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                $cmd = (bool)$value ? 1 : 2; // 1=Start, 2=Stopp
+                if ($mb->writeMultiple(self::REG_CHARGE_CMD, [$cmd])) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                if ($mb->writeMultiple(self::REG_MAX_CURR_LIMIT, [$amp * 10])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $mode = max(0, min(2, (int)$value));
+                if ($mb->writeMultiple(self::REG_PHASE_CMD, [$mode])) {
+                    $hub->SetVarInt('ctl_phase_mode', $mode);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PeblarDriver — Peblar Home/Home Plus/Business (auch ChargeLine-Ausführungen),
+// binäres Modbus TCP, EXPERIMENTELL bis zur Bestätigung an echter Hardware.
+// Aufgenommen auf Dietmars Entscheidung (19.09.2026, Anlass: Forum-Tester
+// Mstaudi baut künftig nur noch Peblar ein und ist als Hardware-Prüfer
+// eingeplant).
+//
+// Registerkarte gegen ZWEI Quellen gegengelesen ("erst messen, dann glauben"):
+// (1) Peblars offizieller Beispielclient github.com/Peblar/py-modbus-api-client
+//     (peblar_modbusclient/registers.py, MIT) und (2) die evcc-Implementierung
+//     (charger/peblar.go, läuft bei evcc-Nutzern an echter Hardware). Beide
+//     stimmen bei Adressen, Funktionscodes, Datentypen und Einheiten überein:
+//   - Unit-ID 255, Port 502, Firmware >= 1.6, Modbus-Server im Web-Interface
+//     des Ladepunkts aktivieren, Smart-Charging-Strategien auf "Standard".
+//   - Messwerte als INPUT-Register (FC 0x04) ab 30000, Steuerung als
+//     HOLDING-Register (FC 0x03/0x06/0x10) ab 40000, Adressen 1:1 wie
+//     dokumentiert (kein Offset).
+//   - Energie gesamt INT64 in Wh, Leistung INT32 in W, Spannung INT32 in V,
+//     Strom INT32 in mA, CP-Zustand als ASCII-Zeichencode ('A'/'B'/'C' ...).
+//   - Stromlimit: UINT32 in mA über Holding 40000 (2 Register), 0 = kein Strom
+//     (so schaltet evcc "aus"). Einphasig erzwingen: Holding 40002 (1 = ein
+//     Phase), nur wirksam, wenn Register 30093 (unabhängiges Relais) = 1.
+//   - Phase 2/3 (Leistung/Spannung/Strom) existieren nur bei mehrphasigen
+//     Geräten — ein Lesezugriff darauf liefert bei Einphasern eine Exception,
+//     daher wird immer nur so viel gelesen, wie Register 30092 (Phasenzahl)
+//     hergibt (wie evcc).
+// Bewusst NICHT übernommen: Sitzungsenergie (evcc hat sie nach Issue #25956
+// gezielt entfernt, unzuverlässig), Fehler-/Warnungs-Bitfelder (30100..30109,
+// Bedeutung der Bits nicht gegengelesen), "tatsächliches Stromlimit" 30113
+// (Einheit nicht belegt).
+// Offen für die Hardware-Prüfung: ob ein per Modbus gesetztes Stromlimit
+// zyklisch erneuert werden muss (Watchdog) oder dauerhaft gilt.
+// ---------------------------------------------------------------------------
+
+class PeblarDriver implements ChargerDriverInterface
+{
+    const REG_ENERGY_TOTAL  = 30000; // INT64, Wh
+    const REG_ENERGY_SESSION = 30004; // INT64, Wh (letzte/laufende Ladesitzung)
+    const REG_POWER_PHASE   = 30008; // je INT32, W (nur vorhandene Phasen)
+    const REG_POWER_TOTAL   = 30014; // INT32, W
+    const REG_VOLTAGE       = 30016; // je INT32, V
+    const REG_CURRENT       = 30022; // je INT32, mA
+    const REG_SERIAL        = 30050; // 12 Register ASCII
+    const REG_PRODUCT       = 30062; // 12 Register ASCII
+    const REG_FIRMWARE      = 30074; // 12 Register ASCII
+    const REG_PHASE_COUNT   = 30092; // UINT16 (+30093 unabhängiges Relais)
+    const REG_CP_STATE      = 30110; // ASCII-Zeichencode (+30111 Sperre, +30112 Limit-Quelle)
+    const REG_MB_CURRENT    = 40000; // UINT32, mA (2 Register)
+    const REG_FORCE_1PHASE  = 40002; // UINT16, 1 = einphasig erzwingen
+
+    const STATES = [
+        65 => 'A - Kein Fahrzeug', 66 => 'B - Fahrzeug verbunden', 67 => 'C - Lädt',
+        68 => 'D - Lädt (Belüftung)', 69 => 'E - Fehler', 70 => 'F - Nicht verfügbar',
+    ];
+
+    const LIMIT_SOURCES = [
+        0 => 'Unbekannt', 1 => 'Festes Kabel', 2 => 'Übertemperatur', 3 => 'Installationslimit',
+        4 => 'Dynamischer Lastausgleich', 5 => 'Gruppen-Lastausgleich', 6 => 'Ladekabel',
+        7 => 'Überstromschutz', 8 => 'Hardware-Begrenzung', 9 => 'Leistungsfaktor',
+        10 => 'OCPP Smart Charging', 11 => 'Phasenungleichgewicht', 12 => 'Lokaler Ladeplan',
+        13 => 'Solarladen', 14 => 'Strombegrenzer', 15 => 'Lokale REST-API',
+        16 => 'Lokale Modbus-API', 17 => 'Externes Leistungslimit', 18 => 'Hausanschluss-Limit',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',         'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',           'Ladestatus',         'I', 'CHB.PeblarState', true, 'device', 'Input 30110 (ASCII-Zeichencode A/B/C ...)'],
+            ['vehicle_plugged', 'Fahrzeug verbunden', 'B', 'CHB.Connected',   true, 'device', 'abgeleitet: Status B/C/D'],
+            ['power',           'Ladeleistung',       'F', 'NRG.Watt',        true, 'device', 'Input 30014-30015 (INT32, W)'],
+            ['energy_total',    'Energie gesamt',     'F', 'NRG.kWh',         true, 'device', 'Input 30000-30003 (INT64, Wh)'],
+            ['energy_session',  'Energie akt. Sitzung', 'F', 'CHB.kWhSession', true, 'device', 'Input 30004-30007 (INT64, Wh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Leistung/Spannung/Strom je Phase', 'vars' => [
+                ['power_l1',   'Leistung L1', 'F', 'NRG.Watt',   true, 'phases', 'Input 30008 (INT32, W)'],
+                ['power_l2',   'Leistung L2', 'F', 'NRG.Watt',   true, 'phases', 'Input 30010 (nur mehrphasig)'],
+                ['power_l3',   'Leistung L3', 'F', 'NRG.Watt',   true, 'phases', 'Input 30012 (nur mehrphasig)'],
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'Input 30016 (INT32, V)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'Input 30018 (nur mehrphasig)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'Input 30020 (nur mehrphasig)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'Input 30022 (INT32, mA)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'Input 30024 (nur mehrphasig)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'Input 30026 (nur mehrphasig)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',    'Seriennummer',      'S', '', false, 'device', 'Input 30050 ff. (ASCII)'],
+                ['dev_product',   'Produktnummer',     'S', '', false, 'device', 'Input 30062 ff. (ASCII)'],
+                ['dev_firmware',  'Firmware-Version',  'S', '', false, 'device', 'Input 30074 ff. (ASCII)'],
+                ['limit_source',  'Begrenzt durch',    'I', 'CHB.PeblarLimitSource', true, 'device', 'Input 30112 (Quelle des aktuellen Stromlimits)'],
+                ['cable_locked',  'Kabel verriegelt',  'B', '', true, 'device', 'Input 30111'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',          true, 'control', 'RW Holding 40000 (Limit 0 mA = aus)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere10to63', true, 'control', 'RW Holding 40000-40001 (UINT32, mA)'],
+            ]],
+            // Nur wirksam, wenn das Gerät ein unabhängiges Relais hat (Input 30093 = 1).
+            'GroupPhaseSwitch' => ['caption' => 'Phasenumschaltung (nur mit unabhängigem Relais)', 'vars' => [
+                ['ctl_phase_mode', 'Phasenmodus', 'I', 'CHB.PeblarPhaseMode', true, 'control', 'RW Holding 40002 (1 = einphasig erzwingen)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'CHB.Ampere10to63' => [VARIABLETYPE_INTEGER, ' A', 0, 63, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $states[$k] = [$label, ($k === 67) ? 0x27D07F : (in_array($k, [69, 70], true) ? 0xE74C3C : 0x7A8A99)];
+        }
+        $sources = [];
+        foreach (self::LIMIT_SOURCES as $k => $label) {
+            $sources[$k] = [$label, 0x7A8A99];
+        }
+        return [
+            'CHB.PeblarState'       => $states,
+            'CHB.PeblarLimitSource' => $sources,
+            'CHB.PeblarPhaseMode'   => [1 => ['Einphasig (erzwungen)', 0x7A8A99], 3 => ['Dreiphasig (Automatik)', 0x27D07F]],
+        ];
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $cp = $mb->readInput(self::REG_CP_STATE, 3);
+        $ok = ($cp !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+        $state = $mb->u16($cp, 0);
+        $hub->SetVarInt('state', $state);
+        $hub->SetVarBool('vehicle_plugged', in_array($state, [66, 67, 68], true));
+
+        // Phasenzahl zuerst: Phase 2/3 existieren nur bei mehrphasigen Geräten,
+        // ein Lesezugriff darauf liefert sonst eine Modbus-Exception.
+        $pc     = $mb->readInput(self::REG_PHASE_COUNT, 2);
+        $phases = ($pc !== null && $mb->u16($pc, 0) >= 1 && $mb->u16($pc, 0) <= 3) ? $mb->u16($pc, 0) : 1;
+        $indep  = ($pc !== null && $mb->u16($pc, 1) === 1);
+        if ($pc !== null && $mb->u16($pc, 0) >= 1 && $mb->u16($pc, 0) <= 3) {
+            // Gerät meldet Phasenzahl (Input 30092) und unabhängiges Relais (30093).
+            $hub->SetPhaseInfo($mb->u16($pc, 0) === 1 ? 1 : 3, $mb->u16($pc, 1) === 1 ? 1 : 0);
+        }
+
+        $pw = $mb->readInput(self::REG_POWER_TOTAL, 2);
+        if ($pw !== null) {
+            $hub->SetVarFloat('power', (float)$mb->s32($pw, 0));
+        }
+        $en = $mb->readInput(self::REG_ENERGY_TOTAL, 4);
+        if ($en !== null) {
+            $wh = ($mb->u32($en, 0) << 32) | $mb->u32($en, 2);
+            $hub->SetVarFloat('energy_total', $wh / 1000.0);
+        }
+        $es = $mb->readInput(self::REG_ENERGY_SESSION, 4);
+        if ($es !== null) {
+            $hub->SetVarFloat('energy_session', (($mb->u32($es, 0) << 32) | $mb->u32($es, 2)) / 1000.0);
+        }
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $pp = $mb->readInput(self::REG_POWER_PHASE, $phases * 2);
+            $vv = $mb->readInput(self::REG_VOLTAGE, $phases * 2);
+            $cc = $mb->readInput(self::REG_CURRENT, $phases * 2);
+            for ($i = 0; $i < $phases; $i++) {
+                if ($pp !== null) {
+                    $hub->SetVarFloat('power_l' . ($i + 1), (float)$mb->s32($pp, $i * 2));
+                }
+                if ($vv !== null) {
+                    $hub->SetVarFloat('voltage_l' . ($i + 1), (float)$mb->s32($vv, $i * 2));
+                }
+                if ($cc !== null) {
+                    $hub->SetVarFloat('current_l' . ($i + 1), $mb->s32($cc, $i * 2) / 1000.0);
+                }
+            }
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $hub->SetVarInt('limit_source', $mb->u16($cp, 2));
+            $hub->SetVarBool('cable_locked', $mb->u16($cp, 1) === 1);
+            // Strings ändern sich nicht — nur lesen, solange noch leer.
+            foreach ([['dev_serial', self::REG_SERIAL], ['dev_product', self::REG_PRODUCT], ['dev_firmware', self::REG_FIRMWARE]] as [$ident, $reg]) {
+                if ((string)$hub->GetVarValue($ident) === '') {
+                    $r = $mb->readInput($reg, 12);
+                    if ($r !== null) {
+                        $hub->SetVarStr($ident, $mb->readStr($r, 0, 12));
+                    }
+                }
+            }
+        }
+
+        // Steuerwerte zurücklesen: Freigabe = Limit > 0, Limit in ganzen Ampere.
+        // Ohne Rücklesen zeigte die Freigabe dauerhaft „Aus“, und ein Stromlimit
+        // wurde dann nur gemerkt statt geschrieben (Fund Mstaudi, 20.09.2026).
+        if ($hub->GroupActive('GroupControl')) {
+            $lim = $mb->readHolding(self::REG_MB_CURRENT, 2);
+            if ($lim !== null) {
+                $mA = ($mb->u16($lim, 0) << 16) | $mb->u16($lim, 1);
+                $hub->SetVarBool('ctl_enable', $mA > 0);
+                if ($mA > 0) {
+                    $hub->SetVarInt('ctl_curr_limit', (int)round($mA / 1000));
+                }
+            }
+        }
+
+        if ($indep && $hub->GroupActive('GroupPhaseSwitch')) {
+            $f = $mb->readHolding(self::REG_FORCE_1PHASE, 1);
+            if ($f !== null) {
+                $hub->SetVarInt('ctl_phase_mode', $mb->u16($f, 0) === 1 ? 1 : 3);
+            }
+        }
+
+        return true;
+    }
+
+    private function writeCurrentMa($mb, int $mA): bool
+    {
+        return (bool)$mb->writeMultiple(self::REG_MB_CURRENT, [($mA >> 16) & 0xFFFF, $mA & 0xFFFF]);
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        switch ($ident) {
+            case 'ctl_enable':
+                // Kein eigenes Freigabe-Register: aus = Limit 0, an = zuletzt
+                // gewähltes Limit (mindestens 6 A), wie bei evcc.
+                $amp = (bool)$value ? max(6, (int)$hub->GetVarValue('ctl_curr_limit')) : 0;
+                if ($this->writeCurrentMa($mb, $amp * 1000)) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                // Bei ausgeschalteter Freigabe nur merken — dasselbe Register
+                // regelt beides, ein Schreiben würde sonst wieder einschalten.
+                if (!$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
+                if ($this->writeCurrentMa($mb, $amp * 1000)) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+
+            case 'ctl_phase_mode':
+                $force = ((int)$value === 1) ? 1 : 0;
+                if ($mb->writeSingle(self::REG_FORCE_1PHASE, $force)) {
+                    $hub->SetVarInt('ctl_phase_mode', $force === 1 ? 1 : 3);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CharxDriver — Phoenix Contact CHARX SEC-3xxx (Ladesteuerung, Modbus/TCP).
+// Registerkarte aus dem Handbuch CHARX SEC-XXXX (UM EN CHARX SEC, 109999_en_09,
+// Anhang 8.4 „Modbus communication and register overview"). Experimentell,
+// noch nicht an echter Hardware bestätigt.
+// Wichtige Eigenheiten laut Handbuch:
+// - Unit-ID 1 (Modbus-Server-Adresse), Port 502, 16-Bit-Holding-Register;
+//   Holding (0x03) und Input (0x04) liefern denselben Wert.
+// - Je Ladepunkt ein Registerblock x000-x999 (x = Nummer des Ladepunkts in der
+//   Gruppe; Startadressen Vielfache von 1000, von 1000 bis 48000). Bei „-1"
+//   (automatisch) können sich die Startadressen nach einem Neustart ändern —
+//   fest im WBM vergeben ist sicherer.
+// - 32-Bit-Werte: erstes Register = höherwertiges Wort (MSW).
+// - Ladefreigabe (x300) nur schreibbar, wenn die Freigabe-Art im WBM auf
+//   „Modbus" steht (x120 = 5).
+// ---------------------------------------------------------------------------
+
+class CharxDriver implements ChargerDriverInterface
+{
+    // Offsets im Block eines Ladepunkts (Adresse = x*1000 + Offset)
+    const OFF_RELEASE_MODE = 120; // 0 Dashboard,1 Whitelist,2 Extern,3 Dauerfreigabe,4 OCPP,5 Modbus
+    const OFF_UID          = 113; // 3 Register ASCII
+    const OFF_VOLTAGE      = 232; // je 2 Register (MSW zuerst), mV, L1/L2/L3 = 232/234/236
+    const OFF_CURRENT      = 238; // je 2 Register, mA, L1/L2/L3 = 238/240/242
+    const OFF_POWER        = 244; // 2 Register, mW
+    const OFF_ENERGY       = 250; // 4 Register (INT64), Wh (Zählerstand Wirkenergie) — Handbuch nennt 2, Adressabstand zu x254 und der Praxistest sprechen für 4
+    const OFF_CONN_TIME    = 285; // 2 Register, s (Verbindungszeit in Status B/C/D)
+    const OFF_CHARGE_TIME  = 287; // 2 Register, s (Ladedauer in Status C/D, zurückgesetzt bei B->A)
+    const OFF_ENERGY_SESS  = 289; // 4 Register, Wh (aktueller Ladevorgang)
+    const OFF_APPLIED_CURR = 297; // 1 Register, A (aktuell von der Steuerung vorgegebener Ladestrom)
+    const OFF_ERROR        = 293; // 2 Register (MSB zuerst)
+    const OFF_VEHICLE      = 299; // 1 Register, 2 ASCII-Zeichen (A1..IN)
+    const OFF_ENABLE       = 300; // R/(W wenn Modbus-Freigabe): 0/1
+    const OFF_CURR_LIMIT   = 301; // R/W, A, 6-80
+    const REG_FIRMWARE     = 110; // zentral, 4 Register ASCII
+
+    const STATES = [
+        10 => 'A1 - Kein Fahrzeug', 11 => 'A2 - Kein Fahrzeug',
+        20 => 'B1 - Fahrzeug verbunden', 21 => 'B2 - Fahrzeug verbunden',
+        30 => 'C1 - Status C, Ladevorgang nicht aktiv', 31 => 'C2 - Lädt',
+        50 => 'E0 - Fehler', 60 => 'F0 - Nicht verfügbar', 70 => 'IN - Initialisierung',
+    ];
+
+    const RELEASE_MODES = [
+        0 => 'Dashboard', 1 => 'Lokale Whitelist', 2 => 'Externe Steuerung',
+        3 => 'Dauerfreigabe', 4 => 'OCPP', 5 => 'Modbus',
+    ];
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',       'Verbindung',           'B', '~Alert.Reversed', true, 'errors', ''],
+            ['state',           'Ladestatus',           'I', 'CHB.CharxState',  true, 'device', 'Register x299 (ASCII, IEC 61851-1)'],
+            ['vehicle_plugged', 'Fahrzeug verbunden',   'B', 'CHB.Connected',   true, 'device', 'abgeleitet: Status B/C/D'],
+            ['power',           'Ladeleistung',         'F', 'NRG.Watt',        true, 'device', 'x244 (INT32, mW)'],
+            ['energy_total',    'Energie gesamt',       'F', 'NRG.kWh',         true, 'device', 'x250 (INT32, Wh)'],
+            ['energy_session',  'Energie akt. Sitzung', 'F', 'CHB.kWhSession',  true, 'device', 'x289 (INT64, Wh)'],
+            ['actual_curr',     'Angewandtes Limit',    'F', 'NRG.Ampere',      true, 'device', 'x297 (A, aktuell vorgegebener Ladestrom)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Spannung/Strom je Phase', 'vars' => [
+                ['voltage_l1', 'Spannung L1', 'F', 'NRG.Volt',   true, 'phases', 'x232 (mV)'],
+                ['voltage_l2', 'Spannung L2', 'F', 'NRG.Volt',   true, 'phases', 'x234 (mV)'],
+                ['voltage_l3', 'Spannung L3', 'F', 'NRG.Volt',   true, 'phases', 'x236 (mV)'],
+                ['current_l1', 'Strom L1',    'F', 'NRG.Ampere', true, 'phases', 'x238 (mA)'],
+                ['current_l2', 'Strom L2',    'F', 'NRG.Ampere', true, 'phases', 'x240 (mA)'],
+                ['current_l3', 'Strom L3',    'F', 'NRG.Ampere', true, 'phases', 'x242 (mA)'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation', 'vars' => [
+                ['dev_serial',    'Kennung (UID)',        'S', '', false, 'device', 'x113 ff. (ASCII)'],
+                ['dev_firmware',  'Software-Version',     'S', '', false, 'device', 'Register 110 ff. (ASCII)'],
+                ['release_mode',  'Freigabe-Art',         'I', 'CHB.CharxReleaseMode', true, 'device', 'x120'],
+                ['error_code',    'Fehlercode',           'I', '', true, 'device', 'x293-x294 (Bitfeld)'],
+                ['connection_time_sek', 'Verbindungszeit (Sek.)', 'I', '', true, 'device', 'x285 (s, Zeit in Status B/C/D)'],
+                ['ladezeit_sek',        'Ladezeit (Sek.)',        'I', '', true, 'device', 'x287 (s, Ladedauer in Status C/D)'],
+            ]],
+            'GroupControl' => ['caption' => 'Steuerung (Ladefreigabe, Stromlimit)', 'vars' => [
+                ['ctl_enable',     'Ladefreigabe',   'B', '~Switch',           true, 'control', 'RW x301 (Freigabe = Stromvorgabe, Sperre = 0, wie evcc)'],
+                ['ctl_curr_limit', 'Stromlimit (A)', 'I', 'CHB.Ampere6to80',   true, 'control', 'RW x301 (6-80 A)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt'         => [VARIABLETYPE_FLOAT,   ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh'          => [VARIABLETYPE_FLOAT,   ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'NRG.Volt'         => [VARIABLETYPE_FLOAT,   ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere'       => [VARIABLETYPE_FLOAT,   ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.kWhSession'   => [VARIABLETYPE_FLOAT,   ' kWh (Sitzung)', 0.0, 999.0, 0.01, 2],
+            'CHB.Ampere6to80'  => [VARIABLETYPE_INTEGER, ' A', 6, 80, 1, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        $states = [];
+        foreach (self::STATES as $k => $label) {
+            $states[$k] = [$label, ($k === 31) ? 0x27D07F : (in_array($k, [50, 60], true) ? 0xE74C3C : 0x7A8A99)];
+        }
+        $modes = [];
+        foreach (self::RELEASE_MODES as $k => $label) {
+            $modes[$k] = [$label, $k === 5 ? 0x27D07F : 0x7A8A99];
+        }
+        return ['CHB.CharxState' => $states, 'CHB.CharxReleaseMode' => $modes];
+    }
+
+    // Wandelt die zwei ASCII-Zeichen aus x299 in einen internen Statuscode.
+    private function stateCode(int $word): int
+    {
+        $txt = chr(($word >> 8) & 0xFF) . chr($word & 0xFF);
+        $map = ['A1' => 10, 'A2' => 11, 'B1' => 20, 'B2' => 21, 'C1' => 30, 'C2' => 31, 'E0' => 50, 'F0' => 60, 'IN' => 70];
+        return $map[$txt] ?? 0;
+    }
+
+    public function readValues($mb, $hub)
+    {
+        $base = $hub->GetChargePointNo() * 1000;
+
+        $veh = $mb->readHolding($base + self::OFF_VEHICLE, 1);
+        $ok  = ($veh !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+        $code = $this->stateCode($mb->u16($veh, 0));
+        $hub->SetVarInt('state', $code);
+        $hub->SetVarBool('vehicle_plugged', in_array($code, [20, 21, 30, 31], true));
+
+        $pw = $mb->readHolding($base + self::OFF_POWER, 2);
+        if ($pw !== null) {
+            $hub->SetVarFloat('power', $mb->u32($pw, 0) / 1000.0);
+        }
+        // Zählerstand Wirkenergie als INT64 über 4 Register (wie die Sitzungsenergie x289): das
+        // Handbuch führt x250 mit 2 Worten, der Adressabstand zum nächsten Zähler (x254) beträgt aber 4.
+        // Mit nur 2 Worten wurde das höherwertige Wort gelesen und „Energie gesamt“ blieb bei 0
+        // (Fund Mstaudi, 05.10.2026: eigene Abfrage über Register 1250 zeigte 2317,6 kWh).
+        $en = $mb->readHolding($base + self::OFF_ENERGY, 4);
+        if ($en !== null) {
+            $hub->SetVarFloat('energy_total', (($mb->u32($en, 0) << 32) | $mb->u32($en, 2)) / 1000.0);
+        }
+        // Aktuell vorgegebener Ladestrom: zeigt, ob ein gesetztes Limit tatsächlich gilt oder ob die
+        // Steuerung (z. B. durch Rückfallstrom/Watchdog) davon abweicht.
+        $ac = $mb->readHolding($base + self::OFF_APPLIED_CURR, 1);
+        if ($ac !== null) {
+            $hub->SetVarFloat('actual_curr', (float)$mb->u16($ac, 0));
+        }
+        $es = $mb->readHolding($base + self::OFF_ENERGY_SESS, 4);
+        if ($es !== null) {
+            $hub->SetVarFloat('energy_session', (($mb->u32($es, 0) << 32) | $mb->u32($es, 2)) / 1000.0);
+        }
+
+        if ($hub->GroupActive('GroupPhases')) {
+            $vv = $mb->readHolding($base + self::OFF_VOLTAGE, 6);
+            $cc = $mb->readHolding($base + self::OFF_CURRENT, 6);
+            for ($i = 0; $i < 3; $i++) {
+                if ($vv !== null) {
+                    $hub->SetVarFloat('voltage_l' . ($i + 1), $mb->u32($vv, $i * 2) / 1000.0);
+                }
+                if ($cc !== null) {
+                    $hub->SetVarFloat('current_l' . ($i + 1), $mb->u32($cc, $i * 2) / 1000.0);
+                }
+            }
+        }
+
+        if ($hub->GroupActive('GroupDevice')) {
+            $rm = $mb->readHolding($base + self::OFF_RELEASE_MODE, 1);
+            if ($rm !== null) {
+                $hub->SetVarInt('release_mode', $mb->u16($rm, 0));
+            }
+            $ct = $mb->readHolding($base + self::OFF_CONN_TIME, 2);
+            if ($ct !== null) {
+                $hub->SetVarInt('connection_time_sek', $mb->u32($ct, 0));
+            }
+            $lt = $mb->readHolding($base + self::OFF_CHARGE_TIME, 2);
+            if ($lt !== null) {
+                $hub->SetVarInt('ladezeit_sek', $mb->u32($lt, 0));
+            }
+            $er = $mb->readHolding($base + self::OFF_ERROR, 2);
+            if ($er !== null) {
+                $hub->SetVarInt('error_code', $mb->u32($er, 0));
+            }
+            // Strings ändern sich nicht — nur lesen, solange noch leer.
+            if ((string)$hub->GetVarValue('dev_serial') === '') {
+                $r = $mb->readHolding($base + self::OFF_UID, 3);
+                if ($r !== null) {
+                    $hub->SetVarStr('dev_serial', $mb->readStr($r, 0, 3));
+                }
+            }
+            if ((string)$hub->GetVarValue('dev_firmware') === '') {
+                $r = $mb->readHolding(self::REG_FIRMWARE, 4);
+                if ($r !== null) {
+                    $hub->SetVarStr('dev_firmware', $mb->readStr($r, 0, 4));
+                }
+            }
+        }
+
+        // Steuerwerte zurücklesen, damit Änderungen aus WBM/anderen Reglern sichtbar sind.
+        // Freigabe und Stromvorgabe laufen wie bei evcc (charger/phoenix-charx.go) beide über x301:
+        // Freigabe = Stromvorgabe ungleich 0, Sperre = 0 (laut Handbuch wird die Freigabe entzogen,
+        // wenn der Wert außerhalb 6-80 A liegt). x300 ist laut Handbuch nur schreibbar, wenn die
+        // Freigabe-Art im WBM auf „Modbus" steht, und scheiterte bei Mstaudi (05.10.2026).
+        if ($hub->GroupActive('GroupControl')) {
+            $l = $mb->readHolding($base + self::OFF_CURR_LIMIT, 1);
+            if ($l !== null) {
+                $hub->SetVarBool('ctl_enable', $mb->u16($l, 0) !== 0);
+                if ($mb->u16($l, 0) >= 6 && $mb->u16($l, 0) <= 80) {
+                    $hub->SetVarInt('ctl_curr_limit', $mb->u16($l, 0));
+                }
+            }
+        }
+
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        $base = $hub->GetChargePointNo() * 1000;
+        switch ($ident) {
+            case 'ctl_enable':
+                // Wie evcc: Freigabe = zuletzt gewählte Stromvorgabe (mindestens 6 A) nach x301,
+                // Sperre = 0 nach x301; mit FC 0x10 (WriteMultipleRegisters) wie dort.
+                $amp = (bool)$value ? max(6, min($hub->GetMaxCurrentA(), max(6, (int)$hub->GetVarValue('ctl_curr_limit')))) : 0;
+                if ($mb->writeMultiple($base + self::OFF_CURR_LIMIT, [$amp])) {
+                    $hub->SetVarBool('ctl_enable', (bool)$value);
+                }
+                break;
+
+            case 'ctl_curr_limit':
+                // Laut Handbuch wird die Freigabe entzogen, wenn der Wert außerhalb 6-80 A liegt.
+                $amp = max(6, min($hub->GetMaxCurrentA(), (int)$value));
+                // x301 ist zugleich die Freigabe: bei gesperrter Freigabe (0) nur merken, nicht
+                // schreiben, sonst würde das Limit die Ladung freigeben.
+                if (!$hub->GetVarValue('ctl_enable')) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                    break;
+                }
+                if ($mb->writeMultiple($base + self::OFF_CURR_LIMIT, [$amp])) {
+                    $hub->SetVarInt('ctl_curr_limit', $amp);
+                }
+                break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChargerHub — Hauptmodul
+// ---------------------------------------------------------------------------
+
+class ChargerHub extends IPSModule
+{
+    private const ATTR_REVIEW_HINT_GONE = 'ReviewHintDismissed';
+
+    // Name des zuletzt in FindGridSurplusW() gefundenen MeterHub-Zählers, für den
+    // sichtbaren Status — nur innerhalb eines Poll-Durchlaufs gültig, kein State.
+    private ?string $lastSurplusMeterName = null;
+
+    // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
+    // für die Formular-Optik (SUITE.md, Referenz InverterHub).
+    private const NEWS_VERSION = '0.9.88';
+    private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
+    private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
+    private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
+    private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
+    private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
+    private const NEWS_ITEMS = [
+        'Neu: „Überschussladen selbst regeln" (Panel „Steuerungshoheit & Sicherheit") — ChargerHub kann jetzt eigenständig per PV-Überschuss laden, aber NUR als Fallback ohne EMS (EMS hat immer Vorrang, sobald es läuft). Voraussetzung: genau eine aktive ChargerHub-Instanz, ein MeterHub-Zähler am Netzanschlusspunkt mit Echtzeit-Wert. Standardmäßig aus.',
+        'Umstellung Symbox-Gateway: Der Weg über Symcons natives ModBus-Gateway läuft jetzt über eine eigene Brücken-Instanz („NRG-Stack ChargerHub Brücke (ModBus-Gateway)"). ChargerHub selbst braucht dafür keine übergeordnete Instanz mehr — Direkt-Instanzen sind unverändert. Wer den Gateway-Modus mit früheren Beta-Ständen direkt am Hub eingerichtet hatte: Instanz und Historie bleiben — Verbindungsweg „Symbox-Gateway", Gateway wählen, „Brücke anlegen und verbinden" klicken, „Übernehmen".',
+    ];
+
+    private const DRIVERS = [
+        'keba'       => 'KebaDriver',
+        'alfen'      => 'AlfenDriver',
+        'heidelberg' => 'HeidelbergDriver',
+        'goe'        => 'GoeChargerDriver',
+        'abl'        => 'AblDriver',
+        'daheimlader' => 'DaheimLaderDriver',
+        'foxess'      => 'FoxEssDriver',
+        'peblar'      => 'PeblarDriver',
+        'charx'       => 'CharxDriver',
+    ];
+
+    // Hersteller, die Modbus ASCII statt binäres Modbus TCP sprechen (siehe
+    // CHUB_ModbusAsciiClient) — GetModbusClient() wählt danach den Client.
+    private const ASCII_MANUFACTURERS = ['abl'];
+
+    // Hardware-Obergrenze des Ladestroms je Hersteller (A) — der wirksame
+    // Clamp ist min(Hardware, Property MaxCurrent). ABL-Wert ungetestet
+    // (eMH1 gibt es in mehreren Stromstärke-Varianten) — mit 32 A bewusst
+    // konservativ, die tatsächliche Grenze setzt ohnehin die Property
+    // MaxCurrent, die der Nutzer an sein reales Gerät anpassen muss.
+    private const DRIVER_MAX_CURRENT = [
+        'keba'       => 63,
+        'alfen'      => 32,
+        'heidelberg' => 16,
+        'goe'        => 32,
+        'abl'        => 32,
+        'daheimlader' => 32,
+        'foxess'      => 32,
+        'peblar'      => 32,
+        'charx'       => 80,
+    ];
+    private const MIN_CURRENT = 6; // A — kleinster IEC-61851-Ladestrom
+    // Anzahl aufeinanderfolgender Update()-Polls mit derselben Umschalt-Tendenz, bevor
+    // die Phasenzahl während einer laufenden Ladung tatsächlich gewechselt wird.
+    private const PHASE_SWITCH_STABLE_POLLS = 3;
+    private const PHASE_SWITCH_STABLE_POLLS_MAX = 10;
+
+    // Verbund-Vertrag MeterHub (mit MeterHub-Sitzung abgestimmt, 26.08.2026)
+    // — für die optionale Eigenregelung des Überschussladens, siehe
+    // FindGridSurplusW().
+    private const METERHUB_GUID = '{BAB8E05C-9150-43B9-9F2B-E5215FA54F0A}';
+    // MeterHub „Virtueller Zähler“ (eigenes Modul, Präfix MHUBV, gleicher Vertrag): damit lässt sich z. B. ein
+    // Netzbetreiber-Zähler, dessen Werte per MQTT als Symcon-Variablen vorliegen, als Netzzähler führen
+    // (Anfrage Stefan/somm, 21.10.2026, Antwort MeterHub-Sitzung).
+    // Steuerprofil je Hersteller fürs Vertragsfeld 'phaseModeValues' (Werte, die in ctl_phase_mode zu schreiben
+    // sind) und weitere Steuerangaben (Vertrag 1.8, EMS-Anfrage 21.10.2026). Nur Hersteller mit eindeutiger
+    // Zuordnung: Fox ESS (Werte 0/1/2 = „welche Phase“, an eine Zusatz-Box gebunden) bleibt bewusst draußen.
+    // 'pauseSec' = Ladepause durch eine Umschaltung (nur belegt: DaheimLader 2 Minuten laut Doku);
+    // 'stepA' = kleinste Stromstufe des Sollwerts (Variable ganzzahlig, nur Alfen mit 0,1 A).
+    private const CONTROL_PROFILES = [
+        'goe'         => ['values' => ['one' => 1, 'three' => 2, 'auto' => 0]],
+        'daheimlader' => ['values' => ['one' => 1, 'three' => 3, 'auto' => null], 'pauseSec' => 120],
+        'peblar'      => ['values' => ['one' => 1, 'three' => 3, 'auto' => null]],
+        'alfen'       => ['values' => ['one' => 1, 'three' => 3, 'auto' => null], 'stepA' => 0.1],
+    ];
+
+    private const METERHUBVIRTUAL_GUID = '{ADF18291-2E60-4354-92F5-B96863C127C8}';
+    private const EMS_GUID = '{31C61A7B-28C4-4F97-9651-1A64B3469E3C}';
+    private const INVERTERHUB_GUID = '{BBE2C593-1A91-426D-A714-29A9C7E87589}';
+    private const CHARGERHUB_GUID = '{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}';
+    // Live ermittelt (13.09.2026, gegen Dietmars Instanz), für den weichen
+    // Dubletten-Marker 'duplicateOf' — nur zum Auflisten von Kandidaten im
+    // Formular, KEIN Funktionsaufruf, daher ohne function_exists-Absicherung
+    // ausreichend sicher (IPS_GetInstanceListByModuleID liefert bei fehlendem
+    // Modul einfach eine leere Liste).
+    private const OCPPHUB_LADEPUNKT_GUID = '{27A1625F-A006-4945-8A36-FFBAA38A5FB5}';
+
+    // Regler-Kennzeichnung (Verbund-Vokabular, mit EMS abgestimmt). Wer hat die
+    // Hoheit über diesen Ladepunkt? Wird als 'managedBy' im Vertrag gemeldet;
+    // bei allem außer 'none'/'ems' steuert das EMS NICHT selbst.
+    private const MANAGEDBY_ALL = ['none', 'ems', 'goe-controller', 'tibber', 'p14a', 'marketer', 'other'];
+    private const MANAGEDBY_LABELS = [
+        'none'           => 'Niemand — frei / manuell (Standard)',
+        'ems'            => 'Energiemanagement (EMS)',
+        'goe-controller' => 'go-e Controller (Überschussladen)',
+        'tibber'         => 'Tibber (Regelenergie / Grid Rewards)',
+        'p14a'           => '§14a-Steuerung (Netzbetreiber)',
+        'marketer'       => 'Direktvermarkter',
+        'other'          => 'Anderes externes Lastmanagement',
+    ];
+    // 'goe-controller' ist nur für den go-eCharger sinnvoll (der go-e Controller
+    // regelt nur go-e-Wallboxen). Andere Hersteller bekommen die Auswahl nicht.
+    private const MANAGEDBY_ONLY_GOE = ['goe-controller'];
+
+    private $driver = null;
+
+    public function Create()
+    {
+        parent::Create();
+
+        $this->RegisterAttributeString('SeenNews', '');
+        $this->RegisterAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, false);
+        // "Wozu dieses Modul?"-Panel (EMS-Auftrag, 14.09.2026, SUITE.md
+        // Formular-Konvention Punkt 0, Referenzimplementierung MeterHub) —
+        // ganz oben, noch vor dem News-Panel, einmalig dismissible.
+        $this->RegisterAttributeBoolean('PurposeIntroGone', false);
+        // Einmal-Marker für die 0.9.14-Migration (control-Variablen ohne
+        // Kernel-Standardaktion neu anlegen, siehe RegisterVar()). Ein
+        // Attribut statt einer Live-Zustandsprüfung, weil sich Letzteres live
+        // als nicht zuverlässig herausstellte — 0.9.14 löschte/erzeugte die
+        // Steuervariablen dadurch bei JEDEM Übernehmen neu (IDs wechselten
+        // ständig), statt nur einmalig zu migrieren.
+        $this->RegisterAttributeBoolean('ControlActionsMigrated', false);
+        // Für ReleaseForceLockOnHandoff() — merkt sich den zuletzt angewendeten
+        // „Wer regelt?"-Wert, um den ÜBERGANG none→(etwas anderes) zu erkennen.
+        $this->RegisterAttributeString('PrevManagedBy', 'none');
+        // Einmalige Erkennung „Bestandsinstanz“: hatte die Instanz beim ersten Übernehmen nach dem Update schon Variablen, archiviert sie wie bisher.
+        $this->RegisterAttributeBoolean('ArchiveMigrated', false);
+        $this->RegisterAttributeBoolean('ArchiveLegacyOn', false);
+        // Regelungsstatus (Vertrag 1.9): wer regelt gerade, seit wann — siehe UpdateControlState().
+        $this->RegisterAttributeString('ControlOwnerKey', '');
+        $this->RegisterAttributeInteger('ControlSince', 0);
+        $this->RegisterAttributeBoolean('SurplusRegulating', false);
+        // Plantext von außen (CHUB_SetPlanInfo, z. B. vom EMS): Ablaufzeitpunkt, danach wird er gelöscht.
+        $this->RegisterAttributeInteger('PlanValidUntil', 0);
+        // Zeitpunkt (Unix-Timestamp) des letzten erfolgreichen Lesezyklus —
+        // siehe SetVarBool()/GetFunctions() 'lastSeenAt', contractVersion 1.3.
+        $this->RegisterAttributeInteger('LastSeenAt', 0);
+        // -1 = unbekannt (noch nicht beobachtet), 0 = abgesteckt, 1 = angesteckt (siehe SetVarBool()).
+        $this->RegisterAttributeInteger('PlugState', -1);
+        // 1.6: vom Gerät gemeldete Phasenangaben, 0 = unbekannt (siehe SetPhaseInfo()).
+        $this->RegisterAttributeString('DriverFlags', '{}');
+        $this->RegisterAttributeInteger('DevicePhases', 0);
+        $this->RegisterAttributeInteger('DevicePhaseSwitch', -1);
+        // Beobachtungszähler fürs Phasen-Umschalten beim Überschussladen — ein
+        // Wechsel wird erst nach mehreren AUFEINANDERFOLGENDEN Polls mit derselben
+        // Tendenz ausgelöst, nicht schon beim ersten (verhindert Pendeln).
+        $this->RegisterAttributeInteger('PhaseSwitchStableCount', 0);
+        $this->RegisterAttributeInteger('PhaseSwitchStableTarget', 0);
+        // Software-Energiezählung für Treiber ohne echtes Zählerregister
+        // (aktuell: ABL, siehe AblDriver/IntegrateEnergyWh()) — integriert die
+        // (bereits selbst geschätzte) Momentanleistung über die Zeit auf.
+        // Bleibt eine Schätzung, keine Gerätemessung.
+        $this->RegisterAttributeFloat('EnergyIntegralWh', 0.0);
+        $this->RegisterAttributeInteger('EnergyIntegralLastTs', 0);
+        // Merker je Ident, welches Profil zuletzt VOM MODUL gesetzt wurde —
+        // siehe RegisterVar() (Forum-Wunsch sieckendieck/Mike, 16.09.2026):
+        // ein manuell in der Konsole geändertes Profil wird dadurch nicht
+        // mehr bei jedem Übernehmen stillschweigend zurücküberschrieben.
+        $this->RegisterAttributeString('LastSetProfiles', '{}');
+        $this->RegisterAttributeString('LastBridgeError', '');
+
+        $this->RegisterPropertyBoolean('Active', true);
+        // Archivierung standardmäßig an (Verbund-Konvention wie InverterHub/
+        // MeterHub) — auf Wunsch abschaltbar (Forum, sieckendieck/Mike,
+        // 16.09.2026), betrifft dann ALLE Variablen dieser Instanz.
+        $this->RegisterPropertyBoolean('DisableArchiving', false);
+        // Archivieren ist ein bewusster Entschluss des Nutzers (Store-Review-Checkliste 9k): Standard AUS. Bestandsinstanzen,
+        // die schon vor dieser Einstellung archivierten, behalten ihr Verhalten (Attribut ArchiveLegacyOn), siehe ArchivingDecision().
+        $this->RegisterPropertyBoolean('ArchiveVariables', false);
+        // Verbindungsweg (SUITE.md 9j, Verbund-Abstimmung mit InverterHub/
+        // MeterHub, 17./18.09.2026): 'direct' = bisheriger eigener
+        // Socket-Client (Standard, unverändert), 'gateway' = Symcons
+        // natives Modbus-Gateway-Modul für einen eingebauten Symbox-
+        // RS485-Port — aktuell nur als Fassade/Stub, siehe
+        // CHUB_ModbusGatewayClient.
+        $this->RegisterPropertyString('ConnectionType', 'direct');
+        // Brücken-Instanz (ChargerHubBridge) für den Symbox-Gateway-Weg, siehe
+        // SUITE.md 9j / GetModbusClient().
+        $this->RegisterPropertyInteger('BridgeInstanceID', 0);
+        // Nur Formular-Hilfsfeld für den Knopf "Brücke anlegen und verbinden"
+        // (damit $GatewayPick im onClick ankommt), keine Betriebseinstellung.
+        $this->RegisterPropertyInteger('GatewayPick', 0);
+        // Vorführmodus (Dashboard-Anfrage, 02.09.2026: öffentliche
+        // Modulvorstellung des Verbunds mit eigenem WebFront-Login) —
+        // deaktiviert die Steuer-Aktionsbindung in der Konsole/WebFront UND
+        // weist jeden Steuerbefehl serverseitig zurück (siehe RequestAction),
+        // damit ein Besucher der Demo nicht versehentlich die echte Wallbox
+        // schaltet, selbst wenn die Aktionsbindung sich umgehen ließe.
+        $this->RegisterPropertyBoolean('DemoMode', false);
+        // Weicher Dubletten-Marker (EMS/MeterHub-Abstimmung, 13.09.2026,
+        // Ergänzung zum harten CHUB_SetActive()): '' = keine Dublette, sonst
+        // "chargerhub:<InstanceID>" oder "ocpphub:<InstanceID>" — zeigt auf die
+        // Instanz, die für dasselbe physische Gerät ZÄHLT (Summen/Sitzungen/
+        // Leistung). Ausschließlich vom Nutzer im Formular gesetzt, NIE
+        // automatisch geraten. WICHTIG (EMS-Korrektur, 13.09.2026, nach
+        // OCPPHub-Einwand): betrifft NUR die Zählung, NICHT das Schreibrecht
+        // — wer ans Gerät schreibt, entscheidet weiterhin ausschließlich
+        // ManagedBy. Eine Instanz kann also gleichzeitig Dublette (fürs
+        // Zählen) UND aktiver Regler sein (Beispiel Dietmar: WB1 zählt
+        // künftig über OCPPHub, geregelt wird sie aber weiter von uns).
+        $this->RegisterPropertyString('DuplicateOfKey', '');
+        // Kein Hersteller-Default (Fund der InverterHub-Sitzung, 14.09.2026):
+        // ein vorbelegter Wert wie 'keba' wird beim Ausfüllen leicht
+        // übersehen und führt dann zu falschen Registeradressen/Werten
+        // gegen ein fremdes Fabrikat, obwohl die Verbindung selbst noch
+        // erfolgreich erscheint. Leerer Default erzwingt eine bewusste Wahl.
+        $this->RegisterPropertyString('Manufacturer', '');
+        $this->RegisterPropertyString('Host', '');
+        $this->RegisterPropertyInteger('Port', 502);
+        $this->RegisterPropertyInteger('UnitId', 255);
+        $this->RegisterPropertyInteger('IntervalFast', 10);
+        // Zwei-Regler-Schutz: WER hat die Hoheit über diesen Ladepunkt?
+        // (Verbund-Vokabular, siehe MANAGEDBY_ALL). Per Modbus nicht erkennbar
+        // (die Lastmanagement-Zustände loe/loa liegen nur in der HTTP/MQTT-API),
+        // daher manuelle Auswahl. Wird über CHUB_GetFunctions als 'managedBy'
+        // gemeldet; bei allem außer 'none'/'ems' nimmt das EMS den Ladepunkt von
+        // der eigenen Steuerung aus, sonst überschreiben sich zwei Regler.
+        $this->RegisterPropertyString('ManagedBy', 'none');
+        // Alt-Property (bis 0.8.x): boolescher Schalter. Bleibt registriert,
+        // damit bestehende Instanzen nach dem Update nicht mit „Eigenschaft
+        // nicht gefunden" scheitern; wird als Rückfall gelesen (siehe
+        // GetManagedBy) und im Formular nicht mehr angezeigt.
+        $this->RegisterPropertyBoolean('ExternallyManaged', false);
+        // Maximaler Anschlussstrom (A) der Zuleitung/Absicherung dieses
+        // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
+        // Verteidigungslinie unabhängig vom EMS (EMS-Vertragsabsprache).
+        $this->RegisterPropertyInteger('MaxCurrent', 16);
+        // Fehlersuche: jeden Schreibbefehl (Anfrage/Antwort als Hex) im Meldungen-Log protokollieren.
+        $this->RegisterPropertyBoolean('WriteLog', false);
+        // Manche Wallboxen vertragen häufiges Verbinden/Trennen schlecht (Fund sieckendieck,
+        // DaheimLader Touch PRO, 22.09.2026): Schreibbefehle blieben wirkungslos, solange
+        // ChargerHub häufig pollte, und funktionierten sofort bei sehr langem Intervall. Diese
+        // Option hält stattdessen eine Verbindung offen statt für jeden Zugriff neu zu verbinden.
+        $this->RegisterPropertyBoolean('PersistentConnection', false);
+        // Herstellerübergreifend (Wunsch Mstaudi, 05.10.2026): „Angesteckt um“/„Abgesteckt um“, vom
+        // Modul beim Lesen aus dem Wechsel von „Fahrzeug verbunden“ abgeleitet (die Wallbox meldet
+        // keine Uhrzeiten). Standard aus, damit die Variablenzahl nicht unbemerkt wächst.
+        $this->RegisterPropertyBoolean('PlugTimes', false);
+        // Nur DaheimLader: Ladefreigabe über Ladebefehl (Register 95, Standard) oder über das
+        // Stromlimit (Register 91, wie evcc).
+        $this->RegisterPropertyString('DaheimEnableVia', 'cmd');
+        // Nur CHARX: Nummer des Ladepunkts in der Gruppe (Startadresse = Nummer * 1000).
+        $this->RegisterPropertyInteger('ChargePointNo', 1);
+        // Eigenständiges Überschussladen als Fallback, wenn EMS nicht
+        // vorhanden/aktiv ist (Dietmars Vorgabe, siehe SurplusChargeControl()).
+        // Default false — sicherer Opt-in, kein automatisches Verhalten ohne
+        // Zutun.
+        $this->RegisterPropertyBoolean('EnableSurplusCharging', false);
+        // 0 = automatische Zähler-Auswahl über den MeterHub-Vertrag
+        // (FindGridSurplusW()), sonst gezielt diese MeterHub-Instanz
+        // erzwingen — Rückfall, falls die Automatik keinen/den falschen
+        // Zähler findet (z. B. mehrere realtime-Grid-Zähler gleichzeitig).
+        $this->RegisterPropertyInteger('SurplusMeterID', 0);
+        // Alternative zum MeterHub (Anregung Dietmar, 21.10.2026): Netzleistung direkt aus einer beliebigen
+        // Symcon-Variablen (z. B. per MQTT befüllt). Vorzeichen, Einheit und maximales Alter des Werts sind
+        // einstellbar; ein zu alter Wert pausiert das Überschussladen statt mit einem eingefrorenen Wert
+        // weiterzuladen.
+        $this->RegisterPropertyInteger('SurplusGridVarID', 0);
+        $this->RegisterPropertyString('SurplusGridSign', 'import');   // import = + Bezug / - Einspeisung (wie MeterHub), export = umgekehrt
+        $this->RegisterPropertyString('SurplusGridUnit', 'W');        // W | kW
+        $this->RegisterPropertyInteger('SurplusGridMaxAgeSec', 30);
+        // Anteil des Netz-Überschusses, der dem Speicher vorbehalten bleibt (0-100 %) —
+        // wird VOR der Ampere-Berechnung vom Überschuss abgezogen.
+        $this->RegisterPropertyInteger('StorageSharePercent', 0);
+        // Kapazität des Speichers in kWh (0 = unbekannt/kein Speicher) — nur fürs
+        // Abschätzen der freien Pufferkapazität (GetStorageHeadroomKWh()), der
+        // InverterHub-Contract liefert SOC, aber keine kWh-Kapazität.
+        $this->RegisterPropertyFloat('BatteryCapacityKWh', 0.0);
+        // go-e-exklusiv: RFID-Kartenzähler (Name + Energie je Karte 0–9)
+        // stehen NICHT über Modbus zur Verfügung (offizielle Registertabelle
+        // enthält sie nicht), nur über MQTT (Topics go-eCharger/<Seriennummer>/
+        // c0n…c9n bzw. c0e…c9e). Eigener roher MQTT-Client (CHUB_MqttMiniClient),
+        // daher direkt Host/Port statt einer Symcon-Splitter-Verknüpfung.
+        $this->RegisterPropertyBoolean('MqttCardsEnabled', false);
+        $this->RegisterPropertyString('MqttHost', '');
+        $this->RegisterPropertyInteger('MqttPort', 1883);
+        // Live bestätigt (03.08.2026): Symcons MQTT-Server lehnt CONNECT ohne
+        // Zugangsdaten ab (CONNACK-Fehlercode statt 0). Optional, da nicht
+        // jeder Broker Auth verlangt.
+        $this->RegisterPropertyString('MqttUsername', '');
+        $this->RegisterPropertyString('MqttPassword', '');
+        // go-e erlaubt ein eigenes MQTT-Topic-Präfix statt "go-eCharger/
+        // <Seriennummer>" (API-Key "mtp") — live bestätigt (03.08.2026):
+        // Dietmar nutzt "WB1"/"WB2" statt der Seriennummer. Leer = Standard.
+        $this->RegisterPropertyString('MqttTopicPrefix', '');
+
+        // Treiber-spezifische Gruppen-Properties für ALLE Treiber registrieren
+        // (Create() legt Properties einmalig zum Erstellungszeitpunkt an; der
+        // gewünschte Manufacturer-Wert wird oft erst danach über die Konfiguration
+        // gesetzt, z. B. von der Discovery-Instanz). Ungenutzte Properties anderer
+        // Treiber bleiben einfach unbenutzt — unschädlich.
+        $allProps = [];
+        foreach (self::DRIVERS as $driverClass) {
+            $drv = new $driverClass();
+            foreach ($drv->getOptionalGroups() as $propName => $group) {
+                if (!array_key_exists($propName, $allProps)) {
+                    $allProps[$propName] = $group['default'] ?? true;
+                }
+            }
+        }
+        foreach ($allProps as $name => $default) {
+            $this->RegisterPropertyBoolean($name, $default);
+        }
+
+        $this->RegisterTimer('FastTimer', 0, 'CHUB_Update($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('EnableActionsTimer', 0, 'CHUB_EnableActions($_IPS[\'TARGET\']);');
+    }
+
+    public function ApplyChanges()
+    {
+        parent::ApplyChanges();
+        // Treiber-Merker („Register nicht vorhanden") bei jedem Übernehmen zurücksetzen.
+        $this->WriteAttributeString('DriverFlags', '{}');
+        if (!$this->ReadPropertyBoolean('PlugTimes')) {
+            $this->WriteAttributeInteger('PlugState', -1); // beim erneuten Einschalten neu beobachten
+        }
+
+        // Bestandsinstanz erkennen, BEVOR Variablen angelegt werden: eine neue Instanz hat noch keine Kinder.
+        if (!$this->ReadAttributeBoolean('ArchiveMigrated')) {
+            $this->WriteAttributeBoolean('ArchiveLegacyOn', count(@IPS_GetChildrenIDs($this->InstanceID) ?: []) > 0);
+            $this->WriteAttributeBoolean('ArchiveMigrated', true);
+        }
+
+        $this->CreateProfiles();
+        $this->RegisterVariables();
+        // Vor der Bereitschaftsprüfung (die bei inaktiven/unkonfigurierten
+        // Instanzen früh zurückkehrt) — das Ausblenden gilt unabhängig davon.
+        $this->AdoptDismissFromSibling();
+
+        // Im Symbox-Gateway-Modus ist Host ausgeblendet und damit leer — die
+        // Bereitschaftsprüfung darf ihn dort nicht voraussetzen (Fund
+        // MeterHub/Forum-Beta-Tester, 19.09.2026: Instanz blieb sonst dauerhaft
+        // in Status 104 mit gestoppten Timern, egal ob ein Gateway verbunden war).
+        $hostReady = ($this->ReadPropertyString('ConnectionType') === 'gateway')
+            ? $this->ReadPropertyInteger('BridgeInstanceID') > 0
+            : $this->ReadPropertyString('Host') !== '';
+        if (!$this->ReadPropertyBoolean('Active') || !$hostReady || $this->ReadPropertyString('Manufacturer') === '') {
+            $this->SetTimerInterval('FastTimer', 0);
+            $this->SetTimerInterval('EnableActionsTimer', 0);
+            $this->SetStatus(104);
+            return;
+        }
+
+        $this->SetTimerInterval('FastTimer', $this->ReadPropertyInteger('IntervalFast') * 1000);
+        $this->SetTimerInterval('EnableActionsTimer', 200);
+        $this->SetStatus(102);
+
+        $this->ReleaseForceLockOnHandoff();
+    }
+
+    // Live-Vorfall (31./01.09.2026, gemeldet von der OCPPHub-Sitzung): Dietmar
+    // hatte WB2 gleichzeitig über ChargerHub (Modbus) UND OCPPHub (OCPP)
+    // angebunden. OCPP-seitig sah alles korrekt aus (Authorize/RemoteStart
+    // akzeptiert), die Wallbox blieb aber stundenlang blockiert — SELBST über
+    // die go-e-App ließ sich nichts starten. Ursache gefunden: unser eigenes
+    // ctl_enable=false schreibt beim go-e IMMER FORCE_STATE=1 ("Aus,
+    // erzwungen") statt 0 ("Neutral, Gerät/App/Backend entscheidet") — siehe
+    // GoeChargerDriver::case 'ctl_enable'. FORCE_STATE=1 ist ein
+    // GERÄTESEITIGER Hard-Lock, der laut go-e-Firmware Vorrang vor JEDEM
+    // anderen Kanal hat (App, OCPP-Backend, alles). Schaltet der Nutzer „Wer
+    // regelt diesen Ladepunkt?" von „Niemand" auf einen anderen Wert um (gibt
+    // die Kontrolle an OCPPHub/EMS/Controller ab), bliebe ein zuvor von UNS
+    // gesetztes FORCE_STATE=1 sonst als stiller Hard-Lock liegen — der neue
+    // Regler kann ihn nicht überschreiben, weil er das FORCE_STATE-Register
+    // gar nicht kennt/anfasst. Beim Übergang „Niemand" → irgendwas anderes
+    // daher aktiv auf Neutral zurücksetzen, falls die Freigabe gerade auf
+    // „aus" steht (echtes "wir wollten aktiv blockieren"-Aus geht beim
+    // Übergang ohnehin an den neuen Regler über).
+    private function ReleaseForceLockOnHandoff(): void
+    {
+        $prev = $this->ReadAttributeString('PrevManagedBy');
+        $now  = $this->GetManagedBy();
+        $this->WriteAttributeString('PrevManagedBy', $now);
+
+        if ($prev !== 'none' || $now === 'none') {
+            return; // kein Übergang "wir haben abgegeben" -> nichts zu tun
+        }
+        $enableID = $this->FindVarByIdent('ctl_enable');
+        if (!$enableID || @GetValueBoolean($enableID) !== false) {
+            return; // nicht blockiert (Neutral/An) -> nichts freizugeben
+        }
+        $this->ClearForceLock();
+    }
+
+    // Öffentlich, für externe Regler (z. B. OCPPHub), die denselben go-e
+    // physisch parallel ansteuern: setzt FORCE_STATE aktiv auf 0 (Neutral)
+    // zurück, UNABHÄNGIG von ManagedBy/Active — der aufrufende Kanal weiß am
+    // besten, wann er selbst wiederholt an einem stillen Hard-Lock scheitert
+    // (siehe ReleaseForceLockOnHandoff()-Kommentar für den Hintergrund).
+    // Bei jedem anderen Hersteller ein wirkungsloses No-Op (kein
+    // FORCE_STATE-Äquivalent bekannt) — bewusst kein Fehler, damit ein
+    // Aufrufer nicht erst selbst nach Manufacturer==='goe' fragen muss.
+    // Rückgabewert: true nur, wenn tatsächlich geschrieben wurde.
+    public function ClearForceLock(): bool
+    {
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe') {
+            return false;
+        }
+        if ($this->ReadPropertyString('Host') === '') {
+            return false;
+        }
+        return (bool)@$this->GetModbusClient()->writeMultiple(GoeChargerDriver::REG_FORCE_STATE, [0]);
+    }
+
+    // Öffentlich, für Module wie MeterHubVirtual, die eine doppelt angebundene
+    // Wallbox (dieselbe Hardware gleichzeitig als ChargerHub-Instanz UND z. B.
+    // als OCPPHub-Ladepunkt) erkennen und den Nutzer fragen, welcher Kanal
+    // aktiv bleiben soll (Anfrage MeterHub, 13.09.2026). Deaktivieren stoppt
+    // Messung UND Steuerung vollständig — `Update()`/`RequestAction()` prüfen
+    // beide `Active` bereits als erste Zeile. Eine laufende Ladung wird davon
+    // NICHT unterbrochen (das reine Aufhören zu pollen/schreiben ändert am
+    // physischen Ladezustand nichts) — nur unsere eigene Beobachtung/Steuerung
+    // endet. Beim Deaktivieren zusätzlich: (1) ein zuvor von uns gesetzter
+    // go-e-FORCE_STATE-Hardlock wird freigegeben (sonst genau der WB2-Vorfall
+    // vom 01.09.2026 — der andere Kanal bliebe sonst stumm blockiert), (2)
+    // steht „Wer regelt?" noch auf dem Default „Niemand", wird es auf
+    // „Anderer" gestellt, damit EMS/Dashboard sofort korrekt sehen, dass hier
+    // jemand anderes zuständig ist, statt dass das vergessen wird (siehe der
+    // separat gefundene, zeitweise unbemerkte WB1-Konflikt). Ein bewusst
+    // gesetzter anderer Wert (ems/tibber/…) wird NICHT überschrieben.
+    // Aktivieren setzt NUR Active zurück — „Wer regelt?" bleibt unangetastet,
+    // das Zurückholen der Kontrolle ist eine bewusste Nutzerentscheidung.
+    public function SetActive(bool $Active): string
+    {
+        IPS_SetProperty($this->InstanceID, 'Active', $Active);
+        if (!$Active) {
+            $this->ClearForceLock();
+            if ($this->GetManagedBy() === 'none') {
+                IPS_SetProperty($this->InstanceID, 'ManagedBy', 'other');
+            }
+        }
+        IPS_ApplyChanges($this->InstanceID);
+        return $Active
+            ? '✅ Aktiviert — Kommunikation läuft wieder.'
+            : '✅ Deaktiviert — keine Messung/Steuerung mehr, eine etwaige go-e-Zwangs-Aus-Sperre wurde freigegeben.';
+    }
+
+    // Wird 200 ms nach ApplyChanges einmalig aufgerufen (Muster wie
+    // InverterHub) — setzt die Custom Action, die Ladefreigabe/Stromlimit
+    // etc. in der Konsole bedienbar macht.
+    public function EnableActions()
+    {
+        $this->SetTimerInterval('EnableActionsTimer', 0);
+        $this->SetControlActions();
+    }
+
+    private function SetControlActions()
+    {
+        $driver = $this->GetDriver();
+        // Zweiter Parameter von IPS_SetVariableCustomAction ist keine
+        // Instanz-ID, sondern laut Doku 0 = Standardaktion aktivieren,
+        // 1 = deaktivieren, >1 = konkrete Skript-ID. Die zuvor übergebene
+        // Instanz-ID wurde als (nicht existente) Skript-ID interpretiert,
+        // daher "Skript #<InstanceID> existiert nicht".
+        //
+        // Vorführmodus: 1 (deaktivieren) statt 0 — die Variable bleibt
+        // sichtbar (Ist-Wert lesbar), aber ohne Schalter/Schieberegler in der
+        // Konsole/WebFront. Läuft über BEIDE Var-Quellen (Basis- UND
+        // optionale Gruppen), da RegisterVar() die Aktion für Basis-Idents
+        // nur EINMALIG bei Neuanlage bindet (siehe dort) — ein späteres
+        // Umschalten von DemoMode träfe Basis-Idents sonst nie.
+        //
+        // WICHTIG (EMS-Korrektur, 13.09.2026): `duplicateOf` betrifft NUR die
+        // Zählung (Summen/Sitzungen/Leistung), nicht das Schreibrecht — wer
+        // ans Gerät schreiben darf, entscheidet weiterhin ausschließlich
+        // `managedBy`. Ein Ladepunkt kann also gleichzeitig als Dublette
+        // markiert UND der aktive Regler sein (Beispiel Dietmar: WB1 zählt
+        // künftig über OCPPHub, geregelt wird sie aber weiter von uns,
+        // managedBy hier „none"). `duplicateOf` daher bewusst NICHT in diese
+        // Aktionsbindung einbezogen — ursprünglich hier verdrahtet, dann
+        // zurückgebaut, als klar wurde, dass das WB1 ihren einzigen Regler
+        // genommen hätte.
+        $demo = $this->ReadPropertyBoolean('DemoMode');
+        $action = $demo ? 1 : 0;
+        foreach ($driver->getBaseVars() as $v) {
+            if ($v[5] === 'control') {
+                $vid = $this->FindVarByIdent($v[0]);
+                if ($vid) {
+                    IPS_SetVariableCustomAction($vid, $action);
+                }
+            }
+        }
+        foreach ($driver->getOptionalGroups() as $group) {
+            foreach ($group['vars'] as $v) {
+                if ($v[5] === 'control') {
+                    $vid = $this->FindVarByIdent($v[0]);
+                    if ($vid) {
+                        IPS_SetVariableCustomAction($vid, $action);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sichtbarer Wrapper um Update() für den Formular-Button (SUITE.md
+    // "Sichtbare Rückmeldung bei jeder Aktion", verbindlich seit 20.08.2026)
+    // — Update() selbst bleibt der reine Timer-Callback ohne UI-Nebenwirkung,
+    // damit nicht bei jedem FastTimer-Tick unnötig ein UpdateFormField läuft.
+    public function TestConnection()
+    {
+        if (!$this->ReadPropertyBoolean('Active')) {
+            @$this->UpdateFormField('ConnTestResult', 'caption', '⚠️ Kommunikation ist deaktiviert — bitte oben aktivieren.');
+            return;
+        }
+        $this->Update();
+        $ok = (bool)$this->GetVarValue('connected');
+        $ts = date('H:i:s');
+        if ($ok) {
+            @$this->UpdateFormField('ConnTestResult', 'caption', "✅ Verbindung erfolgreich, Daten gelesen ({$ts} Uhr).");
+        } else {
+            $hint = 'IP-Adresse/Port/Unit-ID prüfen.';
+            if ($this->ReadPropertyString('ConnectionType') === 'gateway') {
+                $hints = [
+                    'no_bridge'       => 'Keine Brücke ausgewählt — Gateway wählen, „Brücke anlegen und verbinden" klicken, dann „Übernehmen".',
+                    'not_connected'   => 'Die Brücke ist mit keinem ModBus-Gateway verbunden (🔌-Symbol am Kopf der Brücken-Instanz).',
+                    'parent_inactive' => 'Das ModBus-Gateway ist nicht aktiv — Gateway-Instanz und Symbox-RS485-Port prüfen.',
+                    'no_response'     => 'Keine Antwort über das Gateway — Unit-ID („DeviceID") am Gateway und Verkabelung prüfen.',
+                ];
+                $reason = $this->ReadAttributeString('LastBridgeError');
+                $hint = $hints[$reason] ?? 'Brücke/Gateway prüfen (Meldungen-Log, Einträge mit „Symbox-Gateway").';
+            }
+            @$this->UpdateFormField('ConnTestResult', 'caption', "❌ Verbindung fehlgeschlagen ({$ts} Uhr) — {$hint}");
+        }
+    }
+
+    public function Update()
+    {
+        // Der FastTimer kann bereits feuern, bevor der Kernel beim Systemstart
+        // ALLE Instanzen fertig angebunden hat — jeder ReadPropertyX()-Aufruf
+        // wirft dann "InstanceInterface is not available"
+        // ("InstanceManager: Kann Schnittstellen-Instanz nicht erstellen").
+        // Live gefunden (31.08.2026, OCPPHub-Sitzung beim Systemlog-Review,
+        // zeitgleich bei MeterHub/MigrationsHub beobachtet — reines
+        // Kernel-Boot-Timing, keine ChargerHub-spezifische Ursache). Der
+        // Timer feuert kurz danach erneut, sobald der Kernel bereit ist —
+        // einfach abbrechen, bevor irgendeine Property gelesen wird.
+        if (IPS_GetKernelRunlevel() !== KR_READY) {
+            return;
+        }
+        if (!$this->ReadPropertyBoolean('Active')) {
+            return;
+        }
+        $this->GetDriver()->readValues($this->GetModbusClient(), $this);
+        if ($this->ReadPropertyString('Manufacturer') === 'goe' && $this->ReadPropertyBoolean('MqttCardsEnabled')) {
+            // Die Seriennummer (fürs Topic nötig) ist erst NACH dem ersten
+            // erfolgreichen Modbus-Lesevorgang bekannt — daher hier statt in
+            // ApplyChanges/direkt am Timer.
+            $this->PollMqttCards();
+        }
+        // Endet die Ladesitzung (Fahrzeug abgesteckt), verliert der zuletzt
+        // per SetVehicleName() gesetzte Name seine Gültigkeit — sonst zeigt
+        // die Instanz nach einem Fahrzeugwechsel weiter den alten Namen an.
+        // Nur aktiv löschen, wenn 'vehicle_plugged' beim jeweiligen Treiber
+        // überhaupt existiert und WIRKLICH false ist (nicht bei unbekanntem
+        // Zustand, z. B. Alfen/Heidelberg ohne dieses Ident).
+        $plugged = $this->GetVarValue('vehicle_plugged');
+        if ($plugged === false && $this->GetVarValue('vehicle_name') !== '') {
+            $this->SetVarStr('vehicle_name', '');
+        }
+        $this->SurplusChargeControl();
+        $this->CheckDuplicateManagedByConflict();
+        $this->UpdateControlState();
+    }
+
+    // Sicherheitsnetz zum weichen Dubletten-Marker (EMS-Auftrag, 13.09.2026,
+    // Regel 9f): duplicateOf entscheidet bewusst NICHT über das Schreibrecht
+    // (siehe RequestAction()/SurplusChargeControl()) — dadurch KANN eine als
+    // Dublette markierte Instanz gleichzeitig aktiver Regler sein (Dietmars
+    // WB1: zählt über OCPPHub, geregelt von uns). Das kann aber auch
+    // schiefgehen: markiert der Nutzer versehentlich eine Instanz als
+    // Dublette, deren Ziel GAR NICHT regelt, haben am Ende BEIDE Seiten
+    // managedBy none/ems — genau der Zwei-Regler-Fall vom 01.09.2026, nur
+    // ohne dass es jemand bemerkt. Diese Prüfung macht das nur SICHTBAR
+    // (Statusvariable + Instanzstatus 206), sperrt aber nichts automatisch —
+    // die Entscheidung bleibt beim Nutzer ("Wer regelt?" auf "Anderer"
+    // stellen).
+    private function CheckDuplicateManagedByConflict(): void
+    {
+        $dupID = $this->FindVarByIdent('dup_warning');
+        $dup = $this->GetDuplicateOf();
+        if ($dup === null) {
+            // Kein Marker gesetzt -> kein Warnstatus möglich, ggf. einen
+            // vorherigen wieder aufräumen (Instanz war z. B. mal markiert).
+            if ((int)(@IPS_GetInstance($this->InstanceID)['InstanceStatus'] ?? 0) === 206) {
+                $this->SetStatus(102);
+            }
+            return;
+        }
+        $ownManaged = $this->GetManagedBy();
+        $targetManaged = $this->DuplicateTargetManaged($dup);
+        $conflict = in_array($ownManaged, ['none', 'ems'], true)
+            && in_array($targetManaged, ['none', 'ems'], true);
+        if ($conflict) {
+            $this->SetStatus(206);
+            if ($dupID) {
+                $this->SetVarStr('dup_warning', '⚠️ Zwei Regler an einer Wallbox — bei einer Anbindung „Wer regelt?" auf „Anderer" stellen.');
+            }
+        } else {
+            $this->SetStatus(102);
+            if ($dupID) {
+                $this->SetVarStr('dup_warning', '');
+            }
+        }
+    }
+
+    // Eigenständiges Überschussladen — NUR Fallback, wenn EMS nicht regelt
+    // (Dietmars Vorgabe, 26.08.2026, mit EMS/MeterHub abgestimmt): EMS hat
+    // immer Vorrang, sobald es läuft. ChargerHub übernimmt selbst nur, wenn
+    // alle folgenden Bedingungen gelten — sonst tut diese Methode nichts:
+    // - explizit per Property freigeschaltet (sicherer Opt-in, kein
+    //   automatisches Verhalten ohne Zutun),
+    // - kein anderer Regler hat laut managedBy die Hoheit,
+    // - EMS ist nicht installiert oder nicht aktiv (IsEmsActive()),
+    // - GENAU EINE aktive ChargerHub-Instanz existiert insgesamt — bei
+    //   mehreren Wallboxen würde jede für sich denselben Überschuss zu
+    //   nutzen versuchen (Koordination mehrerer Ladepunkte bleibt EMS
+    //   vorbehalten, das hier ist bewusst kein Ersatz dafür),
+    // - ein MeterHub-Zähler am Netzanschlusspunkt liefert einen
+    //   Echtzeit-Überschusswert (FindGridSurplusW()).
+    // Setzt die Statusvariable "Überschussladen" NUR, wenn sie existiert
+    // (wird ausschließlich bei aktivierter EnableSurplusCharging registriert,
+    // siehe RegisterVariables()) — sichtbare Rückmeldung, ob/warum die
+    // Eigenregelung gerade (nicht) eingreift, statt stillem Nichtstun.
+    private function SetSurplusStatus(string $text, bool $regulating = false): void
+    {
+        $this->WriteAttributeBoolean('SurplusRegulating', $regulating);
+        if ($this->FindVarByIdent('surplus_status')) {
+            $this->SetVarStr('surplus_status', $text);
+        }
+    }
+
+    // Regelungsstatus: WER regelt diesen Ladepunkt gerade und WARUM (Vertrag 1.9, gleiche Begriffe wie
+    // EMS_GetCurrentDecision: source/reason/since). owner: none | ems | surplus | goe-controller | tibber |
+    // p14a | marketer | other. Reine Auskunft, schaltet nichts. Der Grund ist Klartext für Menschen.
+    private function ControlState(): array
+    {
+        $mb = $this->GetManagedBy();
+        if (!in_array($mb, ['none', 'ems'], true)) {
+            return ['owner' => $mb, 'source' => 'einstellung',
+                'reason' => 'Regler-Hoheit im Formular auf „' . $mb . '“ gestellt — ChargerHub und EMS schreiben nicht.'];
+        }
+        if ($mb === 'ems') {
+            return ['owner' => 'ems', 'source' => 'einstellung',
+                'reason' => 'Regler-Hoheit im Formular auf „EMS“ gestellt — das EMS steuert die Ladefreigabe.'];
+        }
+        if ($this->IsEmsActive()) {
+            return ['owner' => 'ems', 'source' => 'ems', 'reason' => 'EMS ist aktiv und hat Vorrang vor der eigenen Regelung.'];
+        }
+        if ($this->ReadPropertyBoolean('EnableSurplusCharging')) {
+            $text = $this->FindVarByIdent('surplus_status') ? (string)$this->GetVarValue('surplus_status') : '';
+            if ($this->ReadAttributeBoolean('SurplusRegulating')) {
+                return ['owner' => 'surplus', 'source' => 'ueberschuss', 'reason' => $text];
+            }
+            return ['owner' => 'none', 'source' => 'ueberschuss',
+                'reason' => 'Überschussladen eingeschaltet, greift gerade nicht ein' . ($text !== '' ? ': ' . $text : '.')];
+        }
+        return ['owner' => 'none', 'source' => 'manuell', 'reason' => 'Niemand regelt — manuelle Bedienung.'];
+    }
+
+    // Hält Besitzerwechsel-Zeitpunkt (Attribut) und die Anzeigevariable `control_status` aktuell. Wird
+    // am Ende jedes Lesezyklus aufgerufen.
+    private function UpdateControlState(): void
+    {
+        // „Lädt“: Ladeleistung über 100 W (unterscheidet „freigegeben“ von „es fließt wirklich Strom“, Vertrag 1.10).
+        $pw = $this->GetVarValue('power');
+        if ($pw !== null && $this->FindVarByIdent('charging_active')) {
+            $this->SetVarBool('charging_active', (float)$pw > 100.0);
+        }
+        $until = $this->ReadAttributeInteger('PlanValidUntil');
+        if ($until > 0 && time() > $until) {
+            $this->WriteAttributeInteger('PlanValidUntil', 0);
+            $this->SetVarStr('control_plan', '');
+        }
+        $st = $this->ControlState();
+        if ($this->ReadAttributeString('ControlOwnerKey') !== $st['owner']) {
+            $this->WriteAttributeString('ControlOwnerKey', $st['owner']);
+            $this->WriteAttributeInteger('ControlSince', time());
+        }
+        $labels = ['none' => 'Niemand', 'ems' => 'EMS', 'surplus' => 'Überschussladen (ChargerHub)',
+            'goe-controller' => 'go-e Controller', 'tibber' => 'Tibber', 'p14a' => '§14a',
+            'marketer' => 'Direktvermarkter', 'other' => 'Anderer Regler'];
+        $since = $this->ReadAttributeInteger('ControlSince');
+        $text = '🎛️ ' . ($labels[$st['owner']] ?? $st['owner']) . ' — ' . $st['reason']
+            . ($since > 0 ? ' (seit ' . date('d.m. H:i', $since) . ')' : '');
+        if ($this->FindVarByIdent('control_status') && $this->GetVarValue('control_status') !== $text) {
+            $this->SetVarStr('control_status', $text);
+        }
+    }
+
+    private function SurplusChargeControl(): void
+    {
+        if (!$this->ReadPropertyBoolean('EnableSurplusCharging')) {
+            return;
+        }
+        if ($this->GetManagedBy() !== 'none') {
+            $this->SetSurplusStatus('⏸️ Inaktiv — „Wer regelt?" steht nicht auf „Niemand".');
+            return;
+        }
+        if ($this->IsEmsActive()) {
+            $this->SetSurplusStatus('⏸️ Inaktiv — EMS ist aktiv und hat Vorrang.');
+            return;
+        }
+        $contendingInstances = 1; // sich selbst mitzählen
+        foreach (@IPS_GetInstanceListByModuleID('{9256C34E-5CFD-4F37-8BFE-E65390EBB37C}') ?: [] as $iid) {
+            if ($iid === $this->InstanceID) {
+                continue;
+            }
+            if (@IPS_GetProperty($iid, 'Active') !== true) {
+                continue;
+            }
+            // Eine andere aktive Wallbox blockiert nur, wenn dort auch wirklich ein Fahrzeug hängt —
+            // sonst gibt es keine Konkurrenz um den Überschuss.
+            $vid = $this->FindIdentRecursive($iid, 'vehicle_plugged');
+            if ($vid === false || @GetValueBoolean($vid) === true) {
+                $contendingInstances++;
+            }
+        }
+        if ($contendingInstances !== 1) {
+            $this->SetSurplusStatus("⏸️ Inaktiv — $contendingInstances ChargerHub-Instanzen mit angestecktem Fahrzeug gefunden, es darf genau eine sein (sonst bitte EMS für die Koordination nutzen).");
+            return;
+        }
+        if ($this->GetVarValue('vehicle_plugged') === false) {
+            $this->SetSurplusStatus('⏸️ Inaktiv — kein Fahrzeug angesteckt.');
+            return;
+        }
+        $gridSurplusW = $this->FindGridSurplusW();
+        if ($gridSurplusW === null) {
+            // Eigene Netzvariable eingetragen, aber veraltet/ungültig: FAIL-SAFE. Ohne aktuellen Netzwert
+            // weiß die Regelung nicht, ob die Ladung aus Überschuss oder aus dem Netz gespeist wird: eine
+            // laufende Ladung wird gestoppt (sonst würde sie mit dem zuletzt berechneten Strom weiterlaufen,
+            // wie bei einem eingefrorenen Messwert). Sie startet wieder, sobald aktuelle Werte kommen.
+            $gv = $this->GridVariableSurplus();
+            if ($gv['configured']) {
+                $stopped = false;
+                if ((bool)$this->GetVarValue('ctl_enable')) {
+                    $this->RequestAction('ctl_enable', false);
+                    $stopped = true;
+                }
+                $this->SetSurplusStatus('⚠️ Netzleistung (Variable #' . $gv['vid'] . ') veraltet oder ungültig' . ($stopped ? ' — Ladung gestoppt' : '') . ', bis wieder aktuelle Werte kommen.');
+                return;
+            }
+            $this->SetSurplusStatus('⚠️ Kein passender MeterHub-Zähler am Netzanschlusspunkt gefunden (function=grid, latency=realtime) — bitte unten manuell auswählen, falls einer vorhanden ist.');
+            return;
+        }
+        // Der Wechselrichter bedient erst die Wallbox (ganz normaler AC-Verbraucher aus
+        // seiner Sicht) und lädt DANACH den Speicher mit dem Rest — was die Batterie
+        // gerade zieht, würde bei mehr Wallbox-Strom einfach automatisch weniger, nicht
+        // zusätzlicher Netzbezug. Das taucht am NAP-Zähler nie auf, muss also dazu.
+        $batteryChargeW = $this->GetBatteryChargeW();
+        // Was WIR selbst gerade laden, steckt schon im Netzzähler drin (zieht den
+        // gemessenen Überschuss künstlich runter) — muss zurückaddiert werden, sonst
+        // sieht die Regelung bei jeder Erhöhung sofort "weniger Überschuss" und
+        // schwingt sich selbst hoch und runter (live beobachtet, Dietmar 27.08.2026:
+        // „vermutlich auch deshalb weil Du bei der Überschussberechnung Dich selbst
+        // vergisst"). `power` ist der treiberübergreifende Ist-Ladeleistungs-Ident.
+        $ownPowerW = (float)$this->GetVarValue('power');
+        $surplusW = $gridSurplusW + $batteryChargeW + $ownPowerW;
+
+        // Erst der Speicher, dann die Wallbox: der eingestellte Anteil bleibt dem
+        // Speicher vorbehalten und fließt nicht in die Ampere-Berechnung ein.
+        $storageShare = max(0, min(100, $this->ReadPropertyInteger('StorageSharePercent')));
+        $storageW = $surplusW * ($storageShare / 100.0);
+        $surplusW -= $storageW;
+        $sourceParts = ['Netz ' . round($gridSurplusW) . ' W'];
+        if ($batteryChargeW > 0) {
+            $sourceParts[] = 'Speicher ' . round($batteryChargeW) . ' W';
+        }
+        if ($ownPowerW > 0) {
+            $sourceParts[] = 'eigene Ladung ' . round($ownPowerW) . ' W';
+        }
+        $sourceNote = (count($sourceParts) > 1) ? ' (' . implode(' + ', $sourceParts) . ')' : '';
+
+        $enabled = (bool)$this->GetVarValue('ctl_enable');
+        // Phasenumschaltung ist kein go-e-Spezifikum — jede Wallbox mit dieser Fähigkeit
+        // bekommt hier dieselbe Logik, solange sie den Ident bereitstellt.
+        $canSwitchPhases = (bool)$this->FindVarByIdent('ctl_phase_mode');
+        $currentPhases = $canSwitchPhases && $this->GetVarValue('ctl_phase_mode') === 1 ? 1 : 3;
+        $amp3 = (int)floor($surplusW / (3 * 230.0));
+
+        if (!$canSwitchPhases) {
+            $phases = 3;
+        } elseif (!$enabled) {
+            // Ladebeginn: erst 3-phasig versuchen, bei zu wenig Überschuss auf 1-phasig
+            // umschalten — senkt die Start-Schwelle von 3×230×6=4140 W auf 230×6=1380 W.
+            $phases = ($amp3 >= self::MIN_CURRENT) ? 3 : 1;
+        } else {
+            // Während der laufenden Ladung selbstständig hoch-/runterschalten (Dietmar,
+            // 27.08.2026: tagsüber 3-phasig, Richtung Abend automatisch zurück auf
+            // 1-phasig, um die letzten Sonnenstrahlen noch zu nutzen — gilt für jede
+            // phasenumschaltfähige Wallbox, nicht nur go-e). Hysterese (+2 A Marge fürs
+            // Hochschalten) UND ein Beobachtungszähler (self::PHASE_SWITCH_STABLE_POLLS
+            // aufeinanderfolgende Polls mit derselben Tendenz) verhindern ein Pendeln
+            // direkt an der Schaltschwelle — jeder Wechsel bedeutet einen kurzen
+            // Relais-Schaltvorgang, daher nicht schon bei der ersten Schwankung reagieren
+            // (Dietmar, live beobachtet: „Wäre es nicht ratsam alles erstmal zu
+            // beobachten, bevor man sofort schaltet?").
+            if ($currentPhases === 1 && $amp3 >= self::MIN_CURRENT + 2) {
+                $wantPhases = 3;
+            } elseif ($currentPhases === 3 && $amp3 < self::MIN_CURRENT) {
+                $wantPhases = 1;
+            } else {
+                $wantPhases = $currentPhases;
+            }
+            if ($wantPhases === $currentPhases) {
+                $this->WriteAttributeInteger('PhaseSwitchStableCount', 0);
+                $phases = $currentPhases;
+            } else {
+                $stableCount = $this->ReadAttributeInteger('PhaseSwitchStableTarget') === $wantPhases
+                    ? $this->ReadAttributeInteger('PhaseSwitchStableCount') + 1
+                    : 1;
+                $this->WriteAttributeInteger('PhaseSwitchStableTarget', $wantPhases);
+                $this->WriteAttributeInteger('PhaseSwitchStableCount', $stableCount);
+                if ($stableCount >= $this->GetPhaseSwitchStablePolls()) {
+                    $phases = $wantPhases;
+                    $this->WriteAttributeInteger('PhaseSwitchStableCount', 0);
+                } else {
+                    $phases = $currentPhases; // noch am Beobachten, noch nicht schalten
+                }
+            }
+        }
+        if ($canSwitchPhases && $phases !== $currentPhases) {
+            $this->RequestAction('ctl_phase_mode', $phases === 1 ? 1 : 2);
+        }
+        $amp = (int)floor($surplusW / ($phases * 230.0));
+        $amp = max(0, min($this->GetMaxCurrentA(), $amp));
+
+        if ($amp < self::MIN_CURRENT) {
+            if ($enabled) {
+                $this->RequestAction('ctl_enable', false);
+            }
+            $this->SetSurplusStatus('🔌 Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote (nach $storageShare % Speicheranteil) reicht nicht fürs Minimum ($phases-phasig), Ladefreigabe aus.", true);
+            return;
+        }
+        if (!$enabled) {
+            $this->RequestAction('ctl_enable', true);
+        }
+        $current = (int)$this->GetVarValue('ctl_curr_limit');
+        // Mindestabstand 1 A, um nicht bei jedem Poll wegen Messrauschen neu
+        // zu schreiben (unnötiger Modbus-Traffic, Relais-Verschleiß bei
+        // ständigem Nachregeln).
+        if (abs($current - $amp) >= 1) {
+            $this->RequestAction('ctl_curr_limit', $amp);
+        }
+        $storageNote = $storageShare > 0 ? " (nach $storageShare % Speicheranteil, davon " . round($storageW) . ' W für Speicher)' : '';
+        $this->SetSurplusStatus('☀️ Aktiv (' . $this->SurplusMeterLabel() . ') — Überschuss ' . round($surplusW) . " W$sourceNote$storageNote → $amp A ($phases-phasig).", true);
+    }
+
+    // Plantext von außen: Ein Planer (z. B. das EMS) meldet, was mit dieser Wallbox als Nächstes geschehen soll
+    // („Heute 02:15 bis 04:30 laden, Ziel 12 kWh bis 07:00“). Der ChargerHub zeigt ihn nur an und regelt
+    // danach NICHT — es ist reine Auskunft, genau wie SetVehicleName(). $validUntil (Unix-Zeit, 0 = ohne
+    // Ablauf): danach wird der Text gelöscht, damit nach Ausfall des Planers kein veralteter Plan stehen
+    // bleibt. Leerer Text löscht sofort.
+    public function SetPlanInfo(string $text, int $validUntil = 0)
+    {
+        $this->WriteAttributeInteger('PlanValidUntil', trim($text) === '' ? 0 : max(0, $validUntil));
+        $this->SetVarStr('control_plan', trim($text));
+    }
+
+    // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
+    // (Tessie oder ein beliebiges anderes, bei jedem Nutzer mit beliebigen
+    // Fahrzeugen/Wallboxen) — ChargerHub kennt weder Fahrzeugnamen noch
+    // -Marken und rät auch nicht per GPS/Zeitfenster, WELCHES Fahrzeug hier
+    // hängt (das wäre eine Zuständigkeit, die woanders hingehört, siehe
+    // CLAUDE.md „Kein Modul darf ein anderes voraussetzen"). Ein aufrufendes
+    // Modul, das Fahrzeug UND Wallbox gleichzeitig sieht (z. B. per
+    // Ladestrom-Abgleich zwischen CHUB_GetFunctions()/powerID und der
+    // eigenen Fahrzeug-Telemetrie), trägt hier nur das Ergebnis ein.
+    public function SetVehicleName(string $name)
+    {
+        $this->SetVarStr('vehicle_name', $name);
+    }
+
+    // Eigener, roher MQTT-Poll — kein Symcon-Splitter/Parent-Instanz nötig,
+    // exakt dasselbe Prinzip wie GetModbusClient()/CHUB_ModbusTcpClient.
+    private function PollMqttCards(): void
+    {
+        $host = trim($this->ReadPropertyString('MqttHost'));
+        $serial = trim((string)$this->GetVarValue('dev_serial'));
+        if ($host === '' || $serial === '') {
+            return;
+        }
+        $client = new CHUB_MqttMiniClient($host, $this->ReadPropertyInteger('MqttPort'));
+        $clientId = 'chub_' . $this->InstanceID;
+        // go-e erlaubt ein eigenes Topic-Präfix statt "go-eCharger/
+        // <Seriennummer>" (API-Key "mtp") — leer = Standard-Präfix.
+        $prefix = trim($this->ReadPropertyString('MqttTopicPrefix'));
+        $topicBase = ($prefix !== '') ? $prefix : ('go-eCharger/' . $serial);
+        // MQTT-Wildcards gelten nur je ganzer Ebene ("+" allein, nicht "c+") —
+        // daher hier breiter abonniert und im Loop unten per Regex auf
+        // c0..c9 + n/e gefiltert.
+        $messages = $client->fetch(
+            [$topicBase . '/+'],
+            $clientId,
+            $this->ReadPropertyString('MqttUsername'),
+            $this->ReadPropertyString('MqttPassword')
+        );
+        if ($messages === [] && $client->getLastError() !== '') {
+            $this->LogMessage('MQTT: ' . $client->getLastError(), KL_WARNING);
+            return;
+        }
+        foreach ($messages as $msg) {
+            // Topic: go-eCharger/<Seriennummer>/c<N><n|e> — die Seriennummer
+            // steht bereits im Subscribe-Filter fest, hier nur noch Index+Feld.
+            if (!preg_match('#/c([0-9])([ne])$#', $msg['topic'], $m)) {
+                continue;
+            }
+            $idx = (int)$m[1];
+            $payload = json_decode($msg['payload']);
+            if ($m[2] === 'n') {
+                $this->SetVarStr("card{$idx}_name", is_string($payload) ? $payload : $msg['payload']);
+            } else {
+                // c0e…c9e: Energie in Wh (uint64) laut offizieller go-e-API-Doku.
+                $wh = is_numeric($payload) ? (float)$payload : 0.0;
+                $this->SetVarFloat("card{$idx}_energy", $wh / 1000.0);
+            }
+        }
+    }
+
+    public function RequestAction($Ident, $Value)
+    {
+        // Formular-Ereignis (kein Gerätebefehl): Felder je Verbindungsweg live umschalten.
+        // Symcon wertet 'visible'-Ausdrücke mit $Variable nicht zuverlässig aus (Fund Mstaudi).
+        if ($Ident === 'DuplicateOfKeyChanged') {
+            // Auswahlfeld: Zeile folgt der Auswahl (SUITE.md 21.09.2026) — zeigt die noch nicht
+            // übernommene Auswahl, nicht die gespeicherte Property.
+            $this->UpdateFormField('LinkDuplicateStatus', 'caption', $this->DuplicateLine((string)$Value));
+            return;
+        }
+        // Bedienung direkt im Formular (Panel „Bedienung“): wirkt sofort am Gerät, gleicher Weg wie die
+        // Steuervariablen im WebFront — keine Eigenschaft, kein „Übernehmen“ nötig.
+        $formControls = ['FormCtlEnable' => 'ctl_enable', 'FormCtlCurrent' => 'ctl_curr_limit', 'FormCtlPhase' => 'ctl_phase_mode'];
+        if (isset($formControls[$Ident])) {
+            $target = $formControls[$Ident];
+            $Value = ($target === 'ctl_enable') ? (bool)$Value : (int)$Value;
+            if (!$this->ReadPropertyBoolean('Active') || $this->ReadPropertyBoolean('DemoMode')) {
+                $this->UpdateFormField('ControlPanelFeedback', 'caption', '⚠️ Nicht ausgeführt: die Instanz ist inaktiv oder im Vorführmodus.');
+                return;
+            }
+            $this->RequestAction($target, $Value);
+            // writeControl setzt die Variable nur bei erfolgreichem Schreiben (siehe unten): Abgleich = Rückmeldung.
+            $now = $this->GetVarValue($target);
+            $okWrite = ($target === 'ctl_enable') ? ((bool)$now === $Value) : ((int)$now === $Value);
+            $names = ['ctl_enable' => 'Ladefreigabe', 'ctl_curr_limit' => 'Stromlimit', 'ctl_phase_mode' => 'Phasenumschaltung'];
+            $shown = ($target === 'ctl_enable') ? ($Value ? 'An' : 'Aus') : (string)$Value . ($target === 'ctl_curr_limit' ? ' A' : '');
+            $this->UpdateFormField('ControlPanelFeedback', 'caption', $okWrite
+                ? '✅ ' . $names[$target] . ': ' . $shown . ' gesetzt.'
+                : '⚠️ ' . $names[$target] . ' konnte nicht gesetzt werden (Gerät antwortet nicht oder lehnt den Wert ab), Einzelheiten im Meldungen-Log.');
+            $this->UpdateFormField('ControlPanelHint', 'caption', $this->ControlPanelHint());
+            return;
+        }
+        if ($Ident === 'ManufacturerChanged') {
+            $this->UpdateFormField('ChargePointNo', 'visible', (string)$Value === 'charx');
+            $this->UpdateFormField('DaheimEnableVia', 'visible', (string)$Value === 'daheimlader');
+            return;
+        }
+        if ($Ident === 'ConnectionTypeChanged') {
+            $direct = ((string)$Value !== 'gateway');
+            foreach (['Host', 'Port', 'UnitId', 'DirectHintLabel'] as $f) {
+                $this->UpdateFormField($f, 'visible', $direct);
+            }
+            foreach (['GatewayPick', 'CreateBridgeButton', 'BridgeInstanceID', 'GatewayHintLabel', 'GatewayWarnLabel'] as $f) {
+                $this->UpdateFormField($f, 'visible', !$direct);
+            }
+            return;
+        }
+        if (!$this->ReadPropertyBoolean('Active')) {
+            return;
+        }
+        // Zweite Verteidigungslinie zum Vorführmodus (siehe SetControlActions/
+        // DemoMode-Property): die deaktivierte Aktionsbindung verhindert
+        // Schalter/Schieberegler in der Konsole/WebFront, aber ein direkter
+        // RequestAction()-Aufruf (Skript, fremdes Modul, API) würde das
+        // umgehen — hier zusätzlich serverseitig zurückweisen.
+        if ($this->ReadPropertyBoolean('DemoMode')) {
+            $this->LogMessage("Vorführmodus: Steuerbefehl '$Ident' zurückgewiesen.", KL_WARNING);
+            return;
+        }
+        // `duplicateOf` betrifft NUR die Zählung, NICHT das Schreibrecht
+        // (EMS-Korrektur, 13.09.2026, nach OCPPHub-Einwand) — wer ans Gerät
+        // schreiben darf, entscheidet ausschließlich `managedBy`. Ein
+        // ursprünglich hier verdrahteter Reject wurde deshalb zurückgebaut:
+        // Dietmars WB1 zählt künftig über OCPPHub (dort als Dublette
+        // markiert), wird aber weiterhin von UNS geregelt (managedBy hier
+        // „none") — eine Schreibsperre an `duplicateOf` hätte WB1 ihren
+        // einzigen Regler genommen.
+        $mb = $this->GetModbusClient();
+        $this->GetDriver()->writeControl($mb, $this, $Ident, $Value);
+        // writeControl setzt den Variablenwert nur bei erfolgreichem Schreiben
+        // (siehe Treiber) — schlägt der Modbus-Zugriff fehl, bleibt der Wert in
+        // der Konsole unverändert (springt nach dem nächsten Poll sichtbar
+        // zurück) und blieb bisher ohne jede Fehlermeldung. Jetzt sichtbar im
+        // Meldungen-Log, Eintrag „Schreibfehler …“ dieser Instanz.
+        if ($mb->lastWriteError !== '') {
+            $this->LogMessage('Schreibfehler ' . $Ident . ': ' . $mb->lastWriteError, KL_ERROR);
+        }
+        if ($this->ReadPropertyBoolean('WriteLog') && !empty($mb->writeTrace)) {
+            foreach ($mb->writeTrace as $line) {
+                $this->LogMessage('Schreibprotokoll ' . $Ident . ': ' . $line, KL_MESSAGE);
+            }
+        }
+    }
+
+    // Vertrag für Partnermodule (EMS, Kacheln) — Muster wie MHUB_GetFunctions.
+    // Immer hinter function_exists('CHUB_GetFunctions') beim Aufrufer, siehe
+    // CLAUDE.md. Der Schreib-Teil (chargeEnableID/currentLimitID) ist ein
+    // erster Vorschlag und noch mit der EMS-Sitzung abzustimmen, bevor er als
+    // stabiler Vertrag gilt — die Steuer-IDs sind fürs EMS bestimmt, nicht für
+    // Anzeigemodule.
+    // Aktueller Netz-Überschuss in Watt (positiv = Einspeisung/Überschuss,
+    // 0 = kein Überschuss), oder null, wenn kein geeigneter Zähler gefunden
+    // wurde. Verbund-Vertrag mit MeterHub abgestimmt (26.08.2026):
+    // - NIE über den Instanznamen gehen (frei wählbar, siehe eigene
+    //   Namens-Fallen-Erfahrung bei MigrationsHub) — nur über
+    //   MHUB_GetFunctions()['assignments'][*]['function'] === 'grid'.
+    // - 'latency' ('realtime'/'delayed') und 'authority' ('billing'/
+    //   'auxiliary') sind ORTHOGONAL — 'billing' heißt nur eichrechtlich
+    //   verbindlich, NICHT aktuell. Für eine Regelschleife zählt
+    //   ausschließlich 'realtime'; unter mehreren realtime-Treffern
+    //   zusätzlich 'billing' als Tiebreaker.
+    // - Vorzeichen bei MeterHub: + = Bezug, − = Einspeisung — daher
+    //   max(0, -powerValue), nicht der Rohwert.
+    // Alle Zähler-Instanzen, die ChargerHub als Netzzähler-Quelle befragen darf: MeterHub (MHUB_) und MeterHub
+    // „Virtueller Zähler“ (MHUBV_), je mit demselben Vertrag; nur wenn die jeweilige Funktion existiert.
+    // Rückgabe: Liste von [instanceID, 'mhub'|'mhubv'].
+    private function MeterContractInstances(): array
+    {
+        $forcedID = $this->ReadPropertyInteger('SurplusMeterID');
+        $list = [];
+        if ($forcedID > 0) {
+            $mod = (string)(@IPS_GetInstance($forcedID)['ModuleInfo']['ModuleID'] ?? '');
+            if ($mod === self::METERHUBVIRTUAL_GUID && function_exists('MHUBV_GetFunctions')) {
+                $list[] = [$forcedID, 'mhubv'];
+            } elseif (function_exists('MHUB_GetFunctions')) {
+                $list[] = [$forcedID, 'mhub'];
+            }
+            return $list;
+        }
+        if (function_exists('MHUB_GetFunctions')) {
+            foreach (@IPS_GetInstanceListByModuleID(self::METERHUB_GUID) ?: [] as $iid) {
+                $list[] = [$iid, 'mhub'];
+            }
+        }
+        if (function_exists('MHUBV_GetFunctions')) {
+            foreach (@IPS_GetInstanceListByModuleID(self::METERHUBVIRTUAL_GUID) ?: [] as $iid) {
+                $list[] = [$iid, 'mhubv'];
+            }
+        }
+        return $list;
+    }
+
+    // Netzleistung direkt aus der gewählten Variablen. 'configured' = Variable ist eingetragen; 'surplus' = Überschuss
+    // in W (>= 0) oder null, wenn der Wert fehlt, nicht numerisch oder älter als das erlaubte Alter ist.
+    private function GridVariableSurplus(): array
+    {
+        $vid = $this->ReadPropertyInteger('SurplusGridVarID');
+        $out = ['configured' => $vid > 0, 'surplus' => null, 'ageSec' => null, 'stale' => false, 'name' => '', 'vid' => $vid];
+        if ($vid <= 0) {
+            return $out;
+        }
+        $v = @IPS_GetVariable($vid);
+        if (!is_array($v) || $v === []) {
+            return $out; // Variable existiert nicht mehr
+        }
+        $out['name'] = (string)@IPS_GetName($vid);
+        $raw = @GetValue($vid);
+        if (!is_numeric($raw)) {
+            return $out;
+        }
+        $age = time() - (int)($v['VariableUpdated'] ?? 0);
+        $out['ageSec'] = $age;
+        if ($age > max(5, $this->ReadPropertyInteger('SurplusGridMaxAgeSec'))) {
+            $out['stale'] = true;
+            return $out;
+        }
+        $w = (float)$raw * ($this->ReadPropertyString('SurplusGridUnit') === 'kW' ? 1000.0 : 1.0);
+        // import: + = Bezug, - = Einspeisung (Überschuss = -Wert); export: + = Einspeisung (Überschuss = Wert)
+        $out['surplus'] = max(0.0, $this->ReadPropertyString('SurplusGridSign') === 'export' ? $w : -$w);
+        return $out;
+    }
+
+    private function FindGridSurplusW(): ?float
+    {
+        // Eigene Variable hat Vorrang vor dem MeterHub-Vertrag; ist sie eingetragen, aber veraltet oder
+        // ungültig, gibt es KEINEN Rückfall auf andere Quellen (null = Überschussladen pausiert).
+        $gv = $this->GridVariableSurplus();
+        if ($gv['configured']) {
+            $this->lastSurplusMeterName = $gv['name'] !== '' ? 'Variable „' . $gv['name'] . '" #' . $gv['vid'] : null;
+            return $gv['surplus'];
+        }
+        if (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
+            return null;
+        }
+        $best = null; // ['powerID' => int, 'billing' => bool, 'iid' => int]
+        foreach ($this->MeterContractInstances() as [$iid, $kind]) {
+            // MHUB_/MHUBV_GetFunctions() liefern (anders als unser eigenes CHUB_GetFunctions()) einen
+            // JSON-String, keinen nativen Array — mit MeterHub live abgeglichen, 26.08.2026. Struktur:
+            // {..., "assignments": [{"function":"grid", "powerID":..., ...}]}.
+            if ($kind === 'mhubv' && function_exists('MHUBV_GetFunctions')) {
+                $fns = json_decode((string)@MHUBV_GetFunctions($iid), true);
+            } elseif ($kind === 'mhub' && function_exists('MHUB_GetFunctions')) {
+                $fns = json_decode((string)@MHUB_GetFunctions($iid), true);
+            } else {
+                continue;
+            }
+            if (!is_array($fns) || !isset($fns['assignments']) || !is_array($fns['assignments'])) {
+                continue;
+            }
+            foreach ($fns['assignments'] as $assignment) {
+                if (!is_array($assignment)) {
+                    continue;
+                }
+                if (($assignment['function'] ?? '') !== 'grid') {
+                    continue;
+                }
+                if (($assignment['latency'] ?? '') !== 'realtime') {
+                    continue; // 'delayed' (z. B. Cloud-API) taugt nicht für eine Regelschleife.
+                }
+                $powerID = (int)($assignment['powerID'] ?? 0);
+                if ($powerID <= 0) {
+                    continue;
+                }
+                $billing = ($assignment['authority'] ?? '') === 'billing';
+                if ($best === null || ($billing && !$best['billing'])) {
+                    $best = ['powerID' => $powerID, 'billing' => $billing, 'iid' => $iid];
+                }
+            }
+        }
+        if ($best === null) {
+            $this->lastSurplusMeterName = null;
+            return null;
+        }
+        $raw = @GetValue($best['powerID']);
+        if (!is_numeric($raw)) {
+            $this->lastSurplusMeterName = null;
+            return null;
+        }
+        $this->lastSurplusMeterName = @IPS_GetName($best['iid']) ?: null;
+        return max(0.0, -(float)$raw);
+    }
+
+    private function SurplusMeterLabel(): string
+    {
+        return $this->lastSurplusMeterName ?? 'Zähler unbekannt';
+    }
+
+    // Der Wechselrichter bedient erst alle lokalen Verbraucher (inkl. Wallbox) und lädt
+    // ERST DANACH den Speicher mit dem, was übrig bleibt (Dietmar, 26.08.2026). Was die
+    // Batterie also gerade an Ladeleistung zieht, ist Überschuss, den ich der Wallbox
+    // zusätzlich zuteilen könnte, ohne Netzbezug auszulösen — am NAP-Zähler taucht das
+    // nie auf, weil der Wechselrichter es vorher abgreift.
+    private function GetBatteryChargeW(): float
+    {
+        if (!function_exists('IHUB_GetFunctions')) {
+            return 0.0;
+        }
+        $totalChargeW = 0.0;
+        foreach (@IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [] as $iid) {
+            $fns = @IHUB_GetFunctions($iid);
+            $vid = (int)($fns['batPowerID'] ?? 0);
+            if ($vid <= 0) {
+                continue;
+            }
+            $raw = @GetValue($vid);
+            if (!is_numeric($raw)) {
+                continue;
+            }
+            // GoodWe-Konvention (InverterHub-Contract 1.0, live verifiziert 26.08.2026):
+            // negativ = Laden, positiv = Entladen.
+            $totalChargeW += max(0.0, -(float)$raw);
+        }
+        return $totalChargeW;
+    }
+
+    // Wieviel freie Speicherkapazität (kWh) steht gerade noch zur Verfügung? Nur
+    // ermittelbar, wenn der Nutzer die Kapazität manuell hinterlegt hat (der
+    // InverterHub-Contract 1.0 liefert SOC, aber keine kWh-Kapazität) UND
+    // InverterHub einen SOC liefert. null = unbekannt/kein Speicher.
+    private function GetStorageHeadroomKWh(): ?float
+    {
+        $capacityKWh = $this->ReadPropertyFloat('BatteryCapacityKWh');
+        if ($capacityKWh <= 0.0 || !function_exists('IHUB_GetFunctions')) {
+            return null;
+        }
+        foreach (@IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [] as $iid) {
+            $fns = @IHUB_GetFunctions($iid);
+            $vid = (int)($fns['socID'] ?? 0);
+            if ($vid <= 0) {
+                continue;
+            }
+            $soc = @GetValue($vid);
+            if (!is_numeric($soc)) {
+                continue;
+            }
+            $socClamped = max(0.0, min(100.0, (float)$soc));
+            return $capacityKWh * (100.0 - $socClamped) / 100.0;
+        }
+        return null;
+    }
+
+    // Je mehr freie Speicherkapazität übrig ist, desto geduldiger kann die
+    // Phasenumschaltung beobachten, bevor sie schaltet — ein Wechsel kostet dann
+    // effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach weiter den
+    // Speicher (Dietmar, 27.08.2026). Ohne Speicher bzw. ohne hinterlegte Kapazität
+    // bleibt es bei der bisherigen, vorsichtigen Grund-Wartezeit.
+    private function GetPhaseSwitchStablePolls(): int
+    {
+        $headroomKWh = $this->GetStorageHeadroomKWh();
+        if ($headroomKWh === null) {
+            return self::PHASE_SWITCH_STABLE_POLLS;
+        }
+        $extraPolls = (int)floor($headroomKWh / 5.0); // je angefangene 5 kWh Puffer +1 Poll
+        return min(self::PHASE_SWITCH_STABLE_POLLS + $extraPolls, self::PHASE_SWITCH_STABLE_POLLS_MAX);
+    }
+
+    // Ist EMS installiert UND aktuell aktiv? (Mit EMS-Sitzung abgestimmt,
+    // 26.08.2026.) Bewusst die ECHTE Aktiv-Prüfung (Statusvariable
+    // EMS_Active_State), nicht nur unser eigenes managedBy-Feld — Dietmars
+    // Vorgabe war ausdrücklich "EMS nicht vorhanden ODER nicht eingeschaltet",
+    // ein rein statisches Feld würde das nicht abbilden, wenn EMS zwar
+    // eingetragen, aber gerade deinstalliert/deaktiviert ist.
+    private function IsEmsActive(): bool
+    {
+        $emsIDs = @IPS_GetInstanceListByModuleID(self::EMS_GUID) ?: [];
+        if ($emsIDs === []) {
+            return false;
+        }
+        $vid = $this->FindIdentRecursive($emsIDs[0], 'EMS_Active_State');
+        return $vid ? (bool)@GetValueBoolean($vid) : false;
+    }
+
+    // Steuerangaben fürs GetFunctions() (Vertrag 1.8): phaseModeID/phaseModeValues, phaseSwitchPauseSec,
+    // currentStepA, controlLatencySec. phaseModeID > 0 nur, wenn die Umschaltung belegt ist: das Gerät hat
+    // Umschaltbarkeit gemeldet (go-e: psm lesbar, Peblar: unabhängiges Relais, DaheimLader: Register 184)
+    // bzw. bei Alfen die Phasenzahl (Register 1215) lesbar ist. Sonst 0 (nicht umschaltbar/unbekannt).
+    // controlLatencySec ist bei keinem Gerät gemessen: immer 0 = unbekannt.
+    private function ControlContractFields(): array
+    {
+        $mfr  = $this->ReadPropertyString('Manufacturer');
+        $prof = self::CONTROL_PROFILES[$mfr] ?? [];
+        $out  = [
+            'phaseModeID'         => 0,
+            'phaseSwitchPauseSec' => (int)($prof['pauseSec'] ?? 0),
+            'currentStepA'        => (float)($prof['stepA'] ?? 1.0),
+            'controlLatencySec'   => 0,
+        ];
+        if (isset($prof['values'])) {
+            $vid = $this->FindVarByIdent('ctl_phase_mode');
+            $switchable = ($mfr === 'alfen')
+                ? $this->ReadAttributeInteger('DevicePhases') > 0
+                : $this->ReadAttributeInteger('DevicePhaseSwitch') === 1;
+            if ($vid && $switchable) {
+                $out['phaseModeID']     = $vid;
+                $out['phaseModeValues'] = $prof['values'];
+            }
+        }
+        return $out;
+    }
+
+    // Vom Treiber gemeldete Phasenangaben fürs GetFunctions() (Vertrag 1.6).
+    // $phases: 1/3 nur, wenn das Gerät es selbst meldet, sonst 0 (unbekannt);
+    // $switchable: 1/0 nur bei Nachweis durch das Gerät, sonst -1 (unbekannt).
+    // Nichts wird aus Verkabelung, Herstellername oder Messwerten geraten.
+    public function SetPhaseInfo(int $phases, int $switchable)
+    {
+        $phases = in_array($phases, [1, 3], true) ? $phases : 0;
+        $switchable = in_array($switchable, [0, 1], true) ? $switchable : -1;
+        if ($this->ReadAttributeInteger('DevicePhases') !== $phases) {
+            $this->WriteAttributeInteger('DevicePhases', $phases);
+        }
+        if ($this->ReadAttributeInteger('DevicePhaseSwitch') !== $switchable) {
+            $this->WriteAttributeInteger('DevicePhaseSwitch', $switchable);
+        }
+    }
+
+    // Einmalige Hinweismeldung aus einem Treiber (Treiber haben kein $this->LogMessage).
+    public function LogNote(string $text)
+    {
+        $this->LogMessage($text, KL_MESSAGE);
+    }
+
+    // Merker der Treiber (z. B. „Register nicht vorhanden, nicht mehr abfragen“); werden bei
+    // jedem „Übernehmen“ zurückgesetzt, damit ein Register danach einmal neu versucht wird.
+    public function GetDriverFlag(string $key): bool
+    {
+        $f = json_decode((string)$this->ReadAttributeString('DriverFlags'), true);
+        return is_array($f) && !empty($f[$key]);
+    }
+
+    public function SetDriverFlag(string $key, bool $value)
+    {
+        $f = json_decode((string)$this->ReadAttributeString('DriverFlags'), true);
+        $f = is_array($f) ? $f : [];
+        if ((bool)($f[$key] ?? false) !== $value) {
+            $f[$key] = $value;
+            $this->WriteAttributeString('DriverFlags', json_encode($f));
+        }
+    }
+
+    // Blendet eine Variable aus/ein (für Werte, die das Gerät nicht liefert). Es wird nur
+    // umgeschaltet, wenn sich der Zustand ändert.
+    public function SetVarHidden(string $ident, bool $hidden)
+    {
+        $vid = $this->FindVarByIdent($ident);
+        if ($vid && (bool)(@IPS_GetObject($vid)['ObjectIsHidden'] ?? false) !== $hidden) {
+            IPS_SetHidden($vid, $hidden);
+        }
+    }
+
+    // Nur DaheimLader: 'cmd' = Ladefreigabe über Ladebefehl (Register 95), 'limit' = über das
+    // Stromlimit (Register 91: Freigabe = Limit >= 6 A, Sperre = 0,1 A), wie evcc.
+    public function GetDaheimEnableVia(): string
+    {
+        return $this->ReadPropertyString('DaheimEnableVia') === 'limit' ? 'limit' : 'cmd';
+    }
+
+    // Nummer des Ladepunkts (nur CHARX, Startadresse = Nummer * 1000), mindestens 1.
+    public function GetChargePointNo(): int
+    {
+        return max(1, min(48, $this->ReadPropertyInteger('ChargePointNo')));
+    }
+
+    // Wirksame Ladestrom-Obergrenze: Hardware-Limit des Herstellers,
+    // zusätzlich begrenzt durch die Property „Maximaler Anschlussstrom".
+    public function GetMaxCurrentA(): int
+    {
+        $hw = self::DRIVER_MAX_CURRENT[$this->ReadPropertyString('Manufacturer')] ?? 32;
+        $cfg = (int)$this->ReadPropertyInteger('MaxCurrent');
+        return ($cfg >= self::MIN_CURRENT) ? min($hw, $cfg) : $hw;
+    }
+
+    // Software-Energiezählung für Treiber ohne echtes Zählerregister
+    // (aktuell: ABL) — integriert die übergebene Momentanleistung (W) über
+    // die seit dem letzten Poll vergangene Zeit auf und gibt den neuen
+    // Gesamtwert in Wh zurück. Bleibt eine Schätzung: fußt bereits auf einer
+    // geschätzten Leistung (siehe AblDriver), UND jede Integration über
+    // diskrete Poll-Intervalle verliert Genauigkeit gegenüber einem echten
+    // Zähler. Nach einer Pause (Instanz war aus, Neustart) wird die Lücke
+    // NICHT einfach mit der aktuellen Leistung hochgerechnet — das würde bei
+    // Wiederaufnahme einen Sprung erzeugen —, sondern auf 1 h gedeckelt.
+    public function IntegrateEnergyWh(float $watts): float
+    {
+        $now    = time();
+        $lastTs = $this->ReadAttributeInteger('EnergyIntegralLastTs');
+        $wh     = $this->ReadAttributeFloat('EnergyIntegralWh');
+        if ($lastTs > 0) {
+            $dt = max(0, min($now - $lastTs, 3600));
+            $wh += $watts * $dt / 3600.0;
+        }
+        $this->WriteAttributeFloat('EnergyIntegralWh', $wh);
+        $this->WriteAttributeInteger('EnergyIntegralLastTs', $now);
+        return $wh;
+    }
+
+    // Für diesen Hersteller zulässige managedBy-Werte (Teilmenge des Gesamt-
+    // Vokabulars): 'goe-controller' nur beim go-eCharger.
+    private function ManagedByAllowed(): array
+    {
+        $all = self::MANAGEDBY_ALL;
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe') {
+            $all = array_values(array_diff($all, self::MANAGEDBY_ONLY_GOE));
+        }
+        return $all;
+    }
+
+    // Zulässige Werte für „Wer regelt?“ bei diesem Hersteller, als [{value, label}] (öffentlich als
+    // CHUB_GetManagedByOptions, Anfrage Dashboard/Dietmar 25.10.2026): Anzeigen wie das Dashboard sie
+    // braucht, ohne die Liste fest zu verdrahten (go-e Controller gibt es nur beim go-e).
+    public function GetManagedByOptions(): array
+    {
+        $out = [];
+        foreach ($this->ManagedByAllowed() as $key) {
+            $out[] = ['value' => $key, 'label' => self::MANAGEDBY_LABELS[$key]];
+        }
+        return $out;
+    }
+
+    // Stellt die Regler-Hoheit um (öffentlich als CHUB_SetManagedBy). Nimmt NUR zulässige Werte an, setzt die
+    // Einstellung „Wer regelt?“, wendet sie an (dabei läuft die Übergabelogik wie bei der Umstellung im
+    // Formular, z. B. Lösen einer Ladesperre) und schreibt Umstellungen mit alt/neu ins Meldungsprotokoll.
+    // Rückgabe: ['ok' => bool, 'error' => string, 'previous' => string, 'current' => string]. Ändert sonst
+    // nichts an der Instanz. Das alte Kennzeichen „extern geregelt“ wird dabei zurückgesetzt, damit „Niemand“
+    // wirklich „Niemand“ bedeutet.
+    public function SetManagedBy(string $value): array
+    {
+        $previous = $this->GetManagedBy();
+        if (!in_array($value, $this->ManagedByAllowed(), true)) {
+            return ['ok' => false, 'error' => 'Wert „' . $value . '“ ist für diesen Hersteller nicht zulässig.',
+                'previous' => $previous, 'current' => $previous];
+        }
+        if ($value === $previous && !$this->ReadPropertyBoolean('ExternallyManaged')) {
+            return ['ok' => true, 'error' => '', 'previous' => $previous, 'current' => $previous];
+        }
+        IPS_SetProperty($this->InstanceID, 'ManagedBy', $value);
+        IPS_SetProperty($this->InstanceID, 'ExternallyManaged', false);
+        IPS_ApplyChanges($this->InstanceID);
+        $this->LogMessage('Regler-Hoheit umgestellt: „' . $previous . '“ → „' . $value . '“ (über CHUB_SetManagedBy).', KL_NOTIFY);
+        return ['ok' => true, 'error' => '', 'previous' => $previous, 'current' => $value];
+    }
+
+    // Aufgelöste Regler-Kennzeichnung. Rückfall auf die Alt-Property
+    // ExternallyManaged (bool) für Instanzen von vor 0.9.0. Ist der gespeicherte
+    // Wert für den aktuellen Hersteller nicht zulässig (z. B. 'goe-controller'
+    // nach Wechsel goe→keba), wird konservativ auf 'other' abgebildet — dann
+    // bleibt das EMS read-only, statt den Ladepunkt fälschlich zu übernehmen.
+    public function GetManagedBy(): string
+    {
+        $v = $this->ReadPropertyString('ManagedBy');
+        if ($v === 'none' && $this->ReadPropertyBoolean('ExternallyManaged')) {
+            $v = 'other'; // Migration: alter Haken „extern geregelt"
+        }
+        if (!in_array($v, self::MANAGEDBY_ALL, true)) {
+            $v = 'none';
+        }
+        if (!in_array($v, $this->ManagedByAllowed(), true)) {
+            $v = 'other';
+        }
+        return $v;
+    }
+
+    // Gibt die aufgelöste Dubletten-Zuordnung zurück, oder null, wenn keine
+    // gesetzt/der gespeicherte Schlüssel ungültig ist (z. B. Zielinstanz seither
+    // gelöscht). Siehe Property DuplicateOfKey / GetFunctions()-Feld
+    // 'duplicateOf'.
+    private function GetDuplicateOf(): ?array
+    {
+        return $this->ResolveDuplicateOf($this->ReadPropertyString('DuplicateOfKey'));
+    }
+
+    // Wie GetDuplicateOf(), aber für einen beliebigen Schlüssel statt zwingend der gespeicherten
+    // Property — so kann die Statuszeile (siehe DuplicateLine()) live die gerade im offenen
+    // Formular gewählte, noch nicht übernommene Auswahl anzeigen (SUITE.md, „Auswahlfelder:
+    // Zeile folgt der Auswahl", 21.09.2026).
+    private function ResolveDuplicateOf(string $key): ?array
+    {
+        if ($key === '') {
+            return null;
+        }
+        $parts = explode(':', $key, 2);
+        if (count($parts) !== 2) {
+            return null;
+        }
+        [$source, $idStr] = $parts;
+        $id = (int)$idStr;
+        if (!in_array($source, ['chargerhub', 'ocpphub'], true) || $id <= 0 || !@IPS_InstanceExists($id)) {
+            return null;
+        }
+        return ['source' => $source, 'instanceID' => $id];
+    }
+
+    // Hinweiszeile im Bedienpanel: wer regelt, damit Handbedienung nicht blind gegen EMS/Tibber arbeitet.
+    private function ControlPanelHint(): string
+    {
+        $st = $this->ControlState();
+        $names = ['none' => 'Niemand', 'ems' => 'das EMS', 'surplus' => 'das Überschussladen', 'goe-controller' => 'der go-e Controller',
+            'tibber' => 'Tibber', 'p14a' => '§14a', 'marketer' => 'der Direktvermarkter', 'other' => 'ein anderer Regler'];
+        $who = $names[$st['owner']] ?? $st['owner'];
+        if ($st['owner'] === 'none') {
+            return 'ℹ️ Gerade regelt niemand: Änderungen hier bleiben bestehen.';
+        }
+        return '⚠️ Gerade regelt ' . $who . ': ' . $st['reason'] . ' Eine Handbedienung hier kann beim nächsten Regelschritt wieder überschrieben werden.';
+    }
+
+    // Bedienelemente fürs Formular (Schalter/Schieberegler/Auswahl) mit dem aktuellen Gerätewert; nur,
+    // was der Hersteller kann (Variable vorhanden). Wirkung sofort, siehe RequestAction().
+    private function ControlPanelItems(): array
+    {
+        $items = [['type' => 'Label', 'name' => 'ControlPanelHint', 'caption' => $this->ControlPanelHint()],
+            ['type' => 'Label', 'name' => 'ControlPanelFeedback', 'caption' => ' ']];
+        $plan = (string)$this->GetVarValue('control_plan');
+        if ($plan !== '') {
+            $items[] = ['type' => 'Label', 'caption' => '🗓️ Plan: ' . $plan];
+        }
+        if ($this->FindVarByIdent('ctl_enable')) {
+            $items[] = ['type' => 'CheckBox', 'name' => 'FormCtlEnable', 'caption' => 'Ladefreigabe (wirkt sofort)',
+                'value' => (bool)$this->GetVarValue('ctl_enable'),
+                'onChange' => 'IPS_RequestAction($id, "FormCtlEnable", $FormCtlEnable);'];
+        }
+        if ($this->FindVarByIdent('ctl_curr_limit')) {
+            $max = max(self::MIN_CURRENT, $this->GetMaxCurrentA());
+            $items[] = ['type' => 'Label', 'caption' => 'Stromlimit in Ampere (wirkt sofort, ' . self::MIN_CURRENT . ' bis ' . $max . ' A)'];
+            $items[] = ['type' => 'HorizontalSlider', 'name' => 'FormCtlCurrent', 'minimum' => self::MIN_CURRENT, 'maximum' => $max,
+                'value' => min($max, max(self::MIN_CURRENT, (int)$this->GetVarValue('ctl_curr_limit'))),
+                'onChange' => 'IPS_RequestAction($id, "FormCtlCurrent", $FormCtlCurrent);'];
+        }
+        $phaseVid = $this->FindVarByIdent('ctl_phase_mode');
+        if ($phaseVid) {
+            $profile = (string)(@IPS_GetVariable($phaseVid)['VariableCustomProfile'] ?: @IPS_GetVariable($phaseVid)['VariableProfile']);
+            $options = [];
+            if ($profile !== '' && @IPS_VariableProfileExists($profile)) {
+                foreach (IPS_GetVariableProfile($profile)['Associations'] as $a) {
+                    $options[] = ['caption' => (string)$a['Name'], 'value' => (int)$a['Value']];
+                }
+            }
+            if ($options !== []) {
+                $items[] = ['type' => 'Select', 'name' => 'FormCtlPhase', 'caption' => 'Phasenumschaltung (wirkt sofort)', 'options' => $options,
+                    'value' => (int)$this->GetVarValue('ctl_phase_mode'),
+                    'onChange' => 'IPS_RequestAction($id, "FormCtlPhase", $FormCtlPhase);'];
+            }
+        }
+        return $items;
+    }
+
+    // managedBy der als Dublette gewählten Zielinstanz, oder null (unbekannt). Das @ fängt keine
+    // Ausnahmen: CHUB_/OHUB_GetFunctions() wirft „Instance does not implement this function“, wenn die
+    // gespeicherte ID inzwischen eine andere Instanzart ist (Meldung Nutzer 23.10.2026, OCPPHub-ID
+    // zeigte auf eine Instanz ohne diese Funktion) — das darf weder das Formular noch den Lesezyklus
+    // abbrechen.
+    private function DuplicateTargetManaged(array $dup): ?string
+    {
+        try {
+            if ($dup['source'] === 'chargerhub' && function_exists('CHUB_GetFunctions')) {
+                $fns = @CHUB_GetFunctions($dup['instanceID']);
+            } elseif ($dup['source'] === 'ocpphub' && function_exists('OHUB_GetFunctions')) {
+                $fns = @OHUB_GetFunctions($dup['instanceID']);
+            } else {
+                return null;
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $v = is_array($fns) ? ($fns[0]['managedBy'] ?? null) : null;
+        return is_string($v) ? $v : null;
+    }
+
+    // Statuszeile zur Dubletten-Zuordnung für einen gegebenen Schlüssel (siehe ResolveDuplicateOf()) —
+    // eigene Funktion statt inline in LinkStatusLines(), damit derselbe Text sowohl beim Formular-
+    // aufbau (gespeicherte Property) als auch live per onChange (noch nicht übernommene Auswahl)
+    // entsteht.
+    private function DuplicateLine(string $key): string
+    {
+        $dup = $this->ResolveDuplicateOf($key);
+        if ($key === '') {
+            return 'ℹ️ Keine Zuordnung: diese Instanz zählt normal (Summen, Sitzungen, Leistung).';
+        }
+        if ($dup === null) {
+            return '⚠️ Zuordnung eingetragen („' . $key . '"), aber die Zielinstanz existiert nicht mehr. Sie wird ignoriert, diese Instanz zählt normal.';
+        }
+        $targetName = @IPS_GetName($dup['instanceID']);
+        $targetManaged = $this->DuplicateTargetManaged($dup);
+        $src = $dup['source'] === 'ocpphub' ? 'OCPPHub' : 'ChargerHub';
+        $own = $this->GetManagedBy();
+        return '✅ Zählt als Dublette von ' . $src . '-Instanz #' . $dup['instanceID'] . ' („' . $targetName . '"), wird bei Summen/Sitzungen übersprungen. Regler: hier „' . $own . '", dort ' . ($targetManaged === null ? 'unbekannt' : '„' . $targetManaged . '"') . '.'
+            . ((in_array($own, ['none', 'ems'], true) && in_array($targetManaged, ['none', 'ems'], true)) ? ' ⚠️ Beide Seiten regeln: bei einer „Wer regelt?" auf „Anderer" stellen.' : '');
+    }
+
+    // Schmale Auskunftsfunktion für MigrationsHub (Verbund-Konvention
+    // 03.08.2026, mit MigrationsHub abgestimmt als Alternative zu einer
+    // vollen "AdoptFromLegacyInstance"-Funktion in jedem Hub-Modul — wir
+    // liefern nur unser Ident/Typ-Wissen, Reparenting/Pruning/Simulation
+    // bleibt zentral bei MigrationsHub). Gibt für ein bekanntes Fremdmodul
+    // (per GUID) die Ident- und Typ-Zuordnung zurück, damit ein
+    // AC_ChangeVariableID-Aufruf vorher auf Typgleichheit geprüft werden
+    // kann, statt per Preflight-Sonde zu raten (Ursache des heutigen
+    // AC_ChangeVariableID-Crashs: Typ-Mismatch nicht erkannt).
+    // Rückgabeformat je Eintrag: ['oldIdent' => ..., 'newIdent' => ...,
+    // 'type' => 'Integer'|'Float'|'Boolean'|'String'].
+    // Verbund-Vertrag (03.08.2026, mit MigrationsHub/MeterHub/InverterHub
+    // abgestimmt, finale 3-Parameter-Fassung): $foreignIdents sind die an der
+    // Alt-Instanz TATSÄCHLICH vorhandenen Idents — reines GUID-Matching würde
+    // bei Firmware-abhängig unterschiedlich benannten Feldern ins Leere
+    // laufen. Rückgabe nur für tatsächlich erkannte Treffer, keyed nach dem
+    // Alt-Ident. $id wird von Symcon bei CHUB_GetIdentMapping($id, ...)
+    // automatisch injiziert, taucht daher hier nicht als PHP-Parameter auf
+    // (wie bei GetFunctions()/RequestAction() auch).
+    public function GetIdentMapping(string $foreignModuleGUID, array $foreignIdents): array
+    {
+        // Aktuell nur das go-eCharger-Fremdmodul (github.com/IPSCoyote/
+        // GO-eCharger) — Mapping am Quellcode verifiziert (siehe README,
+        // Abschnitt "Migration vom go-eCharger-Modul"). Karten-Index-Offset
+        // (Alt 1-basiert, ChargerHub 0-basiert) hier bereits eingerechnet.
+        if ($foreignModuleGUID !== '{B4624A42-F80A-4975-B692-7FB4D06CC805}') {
+            return [];
+        }
+        $map = [
+            'status'           => ['state',          VARIABLETYPE_INTEGER],
+            'powerToCarLineL1' => ['power_l1',        VARIABLETYPE_FLOAT],
+            'powerToCarLineL2' => ['power_l2',        VARIABLETYPE_FLOAT],
+            'powerToCarLineL3' => ['power_l3',        VARIABLETYPE_FLOAT],
+            'powerToCarTotal'  => ['power',            VARIABLETYPE_FLOAT],
+            'ampToCarLineL1'   => ['current_l1',       VARIABLETYPE_FLOAT],
+            'ampToCarLineL2'   => ['current_l2',       VARIABLETYPE_FLOAT],
+            'ampToCarLineL3'   => ['current_l3',       VARIABLETYPE_FLOAT],
+            'energyTotal'      => ['energy_total',     VARIABLETYPE_FLOAT],
+            'energyLoadCycle'  => ['energy_session',   VARIABLETYPE_FLOAT],
+            'serialID'         => ['dev_serial',       VARIABLETYPE_STRING],
+            'error'            => ['dev_error',        VARIABLETYPE_INTEGER],
+            'supplyLineN'      => ['voltage_n',        VARIABLETYPE_FLOAT],
+            'supplyLineL1'     => ['voltage_l1',       VARIABLETYPE_FLOAT],
+            'supplyLineL2'     => ['voltage_l2',       VARIABLETYPE_FLOAT],
+            'supplyLineL3'     => ['voltage_l3',       VARIABLETYPE_FLOAT],
+            'adapterAttached'  => ['adapter',          VARIABLETYPE_BOOLEAN],
+            'unlockedByRFID'   => ['unlocked_by',      VARIABLETYPE_INTEGER],
+            'cableUnlockMode'  => ['ctl_cable_lock',   VARIABLETYPE_INTEGER],
+            'accessControl'    => ['ctl_access',       VARIABLETYPE_INTEGER],
+            'cableCapability'  => ['cable_current',    VARIABLETYPE_INTEGER],
+        ];
+        for ($n = 1; $n <= 10; $n++) {
+            $map['energyChargedCard' . $n] = ['card' . ($n - 1) . '_energy', VARIABLETYPE_FLOAT];
+        }
+
+        // Das alte Modul speichert die Leistung zum Fahrzeug in kW, der ChargerHub in W (Profil NRG.Watt). Wer
+        // die Archivwerte der Alt-Variable übernimmt, muss sie mit 'archiveFactor' multiplizieren (additives
+        // Feld, fehlt = 1.0; Wunsch Dietmar 26.10.2026, Gerätetausch wertet es aus).
+        $kwToW = ['powerToCarTotal', 'powerToCarLineL1', 'powerToCarLineL2', 'powerToCarLineL3'];
+        $result = [];
+        foreach ($foreignIdents as $oldIdent) {
+            if (isset($map[$oldIdent])) {
+                [$newIdent, $type] = $map[$oldIdent];
+                $result[$oldIdent] = ['ident' => $newIdent, 'type' => $type];
+                if (in_array($oldIdent, $kwToW, true)) {
+                    $result[$oldIdent]['archiveFactor'] = 1000.0;
+                }
+            }
+        }
+        return $result;
+    }
+
+    public function GetFunctions(): array
+    {
+        $powerID = $this->FindVarByIdent('power');
+        $enableID = $this->FindVarByIdent('ctl_enable');
+        $limitID  = $this->FindVarByIdent('ctl_curr_limit');
+
+        // Energie: kumulierten Gesamtzähler bevorzugen — der Sitzungswert
+        // springt je Ladevorgang zurück und taugt nicht als Zählerstand.
+        $energyID = $this->FindVarByIdent('energy_total');
+        if (!$energyID) {
+            $energyID = $this->FindVarByIdent('energy_session');
+        }
+
+        $fn = [
+            // Vertragsversion Major.Minor (Verbund-Konvention, siehe SUITE.md
+            // im EMS-Repo). Konsumenten prüfen die Major; additive Felder
+            // erhöhen nur die Minor. Fehlt das Feld, gilt konservativ '1.0'.
+            // 1.1: managedBy ergänzt. 1.3: lastSeenAt ergänzt. 1.4: deviceSerial/
+            // deviceHost/manufacturer ergänzt. 1.5: duplicateOf ergänzt. 1.6: phases/
+            // phasesSwitchable ergänzt (optional, fehlt = unbekannt). 1.7: pluggedInAtID/
+            // pluggedOutAtID/chargeTimeSecID/connectionTimeSecID ergänzt (Referenzfelder, 0 =
+            // Variable nicht vorhanden; Dashboard-Anfrage 06.10.2026). 1.8: phaseModeID/
+            // phaseModeValues/phaseSwitchPauseSec/currentStepA/controlLatencySec (EMS-Anfrage 21.10.2026).
+            // 1.9: controlOwner/controlSource/controlReason/controlSince (Regelungsstatus).
+            // 1.10: sessionEnergyID/energyLimitID/chargingStateID (Ladeziel/Frist im EMS).
+            // 1.11: stateID/errorCodeID (Ladestatus/Fehlercode, EMS verbindet automatisch).
+            // 1.12: planInfoID (Plantext von außen, CHUB_SetPlanInfo).
+            'contractVersion'    => '1.12',
+            'function'           => 'charger',
+            'label'              => IPS_GetName($this->InstanceID),
+            'powerID'            => $powerID ?: 0,
+            'energyImportID'     => $energyID ?: 0,
+            'measured'           => true,
+            'chargeEnableID'     => $enableID ?: 0,
+            'currentLimitID'     => $limitID ?: 0,
+            // Fahrzeug angesteckt (optional, 0 wenn die Wallbox es nicht
+            // liefert) — fürs EMS: „kein Fahrzeug" vs. „wartet auf Freigabe".
+            'plugStateID'        => $this->FindVarByIdent('vehicle_plugged') ?: 0,
+            // Statische Stromgrenzen (Werte, keine IDs): Budget-Verteilung im
+            // EMS; unter minCurrent pausiert das EMS über chargeEnableID.
+            'minCurrent'         => self::MIN_CURRENT,
+            'maxCurrent'         => $this->GetMaxCurrentA(),
+            // Wer hat die Hoheit über diesen Ladepunkt (Verbund-Vokabular):
+            // none/ems/goe-controller/tibber/p14a/marketer/other. Bei allem
+            // außer none/ems steuert das EMS NICHT selbst; 'tibber' ist eine
+            // harte Sperre (Regelenergie, Pönale-Risiko).
+            'managedBy'          => $this->GetManagedBy(),
+            // Kompatibilität (Vertrag 1.0): abgeleitet aus managedBy — true,
+            // sobald ein anderer Regler als none/ems die Hoheit hat.
+            'externallyManaged'  => !in_array($this->GetManagedBy(), ['none', 'ems'], true),
+            // 1.2: Zugeordnetes Fahrzeug (leerer String, wenn kein
+            // Fahrzeug-Modul CHUB_SetVehicleName() aufgerufen hat oder
+            // kein Fahrzeug angesteckt ist) — Wert-ID, kein eigenes Feld,
+            // damit Konsumenten wie gewohnt per GetValue() lesen.
+            'vehicleNameID'      => $this->FindVarByIdent('vehicle_name') ?: 0,
+            // 1.3: Unix-Timestamp des letzten erfolgreichen Lesezyklus (0 =
+            // noch nie), gesetzt in SetVarBool() bei 'connected'=true.
+            // EMS-Vorfall 12.09.2026 (Grid Rewards + Hausbatterie-Fehlladung):
+            // powerID allein kann nicht zwischen "gerade 0 W" und "seit
+            // Langem keine frische Messung mehr" unterscheiden — eine
+            // deaktivierte oder hängende Instanz liefert weiter ihren
+            // zuletzt bekannten Wert, ohne dass GetValue() das erkennen
+            // lässt. Konsumenten: Feld fehlt bei Vertrag < 1.3 -> Verhalten
+            // wie bisher; ist es älter als ein selbst gewähltes Zeitfenster
+            // (EMS nutzt 10 Minuten), gilt die Leistung als unbekannt statt
+            // als 0 W.
+            'lastSeenAt'         => $this->ReadAttributeInteger('LastSeenAt'),
+            // 1.4: Geräteidentität für Dubletten-Erkennung (MeterHub-Anfrage,
+            // 13.09.2026: dieselbe physische Wallbox kann gleichzeitig als
+            // ChargerHub-Instanz UND als OCPPHub-Ladepunkt angelegt sein —
+            // MeterHubVirtual will das erkennen und den Nutzer fragen, welche
+            // aktiv bleibt). `deviceSerial` ist nur bei go-e/KEBA gefüllt
+            // (Alfen/Heidelberg liefern keine Seriennummer) — `deviceHost`
+            // (IP/Hostname) ist bei JEDEM Treiber vorhanden und daher der
+            // zuverlässigere Abgleichspunkt.
+            'deviceSerial'       => trim((string)$this->GetVarValue('dev_serial')),
+            'deviceHost'         => $this->ReadPropertyString('Host'),
+            'manufacturer'       => $this->ReadPropertyString('Manufacturer'),
+            // 1.5: weicher Dubletten-Marker (EMS/MeterHub-Abstimmung,
+            // 13.09.2026, Ergänzung zum harten CHUB_SetActive()): null = zählt
+            // normal, sonst zeigt er auf den Eintrag, der für dasselbe
+            // physische Gerät zählt. Ausschließlich vom Nutzer im Formular
+            // gesetzt, nie automatisch geraten. Betrifft NUR die Zählung
+            // (Summen/Sitzungen/Leistung) — wer ans Gerät schreibt,
+            // entscheidet weiterhin ausschließlich `managedBy` (EMS-
+            // Korrektur 13.09.2026: eine Instanz kann gleichzeitig Dublette
+            // fürs Zählen UND der aktive Regler sein). Konsumenten
+            // überspringen als Dublette markierte Einträge beim Messen/
+            // Summieren/Sitzungen.
+            'duplicateOf'        => $this->GetDuplicateOf(),
+            // 1.7: Zeit-Variablen für die Ladesitzungs-Übersicht (Referenzfelder wie powerID/
+            // plugStateID: Variablen-ID, 0 = nicht vorhanden). plugged_*_at nur mit Property
+            // PlugTimes und Hersteller mit „Fahrzeug verbunden“; Wert 0 = noch nie gewechselt
+            // (unbekannt), das behandelt der Konsument. chargeTimeSec/connectionTimeSec liefert
+            // nur, wer die Zeit selbst meldet (CHARX; DaheimLader nur die Ladezeit).
+            'pluggedInAtID'       => $this->FindVarByIdent('plugged_in_at') ?: 0,
+            'pluggedOutAtID'      => $this->FindVarByIdent('plugged_out_at') ?: 0,
+            'chargeTimeSecID'     => $this->FindVarByIdent('ladezeit_sek') ?: 0,
+            'connectionTimeSecID' => $this->FindVarByIdent('connection_time_sek') ?: 0,
+        ];
+        // 1.8 (EMS-Anfrage 21.10.2026): Steuerangaben für die Modi/Phasenumschaltung des EMS.
+        $fn = array_merge($fn, $this->ControlContractFields());
+        // 1.9: Regelungsstatus (wer regelt gerade, warum, seit wann) — reine Auskunft.
+        $cs = $this->ControlState();
+        $fn['controlOwner']  = $cs['owner'];
+        $fn['controlSource'] = $cs['source'];
+        $fn['controlReason'] = $cs['reason'];
+        $fn['controlSince']  = $this->ReadAttributeInteger('ControlSince');
+        // 1.10: Referenzfelder für Ladeziel/Frist im EMS (Variablen-ID, 0 = nicht vorhanden).
+        // sessionEnergyID: Energie der laufenden Sitzung (kWh, springt je Sitzung zurück — bewusst
+        // NICHT als Zählerstand nutzen); fehlt bei Alfen/Heidelberg/ABL. energyLimitID: hartes Energie-
+        // Limit der Wallbox (nur go-e). chargingStateID: „Lädt“ = Leistung über 100 W.
+        $fn['sessionEnergyID'] = $this->FindVarByIdent('energy_session') ?: 0;
+        $fn['energyLimitID']   = $this->FindVarByIdent('ctl_energy_limit') ?: 0;
+        $fn['chargingStateID'] = $this->FindVarByIdent('charging_active') ?: 0;
+        // 1.11: Ladestatus und Fehlercode als Referenzfelder, damit das EMS sie automatisch verbindet statt
+        // über eigene Eingabefelder (Variablen-ID, 0 = nicht vorhanden). stateID: herstellerspezifischer
+        // Ladestatus (Wertebedeutung je Hersteller, siehe Variablenprofil `CHB.*State`). errorCodeID: nur
+        // DaheimLader, Fox ESS und CHARX melden einen Fehlercode (Bitfeld bzw. Zahl, 0 = kein Fehler).
+        $fn['stateID']     = $this->FindVarByIdent('state') ?: 0;
+        $fn['errorCodeID'] = $this->FindVarByIdent('error_code') ?: 0;
+        // 1.12: Variable „Plan (was als Nächstes passiert)“ — von außen per CHUB_SetPlanInfo() befüllt.
+        $fn['planInfoID'] = $this->FindVarByIdent('control_plan') ?: 0;
+        // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
+        // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
+        // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
+        // (1 oder 3); phasesSwitchable: Gerät kann zwischen 1 und 3 umschalten.
+        $devPhases = $this->ReadAttributeInteger('DevicePhases');
+        if ($devPhases > 0) {
+            $fn['phases'] = $devPhases;
+        }
+        $devSwitch = $this->ReadAttributeInteger('DevicePhaseSwitch');
+        if ($devSwitch >= 0) {
+            $fn['phasesSwitchable'] = ($devSwitch === 1);
+        }
+        return [$fn];
+    }
+
+    private function GetDriver()
+    {
+        if ($this->driver !== null) {
+            return $this->driver;
+        }
+        $key   = $this->ReadPropertyString('Manufacturer');
+        $class = self::DRIVERS[$key] ?? self::DRIVERS['keba'];
+        $this->driver = new $class();
+        return $this->driver;
+    }
+
+    // Halbautomatisch per Knopf im Formular (Dietmar, 19.09.2026, Vorlage
+    // MeterHub): legt eine Brücke am gewählten nativen ModBus-Gateway an bzw.
+    // verwendet eine vorhandene wieder und trägt sie ins offene Formular ein
+    // (Nutzer klickt danach "Übernehmen"). NIE in ApplyChanges()/
+    // GetConfigurationForm() anlegen — nur auf ausdrücklichen Klick.
+    public function CreateBridge(int $gatewayId): string
+    {
+        if ($gatewayId <= 0 || !@IPS_InstanceExists($gatewayId)) {
+            return '⚠️ Bitte zuerst oben das native ModBus-Gateway auswählen.';
+        }
+        if ((@IPS_GetInstance($gatewayId)['ModuleInfo']['ModuleID'] ?? '') !== self::MODBUS_GATEWAY_GUID) {
+            return '⚠️ Die gewählte Instanz ist kein natives ModBus-Gateway.';
+        }
+        $bridgeId = 0;
+        foreach (@IPS_GetInstanceListByModuleID(self::BRIDGE_GUID) ?: [] as $iid) {
+            if ((int)(@IPS_GetInstance($iid)['ConnectionID'] ?? 0) === $gatewayId) {
+                $bridgeId = $iid;
+                break;
+            }
+        }
+        $reused = $bridgeId > 0;
+        if (!$reused) {
+            $bridgeId = IPS_CreateInstance(self::BRIDGE_GUID);
+            IPS_SetName($bridgeId, 'ChargerHub Brücke (' . IPS_GetName($gatewayId) . ')');
+            IPS_SetParent($bridgeId, IPS_GetParent($this->InstanceID));
+            IPS_ConnectInstance($bridgeId, $gatewayId);
+            IPS_ApplyChanges($bridgeId);
+        }
+        $this->UpdateFormField('BridgeInstanceID', 'value', $bridgeId);
+        return ($reused ? '✅ Vorhandene Brücke #' : '✅ Brücke #') . $bridgeId
+            . ($reused ? ' wiederverwendet' : ' angelegt') . ' und ausgewählt — jetzt unten „Übernehmen" klicken.';
+    }
+
+    // Sendeweg des Symbox-Gateway-Modus über die eigene Brücken-Instanz
+    // (ChargerHubBridge, Vertrag verbundweit mit MeterHub/InverterHub): fehlt
+    // die Brücke oder ist keine gewählt, still '' liefern — Gateway-Weg nicht
+    // verfügbar, Direkt-Weg unberührt. Fehlgrund aus "error" wird einmalig je
+    // Wechsel ins Meldungsprotokoll geschrieben.
+    private function ForwardViaBridge(string $payload): string
+    {
+        $bridgeId = $this->ReadPropertyInteger('BridgeInstanceID');
+        if ($bridgeId <= 0 || !@IPS_InstanceExists($bridgeId) || !function_exists('CHUBB_Forward')) {
+            $this->LogBridgeError('no_bridge');
+            return '';
+        }
+        $reply = json_decode((string)CHUBB_Forward($bridgeId, $payload), true);
+        if (!is_array($reply) || empty($reply['ok'])) {
+            $this->LogBridgeError((string)($reply['error'] ?? 'unbekannter Fehler'));
+            return '';
+        }
+        $this->LogBridgeError('');
+        $raw = base64_decode((string)($reply['data'] ?? ''), true);
+        return $raw === false ? '' : $raw;
+    }
+
+    private function LogBridgeError(string $reason): void
+    {
+        if ($reason === $this->ReadAttributeString('LastBridgeError')) {
+            return;
+        }
+        $this->WriteAttributeString('LastBridgeError', $reason);
+        if ($reason !== '') {
+            $this->LogMessage('Symbox-Gateway: Gateway-Weg nicht verfügbar (' . $reason . ').', KL_WARNING);
+        }
+    }
+
+    private function GetModbusClient(): CHUB_ModbusTcpClient
+    {
+        // ASCII (ABL) geht IMMER über den direkten Socket-Weg — das native
+        // Symcon-Gateway kennt laut eigener Doku kein ASCII-Framing (siehe
+        // CHUB_ModbusGatewayClient-Klassenkommentar), unabhängig vom
+        // gewählten Verbindungsweg.
+        if (in_array($this->ReadPropertyString('Manufacturer'), self::ASCII_MANUFACTURERS, true)) {
+            return new CHUB_ModbusAsciiClient(
+                $this->ReadPropertyString('Host'),
+                $this->ReadPropertyInteger('Port'),
+                $this->ReadPropertyInteger('UnitId')
+            );
+        }
+        if ($this->ReadPropertyString('ConnectionType') === 'gateway') {
+            // CHUB_ModbusGatewayClient ist keine IPSModule-Instanz und kann
+            // SendDataToParent() daher nicht selbst aufrufen — Callback aus
+            // diesem (IPSModule-)Kontext übergeben.
+            $gw = new CHUB_ModbusGatewayClient(
+                $this->ReadPropertyString('Host'),
+                $this->ReadPropertyInteger('Port'),
+                $this->ReadPropertyInteger('UnitId'),
+                fn ($payload) => $this->ForwardViaBridge($payload)
+            );
+            $gw->logger = fn (string $text) => $this->LogMessage($text, KL_WARNING);
+            return $gw;
+        }
+        $client = new CHUB_ModbusTcpClient(
+            $this->ReadPropertyString('Host'),
+            $this->ReadPropertyInteger('Port'),
+            $this->ReadPropertyInteger('UnitId')
+        );
+        $client->persistent = $this->ReadPropertyBoolean('PersistentConnection');
+        return $client;
+    }
+
+    public function GroupActive(string $propName): bool
+    {
+        try {
+            return $this->ReadPropertyBoolean($propName);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    public function GetVarValue(string $ident)
+    {
+        $vid = $this->FindVarByIdent($ident);
+        return $vid ? GetValue($vid) : null;
+    }
+
+    // Statuszeile ganz oben. 104 ist in JEDEM Verbindungsweg neutral (Mstaudi-
+    // Feedback über MeterHub, 20.09.2026): die Zeile folgt dem GESPEICHERTEN
+    // Stand und lässt sich im offenen Formular nicht live umschalten — ein
+    // Wechsel Symbox -> Direkt zeigte sonst weiter "Brücke eintragen". 201 nennt
+    // nur bei gespeichertem Gateway-Modus die Brücke.
+    private function ConfigurationStatus(): array
+    {
+        $gateway = $this->ReadPropertyString('ConnectionType') === 'gateway';
+        return [
+            ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Verbindung einstellen.'],
+            ['code' => 102, 'icon' => 'active', 'caption' => 'Verbindung aktiv.'],
+            ['code' => 201, 'icon' => 'error', 'caption' => $gateway
+                ? 'Verbindungsfehler – keine Antwort über die Brücke: Brücke und ModBus Gateway prüfen (Unit-ID = DeviceID am Gateway).'
+                : 'Verbindungsfehler – Wallbox nicht erreichbar.'],
+        ];
+    }
+
+    // Sichtbarer Hinweis im Formular, wenn der go-e-Treiber eine vertauschte Wortreihenfolge erkannt hat
+    // und nicht ausgleicht (Merker 'goe_order_mismatch', siehe GoeChargerDriver::detectWordOrder()).
+    private function GoeOrderHintItems(): array
+    {
+        if ($this->ReadPropertyString('Manufacturer') !== 'goe'
+            || $this->ReadPropertyBoolean('GoeWordSwap')
+            || !$this->GetDriverFlag('goe_order_mismatch')) {
+            return [];
+        }
+        return [[
+            'type'    => 'Label',
+            'name'    => 'GoeOrderHint',
+            'caption' => '⚠️ go-e: Das Gerät sendet 32-Bit-Werte (Spannung, Strom, Leistung, Energie) mit vertauschter Wortreihenfolge. Diese Werte werden deshalb NICHT übernommen. Lösung am Gerät: in der go-e-App unter Einstellungen → API Einstellungen die Schalter „Register tauschen“ und „Bytes tauschen“ ausschalten (Standard; API-Schlüssel msr und msb). Wer das nicht ändern kann: unten im Panel „Datenpunkte“ „Wortreihenfolge getauscht erzwingen“ setzen.',
+        ]];
+    }
+
+    public function GetConfigurationForm()
+    {
+        $driver = $this->GetDriver();
+
+        $groupItems = [['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkVehicleStatus']];
+        foreach ($driver->getOptionalGroups() as $propName => $group) {
+            $groupItems[] = [
+                'type'    => 'CheckBox',
+                'name'    => $propName,
+                'caption' => $group['caption'],
+            ];
+        }
+        foreach ($this->GoeOrderHintItems() as $hintItem) {
+            array_unshift($groupItems, $hintItem);
+        }
+        if ($this->DriverHasPlugState($driver)) {
+            $groupItems[] = ['type' => 'CheckBox', 'name' => 'PlugTimes', 'caption' => '🆕 Angesteckt-/Abgesteckt-Zeit (vom Modul beim Lesen erkannt)'];
+            $groupItems[] = ['type' => 'Label', 'caption' => 'Die Wallbox meldet keine Uhrzeiten. ChargerHub leitet sie aus dem Wechsel von „Fahrzeug verbunden“ ab (Genauigkeit = Lese-Intervall). Der zuerst gesehene Zustand setzt keine Zeit; bis zum ersten beobachteten Wechsel steht 1970 (leer).'];
+        }
+        // Zwei-Regler-Schutz (siehe Create): Auswahlfeld „Wer regelt?", wird
+        // über CHUB_GetFunctions als 'managedBy' gemeldet. Nur die für den
+        // gewählten Hersteller sinnvollen Werte anbieten. Eigenes Panel
+        // "Steuerungshoheit & Sicherheit" zusammen mit MaxCurrent (siehe
+        // unten) — beides Steuer-/Sicherheitsfelder, gehört weder zu
+        // "Verbindung" noch zu "Datenpunkte" (Layout-Konvention Verbund).
+        $managedByOptions = [];
+        foreach ($this->ManagedByAllowed() as $key) {
+            $managedByOptions[] = ['caption' => self::MANAGEDBY_LABELS[$key], 'value' => $key];
+        }
+
+        // Kandidaten für den weichen Dubletten-Marker (EMS/MeterHub-
+        // Abstimmung, 13.09.2026): andere ChargerHub-Instanzen (nicht sich
+        // selbst) plus OCPPHub-Ladepunkte. Reine Anzeige-/Auswahlhilfe im
+        // Formular — die eigentliche Zuordnung ist nur der gespeicherte
+        // "quelle:InstanceID"-Schlüssel, hier nur menschenlesbar aufbereitet.
+        $duplicateOfOptions = [['caption' => '— Keine (Standard) —', 'value' => '']];
+        foreach (@IPS_GetInstanceListByModuleID(self::CHARGERHUB_GUID) ?: [] as $iid) {
+            if ($iid === $this->InstanceID) {
+                continue;
+            }
+            $duplicateOfOptions[] = ['caption' => 'ChargerHub: ' . IPS_GetName($iid) . ' (' . (@IPS_GetProperty($iid, 'Host') ?: '?') . ')', 'value' => "chargerhub:$iid"];
+        }
+        foreach (@IPS_GetInstanceListByModuleID(self::OCPPHUB_LADEPUNKT_GUID) ?: [] as $iid) {
+            $duplicateOfOptions[] = ['caption' => 'OCPPHub: ' . IPS_GetName($iid), 'value' => "ocpphub:$iid"];
+        }
+        // Ist der gespeicherte Wert (noch) nicht unter den Kandidaten (z. B.
+        // Zielinstanz zwischenzeitlich gelöscht), trotzdem als Option
+        // anbieten — sonst zeigt das Select-Feld kommentarlos den ersten
+        // Eintrag an, obwohl gespeichert etwas anderes steht.
+        $currentKey = $this->ReadPropertyString('DuplicateOfKey');
+        if ($currentKey !== '' && !in_array($currentKey, array_column($duplicateOfOptions, 'value'), true)) {
+            $duplicateOfOptions[] = ['caption' => "⚠️ Gespeichert, aber nicht mehr gefunden ($currentKey)", 'value' => $currentKey];
+        }
+
+        $form = [
+            'elements' => [
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.10.0)',
+                    'expanded' => false,
+                    'items'    => [
+                        ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
+                        ['type' => 'Label', 'caption' => '⚠️ Die Registeradressen der Treiber stammen aus den öffentlichen Hersteller-Dokumentationen, sind aber noch nicht an echter Hardware verifiziert. Bitte nach der Ersteinrichtung die Werte gegen die reale Wallbox prüfen, bevor die Steuerung (Ladefreigabe/Stromlimit) produktiv genutzt wird.'],
+                        ['type' => 'Label', 'caption' => '• KEBA KeContact P30/P40: Standard-Unit-ID 255, Port 502.'],
+                        ['type' => 'Label', 'caption' => '• Alfen Eve Single/Double Pro-line: Standard-Unit-ID 1, Port 502. Nur Sockel 1 wird bedient.'],
+                        ['type' => 'Label', 'caption' => '• Heidelberg Energy Control: Standard-Unit-ID 1, Port 502.'],
+                        ['type' => 'Label', 'caption' => '• go-eCharger Gemini/HOME+: Standard-Unit-ID 1, Port 502. Modbus muss erst per go-e-App/HTTP-API aktiviert werden; Firmware 60.3 vertauschte die Byte-Reihenfolge (Schalter „Byte-Reihenfolge getauscht", seit 60.4 behoben). Achtung: Regelt ein go-e Controller die Wallbox bereits selbst (Lastmanagement/Überschussladen), nicht zusätzlich von hier aus steuern (Zwei-Regler-Konflikt) — siehe Kennzeichnung unter „Steuerungshoheit & Sicherheit".'],
+                        ['type' => 'Label', 'caption' => '• 🆕 ABL eMH1/eMH2/eMH3: kein binäres Modbus TCP, sondern Modbus ASCII — braucht einen reinen RS485-zu-Ethernet-Wandler (kein Protokoll-Gateway), Standard-Port meist 502 oder frei wählbar am Wandler. Kein Energiezähler in diesem Protokoll — „Ladeleistung" ist eine Schätzung aus den drei Phasenströmen, „Energie gesamt" eine daraus aufintegrierte Software-Zählung, keine echte Messung (kann von einem echten Zähler abweichen). Ladefreigabe/Stromlimit teilen sich dasselbe Register (Duty-Cycle-Prinzip nach IEC 61851-1).'],
+                        ['type' => 'Label', 'caption' => '• 🆕 DaheimLader (Smart/Touch/Smart PRO/Touch PRO/Business PRO): Standard-Unit-ID 255, Port 502. Phasenumschaltung und RFID-Kartenauslesung laut Hersteller nur bei den PRO-Modellen — auf Nicht-PRO-Geräten bleiben die entsprechenden Variablen leer. Laut evcc-Vorlage muss in den Geräteeinstellungen bei der Smart „Nachladen“, bei der Touch „RSDA“ aktiviert sein. Startet die Box über Ladebefehl (Register 95) nicht, hilft ggf. die Ladefreigabe über das Stromlimit (Register 91, wie evcc) im Panel „Steuerungshoheit & Sicherheit“.'],
+                        ['type' => 'Label', 'caption' => '• 🆕🧪 Phoenix Contact CHARX SEC-3xxx (Ladesteuerung): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Unit-ID 1, Port 502. Im WBM der Steuerung Modbus-Server aktivieren und Port 502 freigeben. Ladefreigabe und Stromlimit laufen über Register x301 (wie bei evcc: Freigabe = Strom 6-80 A, Sperre = 0). „Maximaler Anschlussstrom" in den Einstellungen unten auf den in der Steuerung eingestellten Maximalstrom setzen, sonst begrenzt der Standardwert. Ein Ladepunkt je Instanz: „Nummer des Ladepunkts" = x der Startadresse (1000 = 1, 2000 = 2 …). Startadressen besser fest im WBM vergeben, „automatisch" kann sich nach einem Neustart ändern.'],
+                        ['type' => 'Label', 'caption' => '• 🆕🧪 Peblar Home/Home Plus/Business (auch ChargeLine): EXPERIMENTELL, noch nicht an echter Hardware bestätigt. Standard-Unit-ID 255, Port 502. Firmware 1.6 oder neuer; Modbus-Server im Web-Interface des Ladepunkts aktivieren und Smart-Charging-Strategien auf „Standard" stellen. Ladefreigabe „Aus" setzt das Modbus-Stromlimit auf 0 (kein eigenes Freigabe-Register). Phasenumschaltung nur bei Geräten mit unabhängigem Relais.'],
+                        ['type' => 'Label', 'caption' => '• 🆕 Fox ESS EV Charger (Modelle A/L/C): Standard-Unit-ID 1, Port 502. Phasenumschaltung nur wirksam, wenn eine externe Phasenumschalt-Box angeschlossen ist.'],
+                        ['type' => 'Label', 'caption' => '🛡️ „Steuerungshoheit & Sicherheit" (weiter unten) legt fest, WER diese Wallbox schalten darf, und markiert bei Bedarf technische Dubletten (dieselbe Wallbox über zwei Module). Für Skripte gibt es zwei zusätzliche Funktionen: CHUB_SetActive($id, bool) schaltet Messen UND Steuern komplett aus/ein (z. B. für eine Dublette, die gar nicht mehr laufen soll), CHUB_ClearForceLock($id) hebt beim go-eCharger eine hängengebliebene Zwangs-Aus-Sperre auf (Symptom: Wallbox reagiert auf NICHTS mehr, auch nicht auf die Hersteller-App).'],
+                        ['type' => 'Label', 'caption' => '🔗 Symbox-Gateway (eingebauter RS485-Port): Verbindungsweg „Symbox-Gateway" wählen, das native ModBus-Gateway auswählen, „Brücke anlegen und verbinden" klicken, „Übernehmen". Die Unit-ID steht am Gateway („DeviceID"), eine Brücke bedient genau EINE Unit-ID — mehrere Wallboxen mit verschiedenen Unit-IDs brauchen je ein eigenes Gateway und eine eigene Brücke. Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet. Modbus ASCII (ABL) läuft immer direkt.'],
+                        ['type' => 'Label', 'caption' => '🆕 Manuell in der Konsole geänderte Variablenprofile werden ab jetzt nicht mehr automatisch zurückgesetzt. ⚠️ Bei Variablen mit Verbund-Bedeutung (z. B. energy_total) kann eine Profiländerung andere Module beeinträchtigen — MeterHub sucht Zähler z. B. anhand des Profil-Suffixes, Dashboard/EMS verlassen sich teils auf die Standard-Skalierung. Nur ändern, wenn ChargerHub eigenständig läuft oder die Auswirkung bekannt ist.'],
+                    ],
+                ],
+                ['type' => 'CheckBox', 'name' => 'Active', 'caption' => 'Kommunikation aktiv'],
+                [
+                    'type'    => 'Select',
+                    'name'    => 'Manufacturer',
+                    'caption' => 'Wallbox-Hersteller',
+                    'onChange' => 'IPS_RequestAction($id, "ManufacturerChanged", $Manufacturer);',
+                    'options' => [
+                        ['label' => '— bitte wählen —',                'value' => ''],
+                        ['label' => 'KEBA (KeContact P30/P40)',        'value' => 'keba'],
+                        ['label' => 'Alfen (Eve Single/Double Pro-line)', 'value' => 'alfen'],
+                        ['label' => 'Heidelberg Energy Control',       'value' => 'heidelberg'],
+                        ['label' => 'go-eCharger (Gemini/HOME+)',      'value' => 'goe'],
+                        ['label' => '🆕 ABL (eMH1/eMH2/eMH3, Modbus ASCII)', 'value' => 'abl'],
+                        ['label' => '🆕 DaheimLader (Smart/Touch/PRO-Serie)', 'value' => 'daheimlader'],
+                        ['label' => '🆕 Fox ESS EV Charger (A/L/C)', 'value' => 'foxess'],
+                        ['label' => '🆕🧪 Peblar (Home/Home Plus/Business, experimentell)', 'value' => 'peblar'],
+                        ['label' => '🆕🧪 Phoenix Contact CHARX SEC-3xxx (experimentell)', 'value' => 'charx'],
+                    ],
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🎛️  Bedienung',
+                    'expanded' => true,
+                    'items'    => $this->ControlPanelItems(),
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🔌  Verbindung',
+                    'expanded' => true,
+                    'items'    => [
+                        [
+                            'type'    => 'Select',
+                            'name'    => 'ConnectionType',
+                            'caption' => '🆕 Verbindungsweg',
+                            'options' => [
+                                ['caption' => 'Direkt (eigene TCP-Verbindung, Standard)', 'value' => 'direct'],
+                                ['caption' => 'Symbox-Gateway (eingebauter RS485-Port, nur Lesen)', 'value' => 'gateway'],
+                            ],
+                            'onChange' => 'IPS_RequestAction($id, "ConnectionTypeChanged", $ConnectionType);',
+                        ],
+                        ['type' => 'Label', 'caption' => 'ℹ️ Über die Suche (Modul „ChargerHub Suche") werden Host/Port/Unit ID beim Anlegen automatisch befüllt — von Hand eintragen ist nur nötig, wenn die Instanz manuell angelegt oder die IP-Adresse der Wallbox geändert wurde.', 'name' => 'DirectHintLabel', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP-Adresse oder Hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP-Port', 'minimum' => 1, 'maximum' => 65535, 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 255, 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'ChargePointNo', 'caption' => '🆕 Nummer des Ladepunkts (nur CHARX; 1000 = Nr. 1, 2000 = Nr. 2 …)', 'minimum' => 1, 'maximum' => 48, 'visible' => $this->ReadPropertyString('Manufacturer') === 'charx'],
+                        // Feld-Sichtbarkeit statt nur Warntext (Fund/Fix MeterHub, 18.09.2026):
+                        // Host/Port/Unit ID sehen sonst wie benutzbar aus, greifen im
+                        // Symbox-Modus aber gar nicht — die Unit-ID sitzt stattdessen an der
+                        // uebergeordneten Gateway-Splitter-Instanz (Property "DeviceID").
+                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => 'ModBus Gateway zum Gerät', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Button', 'name' => 'CreateBridgeButton', 'caption' => 'Brücke anlegen und verbinden', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => 'NRG-Stack Brücke zum ModBus Gateway', 'moduleID' => self::BRIDGE_GUID, 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => '🔗 Gateway wählen, „Brücke anlegen und verbinden", übernehmen. Unit-ID = „DeviceID" am Gateway; eine Brücke = genau eine Unit-ID.', 'name' => 'GatewayHintLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => '⚠️ Lesen funktioniert, Schreiben (Ladefreigabe/Stromlimit) ist noch ungetestet.', 'name' => 'GatewayWarnLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBridgeStatus', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                    ],
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '⏱️  Polling',
+                    'expanded' => false,
+                    'items'    => [
+                        ['type' => 'NumberSpinner', 'name' => 'IntervalFast', 'caption' => 'Lese-Intervall (Sekunden)', 'minimum' => 2, 'maximum' => 300, 'suffix' => 's'],
+                        ['type' => 'CheckBox', 'name' => 'ArchiveVariables', 'caption' => '🆕 Variablen archivieren (Verlauf; nötig für Ladesitzungen und Kosten im Dashboard)'],
+                        ['type' => 'Label', 'caption' => 'Standard: aus. Archiviert werden nur die Messwerte und Zähler dieser Instanz. ℹ️ Andere NRG-Stack-Module brauchen archivierte Werte: das Dashboard (Verlaufsgrafiken, Ladesitzungen, Kosten) und der MigrationsHub bei einem späteren Gerätewechsel. Das Einschalten wirkt beim nächsten Übernehmen.'],
+                        ['type' => 'CheckBox', 'name' => 'DisableArchiving', 'caption' => 'Archivierung deaktivieren (diese Instanz archiviert wie bisher)', 'visible' => $this->ReadAttributeBoolean('ArchiveLegacyOn')],
+                        ['type' => 'Label', 'caption' => 'Nur bei Instanzen sichtbar, die vor dieser Einstellung schon archivierten. Bereits aktiv archivierte Werte werden beim nächsten Übernehmen abgeschaltet, ihre bisherige Historie bleibt im Archiv erhalten. ⚠️ Nur abschalten, wenn ChargerHub eigenständig läuft: Dashboard-Verlaufsgrafiken, Ladesitzungen und ein späterer Gerätewechsel können archivierte Historie brauchen.', 'visible' => $this->ReadAttributeBoolean('ArchiveLegacyOn')],
+                    ],
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🛡️  Steuerungshoheit & Sicherheit',
+                    'expanded' => true,
+                    'items'    => [
+                        ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Wer regelt diesen Ladepunkt?', 'options' => $managedByOptions],
+                        ['type' => 'Select', 'name' => 'DuplicateOfKey', 'caption' => '🆕 Diese Wallbox ist dasselbe Gerät wie …', 'options' => $duplicateOfOptions, 'onChange' => 'IPS_RequestAction($id, "DuplicateOfKeyChanged", $DuplicateOfKey);'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkDuplicateStatus'],
+                        ['type' => 'Label', 'caption' => 'Nur setzen, wenn dieselbe physische Wallbox bereits über eine andere Instanz (ChargerHub oder OCPPHub) läuft. Betrifft NUR die Zählung — EMS/Dashboard/MeterHub überspringen diese Instanz dann bei Summen/Sitzungen/Leistung zugunsten der ausgewählten. Wer die Wallbox tatsächlich STEUERT, entscheidet weiterhin allein „Wer regelt diesen Ladepunkt?" oben — eine Instanz kann also gleichzeitig als Dublette markiert UND der aktive Regler sein. Für den vollständigen Stopp (Messen UND Steuern) gibt es zusätzlich CHUB_SetActive().'],
+                        ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Vorführmodus (Steuerung deaktiviert, nur Anzeige)'],
+                        ['type' => 'Label', 'caption' => 'Für öffentlich zugängliche Vorführ-/Demo-Instanzen (z. B. eine Modulvorstellung mit eigenem Login): deaktiviert Schalter/Schieberegler für Ladefreigabe, Stromlimit usw. in Konsole/WebFront UND weist Steuerbefehle zusätzlich serverseitig zurück — Messwerte bleiben normal sichtbar. Nicht aktivieren für den echten Betrieb.'],
+                        ['type' => 'Label', 'caption' => '⚠️ Zwei-Regler-Warnung: Regelt bereits etwas anderes diese Wallbox — go-e Controller, Lastmanagement, Tibber Grid Rewards, eine §14a-Steuerung ODER OCPPHub/ein anderes OCPP-Backend an DERSELBEN physischen Wallbox —, darf ein Energiemanagement nicht parallel Ladefreigabe/Stromlimit schreiben (beide Regler überschreiben sich sonst). Beim go-eCharger besonders wichtig: unsere Ladefreigabe „Aus" setzt geräteseitig FORCE_STATE=1 (erzwungen aus) — das blockiert dann JEDEN anderen Kanal (App, OCPP-Backend) hart, bis hier wieder freigegeben wird. Hier eintragen, wer die Hoheit hat: Bei allem außer „Niemand" und „Energiemanagement (EMS)" hält sich das EMS zurück und liest nur mit; ChargerHub gibt beim Wechsel von „Niemand" auf einen anderen Wert eine zuvor gesetzte Zwangs-Aus-Sperre automatisch wieder frei.'],
+                        ['type' => 'Select', 'name' => 'DaheimEnableVia', 'caption' => '🆕 Ladefreigabe (nur DaheimLader)', 'visible' => $this->ReadPropertyString('Manufacturer') === 'daheimlader', 'options' => [
+                            ['caption' => 'Über Ladebefehl, Register 95 (Standard, laut Hersteller-PDF)', 'value' => 'cmd'],
+                            ['caption' => 'Über Stromlimit, Register 91 (wie evcc; Sperre = 0,1 A)', 'value' => 'limit'],
+                        ]],
+                        ['type' => 'CheckBox', 'name' => 'PersistentConnection', 'caption' => '🆕 Dauerhafte Verbindung statt für jeden Zugriff neu zu verbinden', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'Label', 'caption' => 'Standardmäßig verbindet ChargerHub für jeden Lese-/Schreibzugriff neu und trennt danach sofort wieder. Manche Wallboxen (beobachtet bei einer DaheimLader Touch PRO) vertragen das nicht: Schreibbefehle bestätigt das Gerät zwar, wirken aber nicht. Hilft ein sehr langes Lese-Intervall, hilft meist auch diese Option — probieren, wenn Steuerbefehle trotz Bestätigung wirkungslos bleiben.'],
+                        ['type' => 'CheckBox', 'name' => 'WriteLog', 'caption' => '🆕 Schreibbefehle im Meldungen-Log protokollieren (Fehlersuche)'],
+                        ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximaler Anschlussstrom (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
+                        ['type' => 'Label', 'caption' => 'Zuleitung/Absicherung dieses Ladepunkts — harte Obergrenze für jedes Stromlimit, das über dieses Modul geschrieben wird (zusätzlich zum Hardware-Limit der Wallbox), unabhängig davon, was ein EMS anfordert.'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkEmsStatus'],
+                        ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Überschussladen selbst regeln (nur Fallback ohne EMS)'],
+                        ['type' => 'Label', 'caption' => 'Nur wirksam, wenn oben „Wer regelt?" auf „Niemand" steht UND kein aktives EMS installiert ist UND genau eine ChargerHub-Instanz aktiv ist (bei mehreren Wallboxen bitte EMS für die Koordination nutzen) UND ein MeterHub-Zähler am Netzanschlusspunkt einen Echtzeit-Wert liefert. Ist EMS aktiv, hat es immer Vorrang — diese Option greift dann automatisch nicht. Sichtbarer Status (aktiv/warum nicht) erscheint als eigene Variable „Überschussladen", sobald diese Option angehakt ist.'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkGridStatus'],
+                        // Kommt der Netzzähler automatisch (MeterHub-Vertrag) und ist das Feld leer,
+                        // bleibt das Eingabefeld eingeklappt (SUITE.md 21.09.2026): der Wert wird NIE
+                        // ins Feld geschrieben, sonst würde „Übernehmen“ ihn als eigene Wahl speichern.
+                        ['type' => 'ExpansionPanel', 'name' => 'SurplusMeterOverridePanel', 'caption' => '✏️  Anderen Netzzähler stattdessen verwenden', 'expanded' => !$this->GridMeterIsAutomatic(), 'items' => [
+                            ['type' => 'SelectInstance', 'name' => 'SurplusMeterID', 'caption' => 'NAP-Zähler (leer = automatisch über MeterHub-Vertrag; MeterHub-Zähler oder „Virtueller Zähler“)', 'validModules' => [self::METERHUB_GUID, self::METERHUBVIRTUAL_GUID]],
+                            ['type' => 'Label', 'caption' => 'Oder ohne MeterHub: die Netzleistung direkt aus einer Variablen (z. B. per MQTT befüllt). Sie hat Vorrang vor dem Zähler oben. Ist der Wert älter als das erlaubte Alter oder ungültig, stoppt das Überschussladen eine laufende Ladung, statt mit einem eingefrorenen Wert weiterzuladen; es startet wieder, sobald aktuelle Werte kommen.'],
+                            ['type' => 'SelectVariable', 'name' => 'SurplusGridVarID', 'caption' => 'Netzleistung (Variable)'],
+                            ['type' => 'Select', 'name' => 'SurplusGridSign', 'caption' => 'Vorzeichen der Variablen', 'options' => [
+                                ['caption' => '+ = Netzbezug, − = Einspeisung (wie MeterHub)', 'value' => 'import'],
+                                ['caption' => '+ = Einspeisung, − = Netzbezug', 'value' => 'export'],
+                            ]],
+                            ['type' => 'Select', 'name' => 'SurplusGridUnit', 'caption' => 'Einheit der Variablen', 'options' => [
+                                ['caption' => 'Watt (W)', 'value' => 'W'],
+                                ['caption' => 'Kilowatt (kW)', 'value' => 'kW'],
+                            ]],
+                            ['type' => 'NumberSpinner', 'name' => 'SurplusGridMaxAgeSec', 'caption' => 'Maximales Alter des Werts', 'minimum' => 5, 'maximum' => 600, 'suffix' => 's'],
+                        ]],
+                        ['type' => 'NumberSpinner', 'name' => 'StorageSharePercent', 'caption' => '🆕 Anteil für Speicher (%)', 'minimum' => 0, 'maximum' => 100, 'suffix' => '%'],
+                        ['type' => 'NumberSpinner', 'name' => 'BatteryCapacityKWh', 'caption' => '🆕 Speicherkapazität (kWh, 0 = kein Speicher/unbekannt)', 'minimum' => 0, 'maximum' => 200, 'digits' => 1, 'suffix' => 'kWh'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBatteryStatus'],
+                        ['type' => 'Label', 'caption' => 'Nur für die Phasenumschalt-Wartezeit: je mehr freie Speicherkapazität (Kapazität × (100 % − SOC), SOC über InverterHub) gerade übrig ist, desto länger darf beobachtet werden, bevor die Phasenzahl während einer laufenden Ladung wechselt — ein Wechsel kostet dann effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach den Speicher weiter. 0 = feste Grund-Wartezeit wie ohne Speicher.'],
+                        ['type' => 'Label', 'caption' => 'Dieser Anteil des Überschusses bleibt dem Speicher vorbehalten und wird von der Ampere-Berechnung fürs Laden abgezogen. 0 % = kompletter Überschuss geht in die Wallbox, 100 % = nichts geht in die Wallbox.'],
+                    ],
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '📊  Datenpunkte',
+                    'expanded' => true,
+                    'items'    => $groupItems,
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'caption'  => '🆕 📇  RFID-Kartenzähler (nur go-eCharger, per MQTT)',
+                    'expanded' => false,
+                    'items'    => [
+                        ['type' => 'Label', 'caption' => 'Kartenname + Energie je RFID-Karte (0–9) stehen nicht über Modbus zur Verfügung — nur über MQTT. Der go-eCharger muss dafür MQTT aktiviert haben und auf denselben Broker zeigen, der hier eingetragen wird (App → Internet → Erweiterte Einstellungen → MQTT). Modul verbindet sich selbst — keine zusätzliche Symcon-Instanz nötig.'],
+                        ['type' => 'CheckBox', 'name' => 'MqttCardsEnabled', 'caption' => 'RFID-Kartenzähler per MQTT abbilden'],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttHost', 'caption' => 'MQTT-Broker (IP/Hostname)', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'],
+                        ['type' => 'NumberSpinner', 'name' => 'MqttPort', 'caption' => 'MQTT-Port', 'minimum' => 1, 'maximum' => 65535],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttUsername', 'caption' => 'MQTT-Benutzername (falls vom Broker verlangt)'],
+                        ['type' => 'PasswordTextBox', 'name' => 'MqttPassword', 'caption' => 'MQTT-Passwort'],
+                        ['type' => 'ValidationTextBox', 'name' => 'MqttTopicPrefix', 'caption' => 'MQTT-Topic-Präfix (leer = Standard „go-eCharger/Seriennummer")'],
+                    ],
+                ],
+            ],
+            'actions' => [
+                ['type' => 'Button', 'caption' => 'Verbindung testen / Daten sofort lesen', 'onClick' => 'CHUB_TestConnection($id);'],
+                ['type' => 'Label', 'name' => 'ConnTestResult', 'caption' => ''],
+                // Praktisch nach einem Modul-Update, wenn der reguläre Weg
+                // (Modulverwaltung → Aktualisieren → Übernehmen) einmal nicht
+                // gegriffen hat (EMS-Vorschlag, Muster wie dort).
+                ['type' => 'Button', 'caption' => '🔄 Übernehmen erzwingen (ohne Formularänderung)', 'onClick' => "IPS_ApplyChanges(\$id); echo '✅ ApplyChanges() ausgeführt.';"],
+            ],
+            'status' => $this->ConfigurationStatus(),
+        ];
+
+        // Symcon-Forum-Hinweis nach den Haupteinstellungen, einmalig
+        // ausblendbar (nicht versionsscharf) — Muster wie MeterHub
+        // (EMS-Nachprüfung 14.09.2026: unser bisheriges RowLayout mit
+        // GitHub-Verweis war noch alter Stil). Eigener Forum-Thread ist noch
+        // nicht veröffentlicht (Entwurf in .forum/), daher vorerst weiter
+        // Verweis auf GitHub — sobald der Thread steht, hier den echten Link
+        // eintragen.
+        $forumHint = $this->ForumHint();
+        if ($forumHint !== null) {
+            $form['elements'][] = $forumHint;
+        }
+
+        // "Über dieses Modul" (Lizenz/Spenden) ganz unten, immer sichtbar,
+        // bewusst NICHT wegklickbar — eine Lizenz ist kein einmaliger
+        // Hinweis (SUITE.md, Dietmars Auftrag 01.09.2026, Wortlaut
+        // verbundweit identisch).
+        $form['elements'][] = $this->LicenseHint();
+
+        // „Was ist neu"-Banner nach einem Update ganz oben.
+        $banner = $this->newsBanner();
+        if ($banner !== null) {
+            array_unshift($form['elements'], $banner);
+        }
+
+        // "Wozu dieses Modul?" ganz vorn, noch vor dem News-Banner (Verbund-
+        // Formular-Konvention Punkt 0).
+        $intro = $this->PurposeIntro();
+        if ($intro !== null) {
+            array_unshift($form['elements'], $intro);
+        }
+
+        // Verbund-Verbindungen als live berechnete Statuszeilen (SUITE.md, 21.09.2026):
+        // rekursiv über alle items ersetzen, nicht nur auf oberster Ebene.
+        foreach ($this->LinkStatusLines() as $name => $caption) {
+            $this->SetFormLabelCaption($form['elements'], $name, $caption);
+        }
+
+        return json_encode($form);
+    }
+
+    // Setzt die Beschriftung eines benannten Elements, egal wie tief in
+    // ExpansionPanels/RowLayouts verschachtelt (rekursiv über 'items').
+    private function SetFormLabelCaption(array &$items, string $name, string $caption): bool
+    {
+        foreach ($items as &$item) {
+            if (($item['name'] ?? '') === $name) {
+                $item['caption'] = $caption;
+                // 🔗 = automatisch übernommen -> grün (SUITE.md 21.09.2026), sonst Standardfarbe.
+                $item['color'] = (strpos($caption, '🔗') === 0) ? 0x2E8B3D : -1;
+                return true;
+            }
+            if (isset($item['items']) && is_array($item['items']) && $this->SetFormLabelCaption($item['items'], $name, $caption)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Liefert MeterHub ohne eigene Wahl einen Netzzähler? Dann bleibt das Eingabefeld
+    // eingeklappt („🔗 automatisch"), sonst offen (ℹ️/⚠️/✏️).
+    private function GridMeterIsAutomatic(): bool
+    {
+        return $this->ReadPropertyInteger('SurplusMeterID') <= 0
+            && $this->ReadPropertyInteger('SurplusGridVarID') <= 0
+            && (function_exists('MHUB_GetFunctions') || function_exists('MHUBV_GetFunctions'))
+            && $this->FindGridSurplusW() !== null;
+    }
+
+    // Eine Statuszeile je automatischer Verbindung zu einem Partnermodul
+    // (✅ verbunden mit Werten/Quelle, ⚠️ verbunden ohne Brauchbares, ℹ️ nicht
+    // gefunden und was dann gilt, ⛔ Pflichtangabe fehlt). Jeder Fremdzugriff
+    // hinter function_exists().
+    private function LinkStatusLines(): array
+    {
+        $lines = [];
+
+        // Brücke (nur Symbox-Gateway-Weg)
+        $bridgeId = $this->ReadPropertyInteger('BridgeInstanceID');
+        if ($this->ReadPropertyString('ConnectionType') === 'gateway') {
+            if ($bridgeId <= 0 || !@IPS_InstanceExists($bridgeId)) {
+                $lines['LinkBridgeStatus'] = '⛔ Keine Brücke gewählt: „Brücke anlegen und verbinden" klicken (Gateway zuerst wählen), dann übernehmen.';
+            } elseif (!function_exists('CHUBB_GetState')) {
+                $lines['LinkBridgeStatus'] = '⚠️ Brücke #' . $bridgeId . ' eingetragen, aber das Brückenmodul liefert keinen Zustand (Modul nicht geladen?).';
+            } else {
+                $st = json_decode((string)@CHUBB_GetState($bridgeId), true);
+                $bn = @IPS_GetName($bridgeId);
+                if (!is_array($st) || empty($st['connected'])) {
+                    $lines['LinkBridgeStatus'] = '⚠️ Brücke #' . $bridgeId . ' („' . $bn . '"): kein ModBus-Gateway verknüpft.';
+                } elseif (empty($st['parentActive'])) {
+                    $lines['LinkBridgeStatus'] = '⚠️ Brücke #' . $bridgeId . ' („' . $bn . '"): Gateway verknüpft, aber nicht aktiv (Status ' . (int)($st['parentStatus'] ?? 0) . ').';
+                } else {
+                    $lines['LinkBridgeStatus'] = '✅ Brücke #' . $bridgeId . ' („' . $bn . '") mit aktivem ModBus-Gateway verbunden, Unit-ID ' . (($st['unitId'] ?? null) === null ? 'nicht lesbar' : (int)$st['unitId']) . ' (gelesen am Gateway).';
+                }
+            }
+        }
+
+        // Dubletten-Zuordnung
+        $lines['LinkDuplicateStatus'] = $this->DuplicateLine($this->ReadPropertyString('DuplicateOfKey'));
+
+        // EMS
+        $emsIDs = @IPS_GetInstanceListByModuleID(self::EMS_GUID) ?: [];
+        if ($emsIDs === []) {
+            $lines['LinkEmsStatus'] = 'ℹ️ Kein EMS installiert: eine Eigenregelung per Überschussladen (unten) ist möglich, wenn aktiviert.';
+        } elseif ($this->IsEmsActive()) {
+            $lines['LinkEmsStatus'] = '✅ EMS #' . $emsIDs[0] . ' („' . @IPS_GetName($emsIDs[0]) . '") ist aktiv und hat Vorrang: die Eigenregelung per Überschussladen greift dann nicht.';
+        } else {
+            $lines['LinkEmsStatus'] = 'ℹ️ EMS #' . $emsIDs[0] . ' installiert, aber nicht aktiv (Statusvariable „EMS_Active_State" nicht an): die Eigenregelung ist möglich, wenn aktiviert.';
+        }
+
+        // Netzzähler (eigene Variable oder MeterHub)
+        $forced = $this->ReadPropertyInteger('SurplusMeterID');
+        $usedBy = $this->ReadPropertyBoolean('EnableSurplusCharging') ? 'Überschussladen ist aktiviert' : 'wird nur bei aktiviertem Überschussladen genutzt';
+        $gvar = $this->GridVariableSurplus();
+        if ($gvar['configured']) {
+            $maxAge = max(5, $this->ReadPropertyInteger('SurplusGridMaxAgeSec'));
+            if ($gvar['name'] === '') {
+                $lines['LinkGridStatus'] = '⚠️ Netzleistung: Variable #' . $gvar['vid'] . ' existiert nicht mehr. Ohne Netzwert stoppt das Überschussladen eine laufende Ladung.';
+            } elseif ($gvar['stale']) {
+                $lines['LinkGridStatus'] = '⚠️ Netzleistung: Variable „' . $gvar['name'] . '" #' . $gvar['vid'] . ' ist ' . $gvar['ageSec'] . ' s alt (erlaubt: ' . $maxAge . ' s). Eine laufende Ladung wird gestoppt, bis wieder aktuelle Werte kommen.';
+            } elseif ($gvar['surplus'] === null) {
+                $lines['LinkGridStatus'] = '⚠️ Netzleistung: Variable „' . $gvar['name'] . '" #' . $gvar['vid'] . ' liefert keinen Zahlenwert. Eine laufende Ladung wird gestoppt.';
+            } else {
+                $lines['LinkGridStatus'] = '✏️ Netzleistung aus eigener Variable „' . $gvar['name'] . '" #' . $gvar['vid'] . ' (Vorzeichen ' . ($this->ReadPropertyString('SurplusGridSign') === 'export' ? '+ = Einspeisung' : '+ = Bezug') . ', ' . $this->ReadPropertyString('SurplusGridUnit') . '), aktuell ' . round($gvar['surplus']) . ' W Überschuss, Wert ' . $gvar['ageSec'] . ' s alt (' . $usedBy . ').';
+            }
+        } elseif (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
+            $lines['LinkGridStatus'] = 'ℹ️ MeterHub nicht installiert: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
+        } else {
+            $mhubs = $this->MeterContractInstances();
+            $w = $this->FindGridSurplusW();
+            if ($mhubs === []) {
+                $lines['LinkGridStatus'] = 'ℹ️ Keine MeterHub-Instanz (Zähler oder „Virtueller Zähler“) vorhanden: kein Netzzähler, das Überschussladen selbst regeln kann nicht arbeiten.';
+            } elseif ($w === null) {
+                $lines['LinkGridStatus'] = '⚠️ MeterHub vorhanden, aber ' . ($forced > 0 ? 'die gewählte Instanz #' . $forced : 'keine Instanz') . ' liefert keinen Netzzähler („grid") mit Echtzeit-Wert. Ohne ihn regelt das Überschussladen nicht.';
+            } elseif ($forced > 0) {
+                $lines['LinkGridStatus'] = '✏️ Netzzähler: „' . $this->SurplusMeterLabel() . '" (eigene Wahl, MeterHub, Echtzeit), aktuell ' . round($w) . ' W Überschuss (' . $usedBy . ').';
+            } else {
+                $lines['LinkGridStatus'] = '🔗 Netzzähler: „' . $this->SurplusMeterLabel() . '" (automatisch von MeterHub, Echtzeit), aktuell ' . round($w) . ' W Überschuss (' . $usedBy . ').';
+            }
+        }
+
+        // Speicher (InverterHub)
+        $cap = $this->ReadPropertyFloat('BatteryCapacityKWh');
+        $capNote = $cap > 0 ? 'Kapazität ' . $cap . ' kWh (eigene Eingabe)' : 'Kapazität 0 = unbekannt (Phasen-Wartezeit nutzt den Grundwert)';
+        if (!function_exists('IHUB_GetFunctions')) {
+            $lines['LinkBatteryStatus'] = 'ℹ️ InverterHub nicht installiert: Speicher wird nicht berücksichtigt. ' . $capNote . '.';
+        } else {
+            $ihubs = @IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [];
+            $parts = [];
+            foreach ($ihubs as $iid) {
+                $fns = @IHUB_GetFunctions($iid);
+                $bp = (int)($fns['batPowerID'] ?? 0);
+                $sc = (int)($fns['socID'] ?? 0);
+                $one = [];
+                if ($bp > 0 && is_numeric(@GetValue($bp))) {
+                    $one[] = 'Ladeleistung ' . round(max(0.0, -(float)GetValue($bp))) . ' W';
+                }
+                if ($sc > 0 && is_numeric(@GetValue($sc))) {
+                    $one[] = 'Ladestand ' . round((float)GetValue($sc)) . ' %';
+                }
+                if ($one !== []) {
+                    $parts[] = '„' . @IPS_GetName($iid) . '" (' . implode(', ', $one) . ')';
+                }
+            }
+            if ($ihubs === []) {
+                $lines['LinkBatteryStatus'] = 'ℹ️ Keine InverterHub-Instanz: Speicher wird nicht berücksichtigt. ' . $capNote . '.';
+            } elseif ($parts === []) {
+                $lines['LinkBatteryStatus'] = '⚠️ InverterHub vorhanden, liefert aber weder Speicher-Ladeleistung noch Ladestand: Speicher wird nicht berücksichtigt. ' . $capNote . '.';
+            } else {
+                $lines['LinkBatteryStatus'] = '✅ Speicher über InverterHub (Quelle: Vertrag) gelesen: ' . implode('; ', $parts) . '. ' . $capNote . '.';
+            }
+        }
+
+        // Fahrzeug (von einem Fahrzeug-Modul eingetragen)
+        $veh = trim((string)$this->GetVarValue('vehicle_name'));
+        $lines['LinkVehicleStatus'] = $veh !== ''
+            ? '✅ Zugeordnetes Fahrzeug: „' . $veh . '" (von einem Fahrzeug-Modul über CHUB_SetVehicleName eingetragen).'
+            : 'ℹ️ Kein Fahrzeug zugeordnet: kein Fahrzeug-Modul hat gerade einen Namen eingetragen (leer, solange nichts angesteckt ist oder kein Modul koppelt).';
+
+        return $lines;
+    }
+
+    // „Was ist neu"-Banner: erscheint nach einem Update (Attribut startet
+    // leer), bis der Nutzer „Verstanden" klickt. Neuinstallation sieht es
+    // einmalig.
+    private function newsBanner()
+    {
+        if ($this->ReadAttributeString('SeenNews') === self::NEWS_VERSION) {
+            return null;
+        }
+        $items = [['type' => 'Label', 'caption' => '🆕 Neu in diesem Modul — bitte kurz ansehen und ggf. die Einstellungen prüfen:']];
+        foreach (self::NEWS_ITEMS as $line) {
+            $items[] = ['type' => 'Label', 'caption' => '• ' . $line];
+        }
+        $items[] = ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUB_AckNews($id);'];
+        return ['type' => 'ExpansionPanel', 'name' => 'NewsPanel', 'caption' => '🆕 Neu in Version ' . self::NEWS_VERSION, 'expanded' => true, 'items' => $items];
+    }
+
+    /** Siehe MeterHub::PurposeIntro() für die volle Herleitung — steht ganz vorn, noch vor dem News-Panel. */
+    private function PurposeIntro(): ?array
+    {
+        if ($this->ReadAttributeBoolean('PurposeIntroGone')) {
+            return null;
+        }
+        return [
+            'type' => 'ExpansionPanel', 'name' => 'PurposeIntroPanel', 'expanded' => true,
+            'caption' => '👋  Wozu dieses Modul?',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller (KEBA, Alfen, Heidelberg, go-eCharger) direkt per Modbus TCP — als normale IP-Symcon-Variablen und -Aktionen, ohne Umweg über eine Herstellercloud.'],
+                ['type' => 'Label', 'caption' => 'Der Nutzen: Ladestand, Leistung und Steckerstatus in eigenen Dashboards, Ladefreigabe/Stromlimit aus eigenen Skripten oder einem Energiemanagement (EMS) heraus setzen, statt auf die App des Herstellers angewiesen zu sein.'],
+                ['type' => 'Label', 'caption' => 'Kennst du die IP-Adresse deiner Wallbox noch nicht, oder willst du gleich mehrere einrichten? Das Modul „ChargerHub Suche" durchsucht dafür das lokale Netz und legt passende Instanzen automatisch an.'],
+                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUB_AckPurposeIntro($id);'],
+            ],
+        ];
+    }
+
+    public function AckPurposeIntro()
+    {
+        $this->WriteAttributeBoolean('PurposeIntroGone', true);
+        $this->UpdateFormField('PurposeIntroPanel', 'visible', false);
+        $this->PropagateDismiss('PurposeIntro');
+    }
+
+    public function AckNews()
+    {
+        $this->WriteAttributeString('SeenNews', self::NEWS_VERSION);
+        $this->UpdateFormField('NewsPanel', 'visible', false);
+        $this->PropagateDismiss('News', self::NEWS_VERSION);
+    }
+
+    public function DismissReviewHint()
+    {
+        $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
+        $this->UpdateFormField('ReviewHint', 'visible', false);
+        $this->PropagateDismiss('ReviewHint');
+    }
+
+    /** Symcon-Forum-Hinweis — einmalig dismissible, kein Versionsbezug, siehe MeterHub::ForumHint(). */
+    private function ForumHint(): ?array
+    {
+        if ($this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE)) {
+            return null;
+        }
+        return [
+            'type' => 'ExpansionPanel', 'name' => 'ReviewHint', 'expanded' => true,
+            'caption' => '💬  Feedback im Symcon-Forum',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'ChargerHub ist Beta — Rückmeldungen sind ausdrücklich willkommen, bitte mit Hersteller, Modell und betroffenem Register/Wert.'],
+                ['type' => 'Button', 'caption' => 'Zum Forums-Thread', 'onClick' => "echo '" . self::FORUM_THREAD_URL . "';", 'link' => true],
+                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUB_DismissReviewHint($id);'],
+            ],
+        ];
+    }
+
+    /**
+     * Lizenz-/Unterstützungs-Hinweis — Dietmars Auftrag 01.09.2026, Wortlaut
+     * ("Variante A") verbundweit als SUITE.md-Konvention festgehalten, damit
+     * alle NRG-Stack-Module denselben Text verwenden. Anders als der
+     * Forum-Hinweis bewusst NICHT wegklickbar — eine Lizenz ist kein
+     * einmaliger Hinweis, der nach dem ersten Lesen verschwinden sollte.
+     */
+    private function LicenseHint(): array
+    {
+        return [
+            'type' => 'ExpansionPanel', 'expanded' => false,
+            'caption' => '🧡  Über dieses Modul',
+            'items' => [
+                ['type' => 'Label', 'caption' => 'Entstanden aus echter Begeisterung für die eigene Anlage — und ein paar durchgetippten Abenden. Trotzdem: Software-Hobby hin oder her, das hier ist geistiges Eigentum und echte Arbeit steckt drin.'],
+                ['type' => 'Label', 'caption' => 'Lizenz: PolyForm Noncommercial 1.0.0 — privat und nicht-kommerziell frei nutzbar, für den gewerblichen Einsatz braucht es eine gesonderte Lizenz vom Rechteinhaber.'],
+                ['type' => 'Button', 'caption' => 'Lizenztext ansehen', 'onClick' => "echo '" . self::LICENSE_URL . "';", 'link' => true],
+                ['type' => 'Label', 'caption' => 'Gewerbliche Nutzung oder Fragen zur Lizenz? Einfach melden: dietmar@gureth.eu'],
+                ['type' => 'Label', 'caption' => 'Gefällt dir das Modul und du möchtest trotzdem etwas dalassen? Über eine kleine Spende freue ich mich — völlig freiwillig, keine Gegenleistung nötig.'],
+                ['type' => 'Button', 'caption' => '☕  Spenden via PayPal', 'onClick' => "echo '" . self::PAYPAL_URL . "';", 'link' => true],
+            ],
+        ];
+    }
+
+    /**
+     * Ausblenden von "Wozu dieses Modul?"/"Was ist Neu?"/Rückmeldungs-Hinweis
+     * über alle Geschwister-Instanzen dieses Moduls teilen (Dietmar über EMS,
+     * 14.09.2026, SUITE.md "Ausblenden über mehrere Instanzen desselben
+     * Moduls teilen", Referenzimplementierung MeterHub). Ruft bei jeder
+     * Geschwister-Instanz NUR den reinen Übernahme-Schritt auf
+     * (AdoptDismissState), nicht erneut die volle Ack-Methode — dadurch
+     * kein Ping-Pong möglich, ganz ohne Prozessmerker: AdoptDismissState()
+     * propagiert selbst nie weiter.
+     */
+    private function PropagateDismiss(string $what, string $value = ''): void
+    {
+        foreach (@IPS_GetInstanceListByModuleID(self::CHARGERHUB_GUID) ?: [] as $sib) {
+            if ($sib === $this->InstanceID) {
+                continue;
+            }
+            try {
+                CHUB_AdoptDismissState($sib, $what, $value);
+            } catch (\Throwable $e) {
+                // Eine Geschwister-Instanz mitten im Reload/Löschen darf das
+                // Ausblenden der aufrufenden Instanz nicht mitreißen.
+            }
+        }
+    }
+
+    /** Reiner Übernahme-Schritt für eine Geschwister-Instanz — siehe PropagateDismiss(). */
+    public function AdoptDismissState(string $what, string $value)
+    {
+        switch ($what) {
+            case 'PurposeIntro':
+                $this->WriteAttributeBoolean('PurposeIntroGone', true);
+                $this->UpdateFormField('PurposeIntroPanel', 'visible', false);
+                break;
+            case 'ReviewHint':
+                $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
+                $this->UpdateFormField('ReviewHint', 'visible', false);
+                break;
+            case 'News':
+                $this->WriteAttributeString('SeenNews', $value);
+                $this->UpdateFormField('NewsPanel', 'visible', false);
+                break;
+        }
+    }
+
+    /** Für Geschwister-Instanzen, die beim erstmaligen Kontakt den Ausblenden-Stand übernehmen wollen — siehe AdoptDismissFromSibling(). */
+    public function GetDismissState(): array
+    {
+        return [
+            'purposeIntroGone' => $this->ReadAttributeBoolean('PurposeIntroGone'),
+            'reviewHintGone'   => $this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE),
+            'seenNews'         => $this->ReadAttributeString('SeenNews'),
+        ];
+    }
+
+    /**
+     * Gegenrichtung zu PropagateDismiss(): eine Instanz sieht bei jedem
+     * ApplyChanges() bei einer beliebigen Geschwister-Instanz nach und
+     * übernimmt deren Stand, statt "Wozu dieses Modul?"/"Was ist Neu?"/den
+     * Rückmeldungs-Hinweis erneut zu zeigen, obwohl der Nutzer sie an
+     * anderer Stelle schon bestätigt hat. Zieht nur vor (false→true, ältere→
+     * neuere News-Version), überschreibt nie einen schon weiter
+     * fortgeschrittenen eigenen Stand — der frühe Ausstieg macht das für
+     * längst abgeglichene Instanzen billig.
+     */
+    private function AdoptDismissFromSibling(): void
+    {
+        if ($this->ReadAttributeBoolean('PurposeIntroGone') && $this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE)
+            && $this->ReadAttributeString('SeenNews') === self::NEWS_VERSION) {
+            return;
+        }
+        foreach (@IPS_GetInstanceListByModuleID(self::CHARGERHUB_GUID) ?: [] as $sib) {
+            if ($sib === $this->InstanceID) {
+                continue;
+            }
+            try {
+                $state = CHUB_GetDismissState($sib);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if (!is_array($state)) {
+                continue;
+            }
+            if (!$this->ReadAttributeBoolean('PurposeIntroGone') && !empty($state['purposeIntroGone'])) {
+                $this->WriteAttributeBoolean('PurposeIntroGone', true);
+            }
+            if (!$this->ReadAttributeBoolean(self::ATTR_REVIEW_HINT_GONE) && !empty($state['reviewHintGone'])) {
+                $this->WriteAttributeBoolean(self::ATTR_REVIEW_HINT_GONE, true);
+            }
+            if ($this->ReadAttributeString('SeenNews') !== self::NEWS_VERSION && ($state['seenNews'] ?? '') === self::NEWS_VERSION) {
+                $this->WriteAttributeString('SeenNews', self::NEWS_VERSION);
+            }
+            break;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Variablen-Registrierung (generisch, treiberunabhängig) — Muster wie
+    // InverterHub/MeterHub.
+    // -----------------------------------------------------------------------
+
+    // RFID-Kartenzähler je Karte (0–9): Name + Energie. Nur go-eCharger, nur
+    // wenn per Property freigeschaltet — kommt ausschließlich über MQTT
+    // (siehe ReceiveData()), nicht über Modbus, daher unabhängig von den
+    // Treiber-Datenpunktgruppen behandelt statt über ChargerDriverInterface.
+    private function RegisterMqttCardVars(): void
+    {
+        for ($i = 0; $i <= 9; $i++) {
+            $this->RegisterVar(["card{$i}_name", "Karte {$i}: Name", 'S', '', false, 'cards', ''], 100 + $i * 2);
+            $this->RegisterVar(["card{$i}_energy", "Karte {$i}: Energie", 'F', '~Electricity', false, 'cards', ''], 100 + $i * 2 + 1);
+        }
+    }
+
+    // Hat der Treiber „Fahrzeug verbunden“ (alle außer Alfen) UND ist die Option an? Nur dann werden
+    // die abgeleiteten Zeitstempel „Angesteckt um“/„Abgesteckt um“ angelegt.
+    private function DriverHasPlugState($driver): bool
+    {
+        foreach ($driver->getBaseVars() as $v) {
+            if ($v[0] === 'vehicle_plugged') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function PlugTimesActive($driver = null): bool
+    {
+        return $this->ReadPropertyBoolean('PlugTimes') && $this->DriverHasPlugState($driver ?? $this->GetDriver());
+    }
+
+    private function RegisterVariables()
+    {
+        $driver = $this->GetDriver();
+        $plugTimesActive = $this->PlugTimesActive($driver);
+
+        $valid = [];
+        foreach ($driver->getBaseVars() as $v) {
+            $valid[$v[0]] = true;
+        }
+        foreach ($driver->getOptionalGroups() as $propName => $group) {
+            if ($this->GroupActive($propName)) {
+                foreach ($group['vars'] as $v) {
+                    $valid[$v[0]] = true;
+                }
+            }
+        }
+        $mqttCardsActive = $this->ReadPropertyString('Manufacturer') === 'goe'
+            && $this->ReadPropertyBoolean('MqttCardsEnabled');
+        if ($mqttCardsActive) {
+            for ($i = 0; $i <= 9; $i++) {
+                $valid["card{$i}_name"]   = true;
+                $valid["card{$i}_energy"] = true;
+            }
+        }
+        // Herstellerunabhängig, kommt nie über Modbus/den Treiber, sondern
+        // ausschließlich per CHUB_SetVehicleName() von außen (Tessie oder ein
+        // beliebiges anderes Fahrzeug-Modul) — siehe SetVehicleName().
+        $valid['vehicle_name'] = true;
+        $valid['control_status'] = true;
+        $valid['charging_active'] = true;
+        $valid['control_plan'] = true;
+        $surplusActive = $this->ReadPropertyBoolean('EnableSurplusCharging');
+        if ($surplusActive) {
+            $valid['surplus_status'] = true;
+        }
+        if ($plugTimesActive) {
+            $valid['plugged_in_at']  = true;
+            $valid['plugged_out_at'] = true;
+        }
+        $this->PruneForeignObjects($valid);
+
+        $pos = 0;
+        foreach ($driver->getBaseVars() as $v) {
+            $this->RegisterVar($v, $pos++);
+        }
+        foreach ($driver->getOptionalGroups() as $propName => $group) {
+            if ($this->GroupActive($propName)) {
+                foreach ($group['vars'] as $v) {
+                    $this->RegisterVar($v, $pos++);
+                }
+            }
+        }
+        if ($mqttCardsActive) {
+            $this->RegisterMqttCardVars();
+        }
+        $this->RegisterVar(['vehicle_name', 'Zugeordnetes Fahrzeug', 'S', '', true, 'device', ''], $pos++);
+        if ($plugTimesActive) {
+            $this->RegisterVar(['plugged_in_at',  'Angesteckt um',  'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Ja'], $pos++);
+            $this->RegisterVar(['plugged_out_at', 'Abgesteckt um', 'I', '~UnixTimestamp', false, 'device', 'abgeleitet: Wechsel von „Fahrzeug verbunden“ auf Nein'], $pos++);
+        }
+        $this->RegisterVar(['charging_active', 'Lädt', 'B', '', false, 'errors', 'abgeleitet: Ladeleistung über 100 W'], $pos++);
+        $this->RegisterVar(['control_plan', 'Plan (was als Nächstes passiert)', 'S', '', false, 'control', 'Auskunft von außen (z. B. EMS) über die geplanten Ladefenster'], $pos++);
+        $this->RegisterVar(['control_status', 'Regelung (wer, warum)', 'S', '', false, 'control', 'Auskunft: wer den Ladepunkt gerade regelt und warum'], $pos++);
+        if ($surplusActive) {
+            $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);
+        }
+        if ($this->ReadPropertyString('DuplicateOfKey') !== '') {
+            $this->RegisterVar(['dup_warning', 'Dubletten-Warnung', 'S', '', false, 'errors', ''], $pos++);
+        }
+
+        // Migration abgeschlossen — ab hier nie wieder Steuervariablen
+        // löschen/neu anlegen (siehe RegisterVar()).
+        $this->WriteAttributeBoolean('ControlActionsMigrated', true);
+    }
+
+    // Variablen liegen in Untergruppen-Kategorien (siehe EnsureCategory), nicht
+    // direkt unter der Instanz — daher rekursiv sammeln (Muster wie
+    // InverterHub), sonst würden Variablen eines abgewählten Herstellers/einer
+    // deaktivierten Gruppe nie erkannt und blieben stehen.
+    private function PruneForeignObjects(array $validIdents)
+    {
+        // (id, parentIsInstance) je Ident sammeln, um anschließend zwei
+        // Aufräumschritte in einem Durchlauf zu erledigen.
+        $byIdent = [];
+        $collect = function ($pid, $depth) use (&$collect, &$byIdent) {
+            foreach (@IPS_GetChildrenIDs($pid) ?: [] as $cid) {
+                $obj = IPS_GetObject($cid);
+                if ($obj['ObjectType'] === 2 && $obj['ObjectIdent'] !== '') {
+                    $byIdent[$obj['ObjectIdent']][] = ['id' => $cid, 'directChild' => ($depth === 0)];
+                }
+                if ($obj['ObjectType'] === 0) {
+                    $collect($cid, $depth + 1);
+                }
+            }
+        };
+        $collect($this->InstanceID, 0);
+
+        foreach ($byIdent as $ident => $entries) {
+            if (!isset($validIdents[$ident])) {
+                // Fremder/nicht mehr gültiger Ident (abgewählte Gruppe,
+                // Herstellerwechsel) — alle Fundstellen löschen.
+                foreach ($entries as $e) {
+                    $this->DeleteVariableSafely($e['id']);
+                }
+                continue;
+            }
+            if (count($entries) > 1) {
+                // Karteileiche aus dem 0.9.13-Zwischenfall (ApplyChanges brach
+                // mitten im Lauf ab, siehe CHANGELOG): RegisterVariableX legte
+                // eine zweite Variable direkt unter der Instanz an, das
+                // anschließende IPS_SetParent in die Kategorie schlug wegen
+                // der Ident-Kollision fehl und blieb dort stehen — die
+                // korrekte, in einer Kategorie verschachtelte Variable blieb
+                // daneben unangetastet bestehen. Direkte Instanz-Kinder mit
+                // einem Ident, der auch verschachtelt vorkommt, sind immer
+                // die Karteileiche.
+                foreach ($entries as $e) {
+                    if ($e['directChild']) {
+                        $this->DeleteVariableSafely($e['id']);
+                    }
+                }
+            }
+        }
+    }
+
+    // IPS_DeleteVariable() scheitert still (kein Fehler, keine Löschung),
+    // wenn unter der Variable noch ein Kind-Objekt hängt — live beobachtet
+    // bei einer Karteileiche mit einem Link-Objekt darunter (vermutlich aus
+    // einer Visualisierung). Kind-Objekte vorher entfernen.
+    private function DeleteVariableSafely(int $vid): void
+    {
+        foreach (@IPS_GetChildrenIDs($vid) ?: [] as $cid) {
+            $obj = IPS_GetObject($cid);
+            if ($obj['ObjectType'] === 6) {
+                @IPS_DeleteLink($cid);
+            }
+        }
+        @IPS_DeleteVariable($vid);
+    }
+
+    // Erzeugung über RegisterVariableX (nötig für die Kernel-Standardaktion,
+    // siehe EnableAction()-Aufruf unten), aber NUR bei echter Neuanlage
+    // (!$vid) — ein erneuter Aufruf, nachdem die Variable längst in ihre
+    // Kategorie verschoben wurde, kollidiert dort beim IPS_SetParent
+    // ("Ident muss für jede Ebene eindeutig sein", siehe CHANGELOG 0.9.13/14).
+    // Bereits bestehende Variablen werden über die rekursive FindVarByIdent()
+    // gefunden (InverterHub-Muster), nicht erneut registriert.
+    private function RegisterVar(array $def, int $pos)
+    {
+        [$ident, $caption, $type, $profile, $archive, $group, $reg] = $def;
+
+        $vtype = [
+            'F' => VARIABLETYPE_FLOAT,
+            'I' => VARIABLETYPE_INTEGER,
+            'B' => VARIABLETYPE_BOOLEAN,
+            'S' => VARIABLETYPE_STRING,
+        ][$type];
+
+        $vid = $this->FindVarByIdent($ident);
+        // Typ-Migration: IPS kann den Typ einer Variable nicht nachträglich
+        // ändern — bei Typwechsel neu anlegen.
+        if ($vid && IPS_GetVariable($vid)['VariableType'] !== $vtype) {
+            @IPS_DeleteVariable($vid);
+            $vid = 0;
+        }
+        // Einmalige Migration für "control"-Variablen, die noch VOR dem
+        // RegisterVariableX-Fix per rohem IPS_CreateVariable() erzeugt wurden
+        // (fehlende Kernel-Standardaktion). Steuerung über ein PERSISTENTES
+        // Attribut, NICHT über eine Live-Zustandsprüfung von VariableAction:
+        // Live bestätigt (25.07.2026) lieferte IPS_GetVariable()['VariableAction']
+        // nach der Migration weiterhin 0 zurück (das Feld spiegelt offenbar
+        // etwas anderes als die per RegisterVariableX/IPS_SetVariableCustomAction
+        // gesetzte Bindung), wodurch dieser Zweig bei JEDEM Übernehmen erneut
+        // feuerte und die IDs bei jedem Aufruf neu vergeben wurden — ein
+        // Attribut kann das nicht, es wird exakt einmal auf true gesetzt.
+        if ($vid && $group === 'control' && !$this->ReadAttributeBoolean('ControlActionsMigrated')) {
+            @IPS_DeleteVariable($vid);
+            $vid = 0;
+        }
+        $isNewVar = !$vid;
+        // RegisterVariableX NUR bei echter Neuanlage aufrufen (!$vid), nicht
+        // bei jedem ApplyChanges: der Ident-Registrierung dieser SDK-Methode
+        // ist instanzweit, nicht nur auf direkte Kinder beschränkt — ein
+        // erneuter Aufruf NACHDEM die Variable längst in eine Kategorie
+        // verschoben wurde, kollidiert dort mit sich selbst ("Ident muss für
+        // jede Ebene eindeutig sein", live reproduziert 25.07.2026). Die bei
+        // der Neuanlage gesetzte Kernel-Standardaktion bleibt beim späteren
+        // IPS_SetParent in die Kategorie erhalten, muss also nicht erneut
+        // durch RegisterVariableX bestätigt werden — nur das explizite
+        // IPS_SetVariableCustomAction($vid, 0) weiter unten läuft jedes Mal.
+        if (!$vid) {
+            switch ($type) {
+                case 'F':
+                    $vid = $this->RegisterVariableFloat($ident, $caption, $profile, $pos);
+                    break;
+                case 'I':
+                    $vid = $this->RegisterVariableInteger($ident, $caption, $profile, $pos);
+                    break;
+                case 'B':
+                    $vid = $this->RegisterVariableBoolean($ident, $caption, $profile, $pos);
+                    break;
+                case 'S':
+                    $vid = $this->RegisterVariableString($ident, $caption, $profile, $pos);
+                    break;
+            }
+            // WICHTIG: IPS_SetVariableCustomAction($vid, 0) ist die falsche API
+            // für modul-EIGENE Variablen (von dieser Instanz per
+            // RegisterVariableX angelegt) — sie sieht korrekt aus (kein Fehler),
+            // bleibt aber wirkungslos, insbesondere in WebFront/Konsole
+            // (unabhängig bestätigt sowohl live bei uns als auch bei
+            // InverterHub, das denselben Bug hatte). Richtig ist die
+            // SDK-eigene $this->EnableAction($Ident). Die MUSS hier, VOR dem
+            // IPS_SetParent() weiter unten, aufgerufen werden: EnableAction()
+            // löst den Ident intern über das flache GetIDForIdent() auf, das
+            // nur direkte Instanz-Kinder findet — die Variable steht hier noch
+            // an der Instanz, bevor sie gleich in ihre Kategorie verschoben
+            // wird. Die dabei gesetzte Standardaktion bleibt über den
+            // IPS_SetParent()-Umzug hinweg erhalten.
+            if ($group === 'control') {
+                $this->EnableAction($ident);
+            }
+        }
+
+        $catID = $this->EnsureCategory($group);
+        IPS_SetParent($vid, $catID);
+        // Position NUR bei Neuanlage setzen (Symcon-Review-Fund, Verbund-Konvention SUITE.md 9m,
+        // Referenz InverterHub-Fix): bei jedem ApplyChanges erneut gesetzt, würde eine manuelle
+        // Umsortierung im Objektbaum bei jedem „Übernehmen" wieder auf die feste Reihenfolge
+        // zurückgesetzt — das ist Symcons Vorgabe an Nutzer, das Modul soll die Reihenfolge nur
+        // vorschlagen, nicht dauerhaft erzwingen.
+        if ($isNewVar) {
+            IPS_SetPosition($vid, $pos);
+        }
+        IPS_SetName($vid, $caption);
+
+        // Profil grundsätzlich nachziehen (0.9.11-Fix: RegisterVariableX setzt
+        // es nur bei Neuanlage, ein Hersteller-/Typwechsel kann aber ein
+        // anderes Profil erfordern) — ABER seit 16.09.2026 (Forum-Wunsch
+        // sieckendieck/Mike) nicht mehr blind: ein Merker je Ident hält fest,
+        // welches Profil WIR zuletzt gesetzt haben. Weicht das tatsächliche
+        // Profil davon ab, hat der Nutzer es in der Konsole manuell geändert —
+        // dann respektieren wir das und fassen es nicht mehr an, außer ein
+        // echter Hersteller-/Typwechsel verlangt jetzt ein ANDERES Profil als
+        // beim letzten Mal (dann hat die technische Notwendigkeit Vorrang).
+        if ($profile !== '') {
+            $lastSet = json_decode((string)$this->ReadAttributeString('LastSetProfiles'), true);
+            if (!is_array($lastSet)) {
+                $lastSet = [];
+            }
+            $actual = @IPS_GetVariable($vid)['VariableCustomProfile'];
+            $weChangedItSinceLastTime = ($lastSet[$ident] ?? null) !== $profile;
+            if ($actual !== $profile && ($weChangedItSinceLastTime || $actual === ($lastSet[$ident] ?? null))) {
+                IPS_SetVariableCustomProfile($vid, $profile);
+            }
+            $lastSet[$ident] = $profile;
+            $this->WriteAttributeString('LastSetProfiles', json_encode($lastSet));
+        }
+        if ($reg !== '') {
+            @IPS_SetInfo($vid, (string)$reg);
+        }
+        // Kumulative Energiezähler (Gesamtenergie, Energie je RFID-Karte) werden als Zähler archiviert (Aggregationstyp 1),
+        // alles andere bleibt beim Standard. energy_session springt je Sitzung zurück und ist KEIN Zähler.
+        $isCounter = ($ident === 'energy_total') || (bool)preg_match('/^card\d+_energy$/', $ident);
+        $decision = $archive ? $this->ArchivingDecision() : ($this->ReadPropertyBoolean('DisableArchiving') ? 'off' : 'skip');
+        if ($decision === 'on') {
+            $this->SetArchive($vid, true, $isCounter);
+        } elseif ($decision === 'off') {
+            $this->SetArchive($vid, false);
+        }
+    }
+
+    private function EnsureCategory($key)
+    {
+        $ident = 'CAT_' . $key;
+        $cid   = @$this->GetIDForIdent($ident);
+        if ($cid !== false) {
+            return $cid;
+        }
+        $labels = [
+            'errors'  => 'Status',
+            'device'  => 'Gerät',
+            'phases'  => 'Phasen',
+            'control' => 'Steuerung',
+            'cards'   => 'RFID-Karten',
+        ];
+        $cid = IPS_CreateCategory();
+        IPS_SetParent($cid, $this->InstanceID);
+        IPS_SetName($cid, $labels[$key] ?? ucfirst($key));
+        IPS_SetIdent($cid, $ident);
+        return $cid;
+    }
+
+    private function FindVarByIdent($ident)
+    {
+        return $this->FindIdentRecursive($this->InstanceID, $ident);
+    }
+
+    private function FindIdentRecursive(int $parentID, $ident)
+    {
+        foreach (@IPS_GetChildrenIDs($parentID) ?: [] as $cid) {
+            $obj = IPS_GetObject($cid);
+            if ($obj['ObjectIdent'] === $ident) {
+                return $cid;
+            }
+            if ($obj['ObjectType'] === 0) { // Kategorie -> rekursiv weitersuchen
+                $found = $this->FindIdentRecursive($cid, $ident);
+                if ($found) {
+                    return $found;
+                }
+            }
+        }
+        return 0;
+    }
+
+    // $enable=true (Standard): archivieren, wie bisher. $enable=false: aktive
+    // Archivierung wieder abschalten (siehe Property „Archivierung deaktivieren",
+    // Forum-Wunsch sieckendieck/Mike, 16.09.2026) — nicht nur das Einschalten
+    // überspringen, sonst bliebe eine schon aktive Archivierung nach dem
+    // nachträglichen Umschalten der Property unverändert aktiv.
+    // Archivieren: 'on' = einschalten, 'off' = aktiv abschalten (nur wenn der Nutzer „Archivierung deaktivieren“ gewählt hat),
+    // 'skip' = nichts anfassen (Standard bei neuen Instanzen: eine von außen eingeschaltete Archivierung, z. B. durch die
+    // Geräte-Übernahme, wird NICHT abgeschaltet). Bestandsinstanzen archivieren wie bisher, solange „deaktivieren“ aus ist.
+    private function ArchivingDecision(): string
+    {
+        if ($this->ReadPropertyBoolean('DisableArchiving')) {
+            return 'off';
+        }
+        if ($this->ReadPropertyBoolean('ArchiveVariables') || $this->ReadAttributeBoolean('ArchiveLegacyOn')) {
+            return 'on';
+        }
+        return 'skip';
+    }
+
+    private function SetArchive($vid, bool $enable = true, bool $counter = false)
+    {
+        // {43192F0B-...} ist die GUID des Kernel-Moduls "Archive Control" — live
+        // verifiziert 29.08.2026. Vorher stand hier eine falsche GUID
+        // ({018EF6B5-...}), wodurch diese Funktion auf jedem System kommentarlos
+        // nichts tat und KEINE einzige Variable je archiviert wurde (von Dietmar
+        // im Dashboard bemerkt: "bei den Wallboxen liegen keine Archivdaten vor").
+        if (!function_exists('AC_SetLoggingStatus')) {
+            return;
+        }
+        $archiveIDs = IPS_GetInstanceListByModuleID('{43192F0B-135B-4CE7-A0A7-1475603F3060}');
+        if ($archiveIDs === []) {
+            return;
+        }
+        $archiveID = $archiveIDs[0];
+        // Nur anfassen, wenn der Ist-Zustand vom Soll-Zustand abweicht — spart
+        // das teure ApplyChanges am Archiv bei jedem Übernehmen.
+        if ((bool)@AC_GetLoggingStatus($archiveID, $vid) !== $enable) {
+            AC_SetLoggingStatus($archiveID, $vid, $enable);
+            // Nur beim ERSTEN Einschalten: Zähler als Aggregationstyp 1 festlegen. Eine schon archivierte Variable
+            // behält ihren Typ (eine nachträgliche Änderung würde „Reaggregation“ im Archiv auslösen). Wichtig
+            // für die Geräte-Übernahme: der MigrationsHub zieht den Typ der neuen Variable auf die Alt-Variable nach.
+            if ($enable && $counter && function_exists('AC_SetAggregationType')) {
+                @AC_SetAggregationType($archiveID, $vid, 1);
+            }
+            IPS_ApplyChanges($archiveID);
+        }
+    }
+
+    public function SetVarFloat(string $ident, float $value)
+    {
+        // NaN/Inf nie in (ggf. archivierte) Variablen schreiben — unbelegte
+        // Register liefern bei mancher Firmware 0xFF-Füllwerte statt einer
+        // Modbus-Exception, als Float32 dekodiert ergibt das NaN.
+        if (!is_finite($value)) {
+            return;
+        }
+        // Eine Wallbox-Leistung über 1 MW gibt es nicht: ein solcher Wert ist ein Lesefehler und würde im
+        // Archiv jede spätere Auswertung (Ladesitzungen, Kosten) verfälschen — nicht schreiben.
+        if (strpos($ident, 'power') === 0 && abs($value) > 1000000.0) {
+            return;
+        }
+        $vid = $this->FindVarByIdent($ident);
+        if ($vid) {
+            SetValueFloat($vid, $value);
+        }
+    }
+
+    public function SetVarInt(string $ident, int $value)
+    {
+        $vid = $this->FindVarByIdent($ident);
+        if ($vid) {
+            SetValueInteger($vid, $value);
+        }
+    }
+
+    public function SetVarBool(string $ident, bool $value)
+    {
+        $vid = $this->FindVarByIdent($ident);
+        if ($vid) {
+            SetValueBoolean($vid, $value);
+        }
+        // „Angesteckt um“/„Abgesteckt um“: Wechsel von „Fahrzeug verbunden“ beobachten. Der erste
+        // gesehene Zustand (PlugState = -1) setzt keinen Zeitstempel, sonst stünde nach jedem Neustart
+        // oder Einschalten der Option „jetzt“ als Zeit eines längst steckenden Fahrzeugs. Die Zeit ist
+        // die des Lesezyklus, der den Wechsel bemerkt (Genauigkeit = Lese-Intervall), nicht von der Box.
+        if ($ident === 'vehicle_plugged' && $this->PlugTimesActive()) {
+            $now  = $value ? 1 : 0;
+            $prev = $this->ReadAttributeInteger('PlugState');
+            if ($prev !== $now) {
+                if ($prev !== -1) {
+                    $tid = $this->FindVarByIdent($value ? 'plugged_in_at' : 'plugged_out_at');
+                    if ($tid) {
+                        SetValueInteger($tid, time());
+                    }
+                }
+                $this->WriteAttributeInteger('PlugState', $now);
+            }
+        }
+        // Jeder Treiber meldet einen erfolgreichen Lesezyklus über
+        // 'connected'=true (siehe readValues() der vier Driver-Klassen) —
+        // hier zentral abgreifen, statt in jedem Treiber einzeln zu
+        // duplizieren. Grundlage für 'lastSeenAt' im Vertrag (siehe
+        // GetFunctions(), contractVersion 1.3): EMS/Grid-Rewards-Vorfall
+        // 12.09.2026 — eine Wallbox, die nichts mehr liest, aber ihre
+        // zuletzt bekannten Werte unverändert weiterreicht (0 W), sah für
+        // den Konsumenten wie eine gültige Momentanmessung aus.
+        if ($ident === 'connected' && $value === true) {
+            $this->WriteAttributeInteger('LastSeenAt', time());
+        }
+    }
+
+    public function SetVarStr(string $ident, string $value)
+    {
+        $vid = $this->FindVarByIdent($ident);
+        if ($vid) {
+            SetValueString($vid, $value);
+        }
+    }
+
+    private function CreateProfiles()
+    {
+        $driver = $this->GetDriver();
+
+        foreach ($driver->getProfiles() as $name => $p) {
+            // Gemeinsame NRG.*-Profile (Verbund-Konvention, siehe SUITE.md):
+            // kein Eigentümer-Modul — nur anlegen, falls es noch fehlt, sonst
+            // unangetastet lassen. Wer zuerst startet, erzeugt es; würde jedes
+            // Modul seine eigenen Werte bei jedem ApplyChanges neu draufschreiben,
+            // überschrieben sich mehrere Module gegenseitig die Definition.
+            if (strncmp($name, 'NRG.', 4) === 0 && IPS_VariableProfileExists($name)) {
+                continue;
+            }
+            [$type, $suffix, $min, $max, $step, $digits] = $p;
+            if (!IPS_VariableProfileExists($name)) {
+                IPS_CreateVariableProfile($name, $type);
+            }
+            IPS_SetVariableProfileText($name, '', $suffix);
+            if ($type === VARIABLETYPE_FLOAT) {
+                IPS_SetVariableProfileValues($name, $min, $max, $step);
+                IPS_SetVariableProfileDigits($name, $digits);
+            } elseif ($type === VARIABLETYPE_INTEGER) {
+                IPS_SetVariableProfileValues($name, $min, $max, $step);
+            }
+            // CHB.kWhLimit: -1 als eigene Textassoziation für "Kein Limit"
+            // (siehe readValues()-Kommentar zum Sentinel) — Assoziationen
+            // funktionieren auch bei Float-Profilen, nicht nur bei Enums.
+            if ($name === 'CHB.kWhLimit') {
+                IPS_SetVariableProfileAssociation($name, -1, 'Kein Limit', '', -1);
+            }
+        }
+
+        foreach ($driver->getEnumProfiles() as $name => $values) {
+            if (!IPS_VariableProfileExists($name)) {
+                IPS_CreateVariableProfile($name, VARIABLETYPE_INTEGER);
+            }
+            foreach ($values as $val => [$label, $color]) {
+                IPS_SetVariableProfileAssociation($name, $val, $label, '', $color);
+            }
+        }
+
+        // 'vehicle_plugged' lief bisher ueber '~Switch' (Assoziationen An/Aus) -
+        // grammatikalisch unpassend fuer einen Verbindungsstatus, wird u.a. von
+        // NRGDashboardTile generisch als "<Variablenname> <formatierter Wert>"
+        // gerendert ("Fahrzeug verbunden ... An"). Eigenes Boolean-Profil mit
+        // Ja/Nein statt An/Aus - der Ident 'vehicle_plugged' selbst bleibt
+        // unveraendert (Vertrag/API, siehe CLAUDE.md Punkt 4), nur das
+        // angezeigte Profil aendert sich.
+        if (!IPS_VariableProfileExists('CHB.Connected')) {
+            IPS_CreateVariableProfile('CHB.Connected', VARIABLETYPE_BOOLEAN);
+            IPS_SetVariableProfileAssociation('CHB.Connected', false, 'Nein', '', -1);
+            IPS_SetVariableProfileAssociation('CHB.Connected', true, 'Ja', '', -1);
+        }
+    }
+}
