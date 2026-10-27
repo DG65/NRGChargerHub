@@ -1,6 +1,6 @@
 # ChargerHub
 
-![Modul Version](https://img.shields.io/badge/Modul_Version-0.9.91--beta.1-blue)
+![Modul Version](https://img.shields.io/badge/Modul_Version-0.10.0-blue)
 ![Symcon Version](https://img.shields.io/badge/Symcon_Version-9.0%2B-blue)
 ![License](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-lightgrey)
 [![Check Style](https://github.com/DG65/NRGChargerHub/actions/workflows/check-style.yml/badge.svg)](https://github.com/DG65/NRGChargerHub/actions/workflows/check-style.yml)
@@ -13,7 +13,7 @@ per Modbus (TCP, bei ABL ASCII über einen seriellen Wandler) — analog zu
 
 Teil des **NRG-Stack** — dem Energie-Modulverbund von DG65.
 
-**Status: Beta.** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
+**Hinweis zur Hardware-Prüfung:** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
 Modbus-Dokumentationen der Hersteller, sind aber — mit Ausnahme von go-eCharger (siehe unten) —
 **noch nicht an echter Hardware verifiziert**. Rückmeldungen zu falschen/fehlenden Werten sind
 willkommen — bitte mit Wallbox-Typ und betroffenem Register melden.
@@ -78,7 +78,7 @@ Stand: **Lesen** funktioniert, **Schreiben** (Ladefreigabe/Stromlimit) ist noch 
 ## Installation
 
 1. In der IP-Symcon-Konsole: **Modulverwaltung → Hinzufügen** und die URL dieses Repositories
-   eintragen: `https://github.com/DG65/NRGChargerHub` (Branch **beta**, Default-Branch).
+   eintragen: `https://github.com/DG65/NRGChargerHub` (Branch **main**).
 2. Eine neue Instanz vom Typ **„ChargerHub"** anlegen — oder **„ChargerHub Suche"**
    (ChargerHubDiscovery) für einen automatischen Netzwerk-Scan.
 

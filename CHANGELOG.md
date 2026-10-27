@@ -5,6 +5,14 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.10.0] - 2026-10-27
+
+Erste Stable-Version im Symcon-Store. Inhaltlich identisch mit 0.9.137-beta.1, nur die Versionsnummer und der Hinweis „Status: Beta“ im
+README ändern sich. Zusammengefasst seit 0.9.125: Überschussladen mit Netzleistung aus einer Variable (Fail-Safe), Vertrag 1.9 bis 1.12
+(Regelung wer/warum, Sitzungsenergie, Ladestatus, Fehlercode, Plantext), Bedienpanel im Formular, Funktionen zum Umstellen der
+Regler-Hoheit, vorzeichenrichtige go-e-Leistung, Zähler-Aggregationstyp und `archiveFactor` für die Geräte-Übernahme,
+Archivieren als bewusste Entscheidung (Standard aus, Bestandsinstanzen unverändert).
+
 ## [0.9.137-beta.1] - 2026-10-27
 
 ### Changed
