@@ -5068,7 +5068,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.10.0)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.10.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5715,12 +5715,13 @@ class ChargerHub extends IPSModule
         // Migration abgeschlossen — ab hier nie wieder Steuervariablen
         // löschen/neu anlegen (siehe RegisterVar()).
         $this->WriteAttributeBoolean('ControlActionsMigrated', true);
+        // Alle Variablen liegen jetzt direkt unter der Instanz: leere frühere Kategorien entfernen.
+        $this->RemoveEmptyCategories();
     }
 
-    // Variablen liegen in Untergruppen-Kategorien (siehe EnsureCategory), nicht
-    // direkt unter der Instanz — daher rekursiv sammeln (Muster wie
-    // InverterHub), sonst würden Variablen eines abgewählten Herstellers/einer
-    // deaktivierten Gruppe nie erkannt und blieben stehen.
+    // Variablen liegen direkt unter der Instanz. Bei Bestandsinstanzen können sie aber noch in den früheren
+    // Untergruppen-Kategorien stehen (werden in RegisterVar() verschoben) — daher rekursiv sammeln, sonst
+    // würden Variablen eines abgewählten Herstellers/einer deaktivierten Gruppe nie erkannt und blieben stehen.
     private function PruneForeignObjects(array $validIdents)
     {
         // (id, parentIsInstance) je Ident sammeln, um anschließend zwei
@@ -5825,13 +5826,11 @@ class ChargerHub extends IPSModule
         // RegisterVariableX NUR bei echter Neuanlage aufrufen (!$vid), nicht
         // bei jedem ApplyChanges: der Ident-Registrierung dieser SDK-Methode
         // ist instanzweit, nicht nur auf direkte Kinder beschränkt — ein
-        // erneuter Aufruf NACHDEM die Variable längst in eine Kategorie
-        // verschoben wurde, kollidiert dort mit sich selbst ("Ident muss für
-        // jede Ebene eindeutig sein", live reproduziert 25.07.2026). Die bei
-        // der Neuanlage gesetzte Kernel-Standardaktion bleibt beim späteren
-        // IPS_SetParent in die Kategorie erhalten, muss also nicht erneut
-        // durch RegisterVariableX bestätigt werden — nur das explizite
-        // IPS_SetVariableCustomAction($vid, 0) weiter unten läuft jedes Mal.
+        // erneuter Aufruf NACHDEM die Variable verschoben wurde (Bestandsinstanzen
+        // aus der früheren Kategorie), kollidiert dort mit sich selbst ("Ident muss
+        // für jede Ebene eindeutig sein", live reproduziert 25.07.2026). Die bei der
+        // Neuanlage gesetzte Kernel-Standardaktion bleibt erhalten, muss also nicht
+        // erneut durch RegisterVariableX bestätigt werden.
         if (!$vid) {
             switch ($type) {
                 case 'F':
@@ -5853,26 +5852,28 @@ class ChargerHub extends IPSModule
             // bleibt aber wirkungslos, insbesondere in WebFront/Konsole
             // (unabhängig bestätigt sowohl live bei uns als auch bei
             // InverterHub, das denselben Bug hatte). Richtig ist die
-            // SDK-eigene $this->EnableAction($Ident). Die MUSS hier, VOR dem
-            // IPS_SetParent() weiter unten, aufgerufen werden: EnableAction()
-            // löst den Ident intern über das flache GetIDForIdent() auf, das
-            // nur direkte Instanz-Kinder findet — die Variable steht hier noch
-            // an der Instanz, bevor sie gleich in ihre Kategorie verschoben
-            // wird. Die dabei gesetzte Standardaktion bleibt über den
-            // IPS_SetParent()-Umzug hinweg erhalten.
+            // SDK-eigene $this->EnableAction($Ident); sie löst den Ident über das
+            // flache GetIDForIdent() auf, die frisch angelegte Variable steht
+            // direkt an der Instanz.
             if ($group === 'control') {
                 $this->EnableAction($ident);
             }
         }
 
-        $catID = $this->EnsureCategory($group);
-        IPS_SetParent($vid, $catID);
-        // Position NUR bei Neuanlage setzen (Symcon-Review-Fund, Verbund-Konvention SUITE.md 9m,
-        // Referenz InverterHub-Fix): bei jedem ApplyChanges erneut gesetzt, würde eine manuelle
-        // Umsortierung im Objektbaum bei jedem „Übernehmen" wieder auf die feste Reihenfolge
-        // zurückgesetzt — das ist Symcons Vorgabe an Nutzer, das Modul soll die Reihenfolge nur
-        // vorschlagen, nicht dauerhaft erzwingen.
-        if ($isNewVar) {
+        // Alle Variablen liegen direkt unter der Instanz: Kategorien unter Instanzen sind nicht vorgesehen und
+        // werden z. B. von der Visualisierung nicht unterstützt (Symcon-Store-Review 30.10.2026). Bestandsinstanzen:
+        // Variablen aus den früheren Untergruppen-Kategorien werden hierher verschoben (Variablen-ID, Archiv, Links
+        // und Verknüpfungen bleiben erhalten), die leeren Kategorien räumt RemoveEmptyCategories() ab.
+        $moved = ($vid > 0 && IPS_GetParent($vid) !== $this->InstanceID);
+        if ($moved) {
+            IPS_SetParent($vid, $this->InstanceID);
+        }
+        // Position NUR bei Neuanlage (und beim einmaligen Verschieben aus der Kategorie, weil die Positionen der
+        // früheren Untergruppen sich sonst überlagern) setzen (Symcon-Review-Fund, Verbund-Konvention SUITE.md 9m,
+        // Referenz InverterHub-Fix): bei jedem ApplyChanges erneut gesetzt, würde eine manuelle Umsortierung im
+        // Objektbaum bei jedem „Übernehmen" wieder auf die feste Reihenfolge zurückgesetzt — das ist Symcons Vorgabe
+        // an Nutzer, das Modul soll die Reihenfolge nur vorschlagen, nicht dauerhaft erzwingen.
+        if ($isNewVar || $moved) {
             IPS_SetPosition($vid, $pos);
         }
         IPS_SetName($vid, $caption);
@@ -5913,25 +5914,17 @@ class ChargerHub extends IPSModule
         }
     }
 
-    private function EnsureCategory($key)
+    // Räumt die früheren Untergruppen-Kategorien (Ident „CAT_*“) ab, sobald sie leer sind. Eine Kategorie mit fremdem Inhalt
+    // (z. B. ein vom Nutzer hineingelegter Link) bleibt unangetastet stehen.
+    private function RemoveEmptyCategories(): void
     {
-        $ident = 'CAT_' . $key;
-        $cid   = @$this->GetIDForIdent($ident);
-        if ($cid !== false) {
-            return $cid;
+        foreach (@IPS_GetChildrenIDs($this->InstanceID) ?: [] as $cid) {
+            $obj = IPS_GetObject($cid);
+            if ($obj['ObjectType'] === 0 && strpos((string)$obj['ObjectIdent'], 'CAT_') === 0
+                && (@IPS_GetChildrenIDs($cid) ?: []) === []) {
+                @IPS_DeleteCategory($cid);
+            }
         }
-        $labels = [
-            'errors'  => 'Status',
-            'device'  => 'Gerät',
-            'phases'  => 'Phasen',
-            'control' => 'Steuerung',
-            'cards'   => 'RFID-Karten',
-        ];
-        $cid = IPS_CreateCategory();
-        IPS_SetParent($cid, $this->InstanceID);
-        IPS_SetName($cid, $labels[$key] ?? ucfirst($key));
-        IPS_SetIdent($cid, $ident);
-        return $cid;
     }
 
     private function FindVarByIdent($ident)
