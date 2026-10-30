@@ -30,6 +30,8 @@ function IPS_GetChildrenIDs($id)
 function IPS_GetObject($id) { return $GLOBALS['objs'][$id] ?? ['ObjectIdent' => '', 'ObjectType' => -1]; }
 function IPS_GetVariable($id) { return $GLOBALS['objs'][$id] ?? []; }
 function IPS_SetPosition($id, $pos) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ObjectPosition'] = $pos; } }
+function IPS_GetParent($id) { return $GLOBALS['objs'][$id]['ParentID'] ?? 0; }
+function IPS_DeleteCategory($id) { unset($GLOBALS['objs'][$id]); return true; }
 function IPS_SetParent($id, $pid) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ParentID'] = $pid; } }
 function IPS_SetName($id, $n) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ObjectName'] = $n; } }
 function IPS_SetIdent($id, $ident) { if (isset($GLOBALS['objs'][$id])) { $GLOBALS['objs'][$id]['ObjectIdent'] = $ident; } }
@@ -815,6 +817,28 @@ foreach ([[$old, true], [$new, false]] as [$h, $expectLegacy]) {
     try { $h->ApplyChanges(); } catch (\Throwable $e) { /* Prüfstand-Lücken (Profile/Variablen) sind hier unerheblich, es zählt die Erkennung davor */ }
     check('Archiv: ApplyChanges erkennt ' . ($expectLegacy ? 'Bestandsinstanz' : 'neue Instanz') . ' einmalig', $h->ReadAttributeBoolean('ArchiveMigrated') === true && $h->ReadAttributeBoolean('ArchiveLegacyOn') === $expectLegacy);
 }
+
+// Store-Review 30.10.2026: keine Kategorien unter Instanzen. Variablen einer Bestandsinstanz wandern aus der alten Kategorie
+// direkt unter die Instanz (ID bleibt), leere Kategorien werden entfernt, Kategorien mit fremdem Inhalt bleiben stehen.
+$GLOBALS['objs'][62100] = ['ObjectIdent' => 'CAT_errors', 'ObjectType' => 0, 'ParentID' => 7901];
+$GLOBALS['objs'][62101] = ['ObjectIdent' => 'connected', 'ObjectType' => 2, 'ParentID' => 62100, 'VariableType' => 0, 'ObjectPosition' => 3];
+$GLOBALS['objs'][62110] = ['ObjectIdent' => 'CAT_device', 'ObjectType' => 0, 'ParentID' => 7901];
+$GLOBALS['objs'][62111] = ['ObjectIdent' => '', 'ObjectType' => 6, 'ParentID' => 62110]; // fremder Inhalt (Link des Nutzers)
+$GLOBALS['objs'][62120] = ['ObjectIdent' => 'CAT_phases', 'ObjectType' => 0, 'ParentID' => 7901]; // leer
+$fh = new ChargerHub(7901);
+(new ReflectionMethod($fh, 'RegisterVar'))->invoke($fh, ['connected', 'Verbindung', 'B', '', false, 'errors', ''], 5);
+check('Flach: Variable wandert aus der Kategorie direkt unter die Instanz, ID bleibt', ($GLOBALS['objs'][62101]['ParentID'] ?? null) === 7901);
+check('Flach: beim Verschieben wird die Position gesetzt (Untergruppen überlagern sich sonst)', ($GLOBALS['objs'][62101]['ObjectPosition'] ?? null) === 5);
+(new ReflectionMethod($fh, 'RemoveEmptyCategories'))->invoke($fh);
+check('Flach: leere Kategorie wird entfernt', !isset($GLOBALS['objs'][62100]) && !isset($GLOBALS['objs'][62120]));
+check('Flach: Kategorie mit fremdem Inhalt bleibt stehen', isset($GLOBALS['objs'][62110]) && isset($GLOBALS['objs'][62111]));
+$GLOBALS['objs'][62101]['ObjectPosition'] = 42;
+(new ReflectionMethod($fh, 'RegisterVar'))->invoke($fh, ['connected', 'Verbindung', 'B', '', false, 'errors', ''], 9);
+check('Flach: bereits flache Variable behält ihre (manuell geänderte) Position', ($GLOBALS['objs'][62101]['ObjectPosition'] ?? null) === 42);
+$nh = new ChargerHub(7902);
+(new ReflectionMethod($nh, 'RegisterVar'))->invoke($nh, ['power', 'Ladeleistung', 'F', 'NRG.Watt', false, 'device', ''], 7);
+$npv = (new ReflectionMethod($nh, 'FindVarByIdent'))->invoke($nh, 'power');
+check('Flach: neue Variable entsteht direkt unter der Instanz, keine Kategorie angelegt', $npv && $GLOBALS['objs'][$npv]['ParentID'] === 7902 && count(array_filter($GLOBALS['objs'], fn($o) => ($o['ObjectIdent'] ?? '') === 'CAT_device' && ($o['ParentID'] ?? 0) === 7902)) === 0);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

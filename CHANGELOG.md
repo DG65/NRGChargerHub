@@ -5,6 +5,17 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.10.1] - 2026-10-30
+
+### Fixed
+- **Keine Kategorien mehr unter der Instanz (Symcon-Store-Review 30.10.2026):** Alle Variablen liegen jetzt direkt unter der
+  Instanz. Kategorien unter Instanzen sind nicht vorgesehen und werden z. B. von der Visualisierung nicht unterstützt. Bestandsinstanzen
+  werden beim nächsten Übernehmen umgezogen: die Variablen wandern aus den früheren Untergruppen („Gerät“, „Phasen“, „Steuerung“,
+  „Status“, „RFID-Karten“) direkt unter die Instanz, **Variablen-ID, Archiv, Links und Verknüpfungen bleiben erhalten**, die
+  leeren Kategorien werden entfernt. Eine Kategorie, in die jemand eigene Objekte gelegt hat, bleibt stehen. Die Reihenfolge im
+  Objektbaum richtet sich einmalig nach der Treiber-Reihenfolge (die Untergruppen-Positionen überlagerten sich sonst); danach
+  bleibt eine manuelle Umsortierung erhalten. Bezeichner (Idents) ändern sich nicht.
+
 ## [0.10.0] - 2026-10-27
 
 Erste Stable-Version im Symcon-Store. Inhaltlich identisch mit 0.9.137-beta.1, nur die Versionsnummer und der Hinweis „Status: Beta“ im
