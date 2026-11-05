@@ -3223,6 +3223,12 @@ class ChargerHub extends IPSModule
         // Einmalige Erkennung „Bestandsinstanz“: hatte die Instanz beim ersten Übernehmen nach dem Update schon Variablen, archiviert sie wie bisher.
         $this->RegisterAttributeBoolean('ArchiveMigrated', false);
         $this->RegisterAttributeBoolean('ArchiveLegacyOn', false);
+        // go-e HTTP-Kanal: letzter lpsc-Wert und wann er sich änderte (Eco rechnet), Ergebnis des letzten Sendens, letzte Statusabfrage.
+        $this->RegisterAttributeInteger('GoeLpscLast', 0);
+        $this->RegisterAttributeInteger('GoeLpscChangedAt', 0);
+        $this->RegisterAttributeBoolean('GoeEcoRunning', false);
+        $this->RegisterAttributeInteger('GoeFeedState', 0); // 0 unbekannt, 1 ok, 2 Fehler
+        $this->RegisterAttributeInteger('GoeReadAt', 0);
         // Regelungsstatus (Vertrag 1.9): wer regelt gerade, seit wann — siehe UpdateControlState().
         $this->RegisterAttributeString('ControlOwnerKey', '');
         $this->RegisterAttributeInteger('ControlSince', 0);
@@ -3264,6 +3270,10 @@ class ChargerHub extends IPSModule
         // Archivieren ist ein bewusster Entschluss des Nutzers (Store-Review-Checkliste 9k): Standard AUS. Bestandsinstanzen,
         // die schon vor dieser Einstellung archivierten, behalten ihr Verhalten (Attribut ArchiveLegacyOn), siehe ArchivingDecision().
         $this->RegisterPropertyBoolean('ArchiveVariables', false);
+        // go-e HTTP-Kanal (zusätzlich zu Modbus): Eco-Status lesen und Netz-/PV-/Speicherleistung an die Wallbox senden.
+        // Beides Standard AUS, nur beim go-eCharger sichtbar (siehe GoeHttpWanted()).
+        $this->RegisterPropertyBoolean('GoeHttpRead', false);
+        $this->RegisterPropertyBoolean('GoePvFeed', false);
         // Verbindungsweg (SUITE.md 9j, Verbund-Abstimmung mit InverterHub/
         // MeterHub, 17./18.09.2026): 'direct' = bisheriger eigener
         // Socket-Client (Standard, unverändert), 'gateway' = Symcons
@@ -3401,6 +3411,7 @@ class ChargerHub extends IPSModule
 
         $this->RegisterTimer('FastTimer', 0, 'CHUB_Update($_IPS[\'TARGET\']);');
         $this->RegisterTimer('EnableActionsTimer', 0, 'CHUB_EnableActions($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('GoeFeedTimer', 0, 'CHUB_GoeFeedTick($_IPS[\'TARGET\']);');
     }
 
     public function ApplyChanges()
@@ -3434,11 +3445,14 @@ class ChargerHub extends IPSModule
         if (!$this->ReadPropertyBoolean('Active') || !$hostReady || $this->ReadPropertyString('Manufacturer') === '') {
             $this->SetTimerInterval('FastTimer', 0);
             $this->SetTimerInterval('EnableActionsTimer', 0);
+            $this->SetTimerInterval('GoeFeedTimer', 0);
             $this->SetStatus(104);
             return;
         }
 
         $this->SetTimerInterval('FastTimer', $this->ReadPropertyInteger('IntervalFast') * 1000);
+        // go-e HTTP-Kanal: Takt 5 s (die go-e verlangt das Senden alle 5 s, Werte gelten 10 s).
+        $this->SetTimerInterval('GoeFeedTimer', $this->GoeHttpWanted() ? 5000 : 0);
         $this->SetTimerInterval('EnableActionsTimer', 200);
         $this->SetStatus(102);
 
@@ -3739,6 +3753,10 @@ class ChargerHub extends IPSModule
         if ($mb === 'ems') {
             return ['owner' => 'ems', 'source' => 'einstellung',
                 'reason' => 'Regler-Hoheit im Formular auf „EMS“ gestellt — das EMS steuert die Ladefreigabe.'];
+        }
+        if ($this->ReadAttributeBoolean('GoeEcoRunning')) {
+            return ['owner' => 'goe-controller', 'source' => 'wallbox',
+                'reason' => 'Die go-e rechnet den PV-Überschuss selbst (Eco). EMS und eigenes Überschussladen sollten dann nicht zusätzlich das Stromlimit schreiben.'];
         }
         if ($this->IsEmsActive()) {
             return ['owner' => 'ems', 'source' => 'ems', 'reason' => 'EMS ist aktiv und hat Vorrang vor der eigenen Regelung.'];
@@ -4047,6 +4065,7 @@ class ChargerHub extends IPSModule
         }
         if ($Ident === 'ManufacturerChanged') {
             $this->UpdateFormField('ChargePointNo', 'visible', (string)$Value === 'charx');
+            $this->UpdateFormField('GoeHttpPanel', 'visible', (string)$Value === 'goe');
             $this->UpdateFormField('DaheimEnableVia', 'visible', (string)$Value === 'daheimlader');
             return;
         }
@@ -4150,7 +4169,7 @@ class ChargerHub extends IPSModule
     private function GridVariableSurplus(): array
     {
         $vid = $this->ReadPropertyInteger('SurplusGridVarID');
-        $out = ['configured' => $vid > 0, 'surplus' => null, 'ageSec' => null, 'stale' => false, 'name' => '', 'vid' => $vid];
+        $out = ['configured' => $vid > 0, 'surplus' => null, 'importW' => null, 'ageSec' => null, 'stale' => false, 'name' => '', 'vid' => $vid];
         if ($vid <= 0) {
             return $out;
         }
@@ -4172,17 +4191,26 @@ class ChargerHub extends IPSModule
         $w = (float)$raw * ($this->ReadPropertyString('SurplusGridUnit') === 'kW' ? 1000.0 : 1.0);
         // import: + = Bezug, - = Einspeisung (Überschuss = -Wert); export: + = Einspeisung (Überschuss = Wert)
         $out['surplus'] = max(0.0, $this->ReadPropertyString('SurplusGridSign') === 'export' ? $w : -$w);
+        $out['importW'] = $this->ReadPropertyString('SurplusGridSign') === 'export' ? -$w : $w; // + = Bezug, − = Einspeisung
         return $out;
     }
 
     private function FindGridSurplusW(): ?float
+    {
+        $import = $this->FindGridImportW();
+        return $import === null ? null : max(0.0, -$import);
+    }
+
+    // Netzleistung MIT Vorzeichen (+ = Bezug, − = Einspeisung), gleiche Quellen und Regeln wie FindGridSurplusW():
+    // null = keine aktuelle Netzleistung verfügbar.
+    private function FindGridImportW(): ?float
     {
         // Eigene Variable hat Vorrang vor dem MeterHub-Vertrag; ist sie eingetragen, aber veraltet oder
         // ungültig, gibt es KEINEN Rückfall auf andere Quellen (null = Überschussladen pausiert).
         $gv = $this->GridVariableSurplus();
         if ($gv['configured']) {
             $this->lastSurplusMeterName = $gv['name'] !== '' ? 'Variable „' . $gv['name'] . '" #' . $gv['vid'] : null;
-            return $gv['surplus'];
+            return $gv['importW'];
         }
         if (!function_exists('MHUB_GetFunctions') && !function_exists('MHUBV_GetFunctions')) {
             return null;
@@ -4232,7 +4260,7 @@ class ChargerHub extends IPSModule
             return null;
         }
         $this->lastSurplusMeterName = @IPS_GetName($best['iid']) ?: null;
-        return max(0.0, -(float)$raw);
+        return (float)$raw;
     }
 
     private function SurplusMeterLabel(): string
@@ -4457,6 +4485,165 @@ class ChargerHub extends IPSModule
             $all = array_values(array_diff($all, self::MANAGEDBY_ONLY_GOE));
         }
         return $all;
+    }
+
+    // ---------------------------------------------------------------- go-e HTTP-Kanal (Eco / PV-Daten)
+    // Ergänzung zu Modbus: die go-e kennt die Schlüssel `ids` (PV-Überschuss-Daten) und `fup`/`lmo`/`lpsc` nur über die
+    // HTTP-API v2 (in der go-e-App einschalten), nicht über Modbus. Quelle: go-eCharger-API-v2 (apikeys, Schlüssel ids).
+
+    // Der HTTP-Kanal ist gewünscht und möglich: go-e, direkter Weg mit Host, mindestens eine Option an.
+    private function GoeHttpWanted(): bool
+    {
+        return $this->ReadPropertyString('Manufacturer') === 'goe'
+            && $this->ReadPropertyString('ConnectionType') !== 'gateway'
+            && $this->ReadPropertyString('Host') !== ''
+            && ($this->ReadPropertyBoolean('GoeHttpRead') || $this->ReadPropertyBoolean('GoePvFeed'));
+    }
+
+    // Ein HTTP-GET gegen die go-e (Port 80), kurzes Zeitlimit, damit ein hängendes Gerät den Takt nicht blockiert.
+    // Rückgabe: Antworttext oder null. Eigene Methode, damit der Prüfstand sie ersetzen kann.
+    protected function GoeHttpGet(string $path): ?string
+    {
+        $ctx = stream_context_create(['http' => ['timeout' => 2.0, 'ignore_errors' => true]]);
+        $r = @file_get_contents('http://' . $this->ReadPropertyString('Host') . $path, false, $ctx);
+        return $r === false ? null : (string)$r;
+    }
+
+    private function SetGoeFeedStatus(string $text): void
+    {
+        if ($this->FindVarByIdent('goe_feed_status')) {
+            $this->SetVarStr('goe_feed_status', $text);
+        }
+    }
+
+    // Takt (alle 5 s): Daten senden und, seltener, Status lesen. Ein Fehler hier beeinflusst Modbus nicht.
+    public function GoeFeedTick()
+    {
+        if (!$this->ReadPropertyBoolean('Active') || !$this->GoeHttpWanted()) {
+            return;
+        }
+        if ($this->ReadPropertyBoolean('GoePvFeed')) {
+            $this->GoeSendPvData();
+        }
+        if ($this->ReadPropertyBoolean('GoeHttpRead') && time() - $this->ReadAttributeInteger('GoeReadAt') >= 30) {
+            $this->WriteAttributeInteger('GoeReadAt', time());
+            $this->GoeReadStatus();
+        }
+    }
+
+    // PV- und Speicherleistung aller InverterHub-Instanzen (W). pPv: Summe der PV-Erzeugung, pAkku: Summe der Batterieleistung
+    // (InverterHub-Konvention wie bei der go-e: negativ = Batterie lädt). null = keine aktuelle Quelle.
+    private function GoePvAndBattery(): array
+    {
+        $sum = ['pvPowerID' => null, 'batPowerID' => null];
+        if (!function_exists('IHUB_GetFunctions')) {
+            return [null, null];
+        }
+        foreach (@IPS_GetInstanceListByModuleID(self::INVERTERHUB_GUID) ?: [] as $iid) {
+            $fns = @IHUB_GetFunctions($iid);
+            if (!is_array($fns)) {
+                continue;
+            }
+            foreach (array_keys($sum) as $key) {
+                $vid = (int)($fns[$key] ?? 0);
+                if ($vid <= 0 || !@IPS_VariableExists($vid)) {
+                    continue;
+                }
+                $raw = @GetValue($vid);
+                $upd = (int)(@IPS_GetVariable($vid)['VariableUpdated'] ?? 0);
+                if (!is_numeric($raw) || abs((float)$raw) > 1000000.0 || time() - $upd > 120) {
+                    continue; // unplausibel oder veraltet: nicht senden
+                }
+                $sum[$key] = ($sum[$key] ?? 0.0) + (float)$raw;
+            }
+        }
+        return [$sum['pvPowerID'], $sum['batPowerID']];
+    }
+
+    private function GoeSendPvData(): void
+    {
+        $grid = $this->FindGridImportW();
+        if ($grid === null) {
+            // Fail-Safe: ohne aktuellen Netzwert NICHTS senden. Die go-e beendet den Überschuss nach 10 s von selbst.
+            $this->SetGoeFeedStatus('⚠️ Keine aktuelle Netzleistung (MeterHub-Zähler oder eigene Variable fehlt oder ist veraltet): nichts gesendet. Die Wallbox beendet den Überschuss nach 10 s.');
+            $this->GoeFeedResult(false, 'Keine aktuelle Netzleistung');
+            return;
+        }
+        [$pv, $bat] = $this->GoePvAndBattery();
+        $data = ['pGrid' => round($grid, 1)];
+        if ($pv !== null) {
+            $data['pPv'] = round($pv, 1);
+        }
+        if ($bat !== null) {
+            $data['pAkku'] = round($bat, 1);
+        }
+        $json = json_encode($data, JSON_PRESERVE_ZERO_FRACTION); // „800.0“ statt „800“: die go-e erwartet Gleitkommazahlen
+        $resp = $this->GoeHttpGet('/api/set?ids=' . rawurlencode((string)$json));
+        $dec = $resp === null ? null : json_decode($resp, true);
+        $ok = is_array($dec) && ($dec['ids'] ?? null) === true;
+        $shown = 'Netz ' . sprintf('%+d', (int)round($grid)) . ' W'
+            . (isset($data['pPv']) ? ', PV ' . (int)round($data['pPv']) . ' W' : ', PV unbekannt')
+            . (isset($data['pAkku']) ? ', Speicher ' . sprintf('%+d', (int)round($data['pAkku'])) . ' W' : ', Speicher unbekannt');
+        if ($ok) {
+            $this->SetGoeFeedStatus('✅ Gesendet um ' . date('H:i:s') . ': ' . $shown . '.' . $this->GoeFeedConflictNote());
+            $this->GoeFeedResult(true, '');
+        } else {
+            $why = $resp === null ? 'keine Antwort (HTTP-API in der go-e-App eingeschaltet? Adresse erreichbar?)'
+                : (is_array($dec) && isset($dec['ids']) ? 'abgelehnt: ' . (is_string($dec['ids']) ? $dec['ids'] : json_encode($dec['ids'])) : 'unerwartete Antwort');
+            $this->SetGoeFeedStatus('⚠️ Senden fehlgeschlagen (' . date('H:i:s') . '): ' . $why);
+            $this->GoeFeedResult(false, $why);
+        }
+    }
+
+    // Hinweis, wenn zusätzlich ein anderer Regler am Stromlimit schreibt (zwei Regler an einer Wallbox).
+    private function GoeFeedConflictNote(): string
+    {
+        $mb = $this->GetManagedBy();
+        if ($mb === 'ems' || ($mb === 'none' && ($this->IsEmsActive() || $this->ReadPropertyBoolean('EnableSurplusCharging')))) {
+            return ' ⚠️ Gleichzeitig kann ' . ($this->IsEmsActive() || $mb === 'ems' ? 'das EMS' : 'das eigene Überschussladen')
+                . ' das Stromlimit schreiben: bei Eco in der Wallbox nur einen Regler arbeiten lassen („Wer regelt?“).';
+        }
+        return '';
+    }
+
+    // Ins Meldungsprotokoll nur bei Wechsel zwischen Funktioniert und Fehler (nicht alle 5 s).
+    private function GoeFeedResult(bool $ok, string $why): void
+    {
+        $new = $ok ? 1 : 2;
+        if ($this->ReadAttributeInteger('GoeFeedState') === $new) {
+            return;
+        }
+        $this->WriteAttributeInteger('GoeFeedState', $new);
+        if ($ok) {
+            $this->LogMessage('go-e HTTP-Kanal: Netz-, PV- und Speicherleistung werden gesendet.', KL_MESSAGE);
+        } else {
+            $this->LogMessage('go-e HTTP-Kanal: Senden nicht möglich (' . $why . ').', KL_WARNING);
+        }
+    }
+
+    // Eco-Status der go-e lesen: fup (PV-Überschuss nutzen), lmo (Logikmodus), lpsc (letzte PV-Überschussrechnung).
+    // „Wallbox rechnet selbst“ = fup an UND lpsc hat sich in den letzten 90 s geändert.
+    private function GoeReadStatus(): void
+    {
+        $resp = $this->GoeHttpGet('/api/status?filter=fup,lmo,lpsc');
+        $dec = $resp === null ? null : json_decode($resp, true);
+        if (!is_array($dec)) {
+            return; // Fehler zeigt schon das Senden bzw. der Verbindungstest, kein zweiter Hinweis
+        }
+        if (array_key_exists('fup', $dec)) {
+            $this->SetVarBool('goe_use_pv', (bool)$dec['fup']);
+        }
+        if (array_key_exists('lmo', $dec)) {
+            $this->SetVarInt('goe_logic_mode', (int)$dec['lmo']);
+        }
+        $lpsc = (int)($dec['lpsc'] ?? 0);
+        if ($lpsc !== $this->ReadAttributeInteger('GoeLpscLast')) {
+            $this->WriteAttributeInteger('GoeLpscLast', $lpsc);
+            $this->WriteAttributeInteger('GoeLpscChangedAt', time());
+        }
+        $running = !empty($dec['fup']) && (time() - $this->ReadAttributeInteger('GoeLpscChangedAt')) <= 90;
+        $this->WriteAttributeBoolean('GoeEcoRunning', $running);
+        $this->SetVarBool('goe_eco_running', $running);
     }
 
     // Zulässige Werte für „Wer regelt?“ bei diesem Hersteller, als [{value, label}] (öffentlich als
@@ -5068,7 +5255,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.10.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.11.0-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5203,6 +5390,20 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBatteryStatus'],
                         ['type' => 'Label', 'caption' => 'Nur für die Phasenumschalt-Wartezeit: je mehr freie Speicherkapazität (Kapazität × (100 % − SOC), SOC über InverterHub) gerade übrig ist, desto länger darf beobachtet werden, bevor die Phasenzahl während einer laufenden Ladung wechselt — ein Wechsel kostet dann effektiv nichts, der Überschuss lädt in der Zwischenzeit einfach den Speicher weiter. 0 = feste Grund-Wartezeit wie ohne Speicher.'],
                         ['type' => 'Label', 'caption' => 'Dieser Anteil des Überschusses bleibt dem Speicher vorbehalten und wird von der Ampere-Berechnung fürs Laden abgezogen. 0 % = kompletter Überschuss geht in die Wallbox, 100 % = nichts geht in die Wallbox.'],
+                    ],
+                ],
+                [
+                    'type'     => 'ExpansionPanel',
+                    'name'     => 'GoeHttpPanel',
+                    'caption'  => '🆕 🌞  go-e: Eco und PV-Daten (HTTP-API)',
+                    'expanded' => false,
+                    'visible'  => $this->ReadPropertyString('Manufacturer') === 'goe',
+                    'items'    => [
+                        ['type' => 'Label', 'caption' => 'Zusätzlicher Weg neben Modbus (die go-e kennt diese Funktionen nur per HTTP). In der go-e-App muss die „HTTP-API (v2)“ eingeschaltet sein; die Wallbox wird über die oben eingetragene Adresse erreicht (nicht im Symbox-Gateway-Weg). Beides ist standardmäßig aus und wirkt beim nächsten Übernehmen.'],
+                        ['type' => 'CheckBox', 'name' => 'GoeHttpRead', 'caption' => 'Eco-Status der Wallbox lesen (Eco an? rechnet die Wallbox selbst?)'],
+                        ['type' => 'CheckBox', 'name' => 'GoePvFeed', 'caption' => 'Netz-, PV- und Speicherleistung an die Wallbox senden (alle 5 s, für Eco in der Wallbox und die Energieherkunft im go-e-Portal)'],
+                        ['type' => 'Label', 'caption' => 'Netzleistung kommt aus dem MeterHub-Zähler oder der eigenen Variable (Panel „Steuerungshoheit & Sicherheit“), PV und Speicher aus dem InverterHub, soweit vorhanden. Ohne aktuelle Netzleistung wird nichts gesendet, die Wallbox beendet den Überschuss dann nach 10 Sekunden von selbst.'],
+                        ['type' => 'Label', 'caption' => '⚠️ Damit die Wallbox selbst nach Überschuss regelt, müssen in der go-e-App „PV-Überschuss nutzen“ und der Eco-Modus eingeschaltet sein; das schaltet der ChargerHub nicht für dich. Bei Eco in der Wallbox sollte kein zweiter Regler (EMS, eigenes Überschussladen) das Stromlimit schreiben.'],
                     ],
                 ],
                 [
@@ -5677,6 +5878,12 @@ class ChargerHub extends IPSModule
         if ($surplusActive) {
             $valid['surplus_status'] = true;
         }
+        $goeHttp = $this->GoeHttpWanted();
+        if ($goeHttp) {
+            foreach (['goe_use_pv', 'goe_logic_mode', 'goe_eco_running', 'goe_feed_status'] as $gi) {
+                $valid[$gi] = true;
+            }
+        }
         if ($plugTimesActive) {
             $valid['plugged_in_at']  = true;
             $valid['plugged_out_at'] = true;
@@ -5705,6 +5912,12 @@ class ChargerHub extends IPSModule
         $this->RegisterVar(['charging_active', 'Lädt', 'B', '', false, 'errors', 'abgeleitet: Ladeleistung über 100 W'], $pos++);
         $this->RegisterVar(['control_plan', 'Plan (was als Nächstes passiert)', 'S', '', false, 'control', 'Auskunft von außen (z. B. EMS) über die geplanten Ladefenster'], $pos++);
         $this->RegisterVar(['control_status', 'Regelung (wer, warum)', 'S', '', false, 'control', 'Auskunft: wer den Ladepunkt gerade regelt und warum'], $pos++);
+        if ($goeHttp) {
+            $this->RegisterVar(['goe_use_pv', 'PV-Überschuss (Eco) in der Wallbox', 'B', '', false, 'device', 'HTTP-API fup'], $pos++);
+            $this->RegisterVar(['goe_logic_mode', 'Logikmodus der Wallbox', 'I', '', false, 'device', 'HTTP-API lmo (3 Standard, 4 Eco/aWATTar, 5 Automatisch stoppen)'], $pos++);
+            $this->RegisterVar(['goe_eco_running', 'Wallbox rechnet PV-Überschuss selbst', 'B', '', false, 'device', 'abgeleitet: fup an und lpsc ändert sich'], $pos++);
+            $this->RegisterVar(['goe_feed_status', 'PV-Daten an die Wallbox', 'S', '', false, 'device', ''], $pos++);
+        }
         if ($surplusActive) {
             $this->RegisterVar(['surplus_status', 'Überschussladen', 'S', '', false, 'control', ''], $pos++);
         }

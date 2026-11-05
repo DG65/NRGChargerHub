@@ -202,16 +202,23 @@ Für dieselbe Dubletten-Situation gibt es außerdem die öffentliche Methode `CH
 
 Siehe [CLAUDE.md](CLAUDE.md) für die Konventionen des Verbunds.
 
-### go-e Eco-Modus als Alternativpfad (dokumentiert, nicht implementiert)
+### go-e: Eco und PV-Daten über die HTTP-API (seit 0.11.0)
 
-Statt aktiver Steuerung über `currentLimitID` kann ein EMS (oder der go-e Controller) dem
-go-eCharger per HTTP/MQTT-API zyklisch Überschussdaten liefern (API-Key `ids`, alle ~5 s) —
-dann regelt der **Eco-Modus der Wallbox selbst** (`fup=true`). Erkennungssignal, dass dieser
-Pfad aktiv ist: der API-Key `lpsc` (Zeitpunkt der letzten Überschussrechnung) aktualisiert sich
-laufend. Diese Schlüssel liegen **nicht** in der Modbus-Registerkarte; ein optionaler
-HTTP-Nebenkanal, der `fup`/`loe`/`modelStatus` ausliest und `externallyManaged` automatisch
-setzt, ist angedacht, aber bewusst noch nicht umgesetzt — bis dahin gilt die manuelle
-Kennzeichnung in der Instanz.
+Neben Modbus kennt die go-e die Schlüssel `ids`, `fup`, `lmo` und `lpsc` nur über die **HTTP-API v2** (in der go-e-App einschalten).
+Der ChargerHub nutzt sie auf Wunsch in zwei getrennten Einstellungen (Panel „go-e: Eco und PV-Daten“, beide **standardmäßig aus**,
+nur im direkten Verbindungsweg, nicht im Symbox-Gateway-Weg):
+
+- **Netz-, PV- und Speicherleistung an die Wallbox senden** (`ids`, alle 5 s, Werte gelten 10 s): `pGrid` aus dem MeterHub-Netzzähler
+  oder der eigenen Netz-Variable (+ = Bezug, − = Einspeisung), `pPv` (PV-Erzeugung) und `pAkku` (Batterie, negativ = lädt) aus dem
+  InverterHub, soweit vorhanden. Damit kann die Wallbox den PV-Überschuss selbst regeln (Eco) und bucht die Energieherkunft im
+  go-e-Portal. **Fail-Safe:** ohne aktuelle Netzleistung wird nichts gesendet, die Wallbox beendet den Überschuss dann nach 10 s selbst.
+  Der Status steht in der Variable „PV-Daten an die Wallbox“ und im Meldungsprotokoll (nur bei Wechsel).
+- **Eco-Status der Wallbox lesen** (alle 30 s): `fup` (PV-Überschuss nutzen), `lmo` (Logikmodus) und `lpsc` (letzte
+  PV-Überschussrechnung). Ändert sich `lpsc` und ist `fup` an, gilt „Wallbox rechnet PV-Überschuss selbst“ und „Regelung (wer, warum)“
+  zeigt den go-e Controller.
+
+`fup` und den Logikmodus schaltet der ChargerHub **nicht** selbst, das bleibt in der go-e-App. Rechnet die Wallbox selbst, sollte kein
+zweiter Regler (EMS, eigenes Überschussladen) zusätzlich das Stromlimit schreiben; das Formular und der Status weisen darauf hin.
 
 ## Lizenz
 

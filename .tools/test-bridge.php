@@ -840,6 +840,77 @@ $nh = new ChargerHub(7902);
 $npv = (new ReflectionMethod($nh, 'FindVarByIdent'))->invoke($nh, 'power');
 check('Flach: neue Variable entsteht direkt unter der Instanz, keine Kategorie angelegt', $npv && $GLOBALS['objs'][$npv]['ParentID'] === 7902 && count(array_filter($GLOBALS['objs'], fn($o) => ($o['ObjectIdent'] ?? '') === 'CAT_device' && ($o['ParentID'] ?? 0) === 7902)) === 0);
 
+// go-e HTTP-Kanal (0.11.0): ids senden (pGrid/pPv/pAkku), Fail-Safe ohne Netzwert, Eco-Status lesen, Regler-Anzeige.
+if (!function_exists('IPS_VariableExists')) { function IPS_VariableExists($id) { return (($GLOBALS['objs'][$id]['ObjectType'] ?? 0) === 2); } }
+class GoeHttpHub extends ChargerHub {
+    public $requests = []; public $replies = [];
+    protected function GoeHttpGet(string $path): ?string { $this->requests[] = $path; return array_shift($this->replies); }
+}
+$GLOBALS['objs'][52300] = ['ObjectIdent' => '', 'ObjectType' => 2, 'ParentID' => 0, 'Value' => 800, 'VariableUpdated' => time()];
+foreach (['goe_feed_status' => '', 'goe_use_pv' => false, 'goe_logic_mode' => 0, 'goe_eco_running' => false] as $gi => $gv) {
+    $GLOBALS['objs'][62500 + crc32($gi) % 100] = ['ObjectIdent' => $gi, 'ObjectType' => 2, 'ParentID' => 7910, 'Value' => $gv];
+}
+$gvid = function($ident) { foreach ($GLOBALS['objs'] as $id => $o) { if (($o['ObjectIdent'] ?? '') === $ident && ($o['ParentID'] ?? 0) === 7910) { return $id; } } return 0; };
+$gh = new GoeHttpHub(7910);
+$gh->prop = ['Manufacturer' => 'goe', 'Host' => '192.168.2.31', 'ConnectionType' => 'direct', 'Active' => true, 'GoePvFeed' => true, 'GoeHttpRead' => false,
+    'SurplusGridVarID' => 52300, 'SurplusGridSign' => 'import', 'SurplusGridUnit' => 'W', 'SurplusGridMaxAgeSec' => 30, 'ManagedBy' => 'none', 'EnableSurplusCharging' => false, 'ExternallyManaged' => false];
+$wanted = new ReflectionMethod($gh, 'GoeHttpWanted');
+check('go-e HTTP: gewünscht beim go-e mit Host und Option', $wanted->invoke($gh) === true);
+$gh->prop['ConnectionType'] = 'gateway';
+check('go-e HTTP: im Gateway-Weg nicht möglich', $wanted->invoke($gh) === false);
+$gh->prop['ConnectionType'] = 'direct'; $gh->prop['Manufacturer'] = 'keba';
+check('go-e HTTP: bei anderem Hersteller nicht gewünscht', $wanted->invoke($gh) === false);
+$gh->prop['Manufacturer'] = 'goe';
+
+$gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+$req = $gh->requests[0] ?? '';
+$sent = json_decode(rawurldecode(substr($req, strlen('/api/set?ids='))), true);
+check('go-e HTTP: sendet /api/set?ids= mit pGrid (Bezug +800 W), ohne PV/Speicher ohne InverterHub', strpos($req, '/api/set?ids=') === 0 && ($sent['pGrid'] ?? null) === 800.0 && !isset($sent['pPv']) && !isset($sent['pAkku']));
+check('go-e HTTP: Statuszeile ✅ nach Erfolg', strpos((string)$GLOBALS['objs'][$gvid('goe_feed_status')]['Value'], '✅ Gesendet') === 0);
+
+// Mit InverterHub: pPv = PV-Erzeugung, pAkku negativ = Batterie lädt
+if (!function_exists('IHUB_GetFunctions')) { function IHUB_GetFunctions($iid) { return ['pvPowerID' => 52310, 'batPowerID' => 52311]; } }
+$GLOBALS['byGuid']['{BBE2C593-1A91-426D-A714-29A9C7E87589}'] = [8001];
+$GLOBALS['objs'][52310] = ['ObjectIdent' => '', 'ObjectType' => 2, 'ParentID' => 0, 'Value' => 3400, 'VariableUpdated' => time()];
+$GLOBALS['objs'][52311] = ['ObjectIdent' => '', 'ObjectType' => 2, 'ParentID' => 0, 'Value' => -800, 'VariableUpdated' => time()];
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+$sent2 = json_decode(rawurldecode(substr($gh->requests[0], strlen('/api/set?ids='))), true);
+check('go-e HTTP: mit InverterHub pPv 3400 und pAkku −800 (lädt)', ($sent2['pPv'] ?? null) === 3400.0 && ($sent2['pAkku'] ?? null) === -800.0 && ($sent2['pGrid'] ?? null) === 800.0);
+$GLOBALS['objs'][52311]['VariableUpdated'] = time() - 600; // veralteter Speicherwert wird weggelassen
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+$sent3 = json_decode(rawurldecode(substr($gh->requests[0], strlen('/api/set?ids='))), true);
+check('go-e HTTP: veralteter Speicherwert wird nicht gesendet', !isset($sent3['pAkku']) && isset($sent3['pPv']));
+
+// Fail-Safe: Netzwert veraltet -> es wird NICHTS gesendet
+$GLOBALS['objs'][52300]['VariableUpdated'] = time() - 500;
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+check('go-e HTTP Fail-Safe: veralteter Netzwert -> keine Anfrage, Hinweis „nichts gesendet“', $gh->requests === [] && strpos((string)$GLOBALS['objs'][$gvid('goe_feed_status')]['Value'], 'nichts gesendet') !== false);
+$GLOBALS['objs'][52300]['VariableUpdated'] = time();
+// Keine Antwort / Ablehnung
+$gh->requests = []; $gh->replies = [null];
+$gh->GoeFeedTick();
+check('go-e HTTP: keine Antwort -> ⚠️ mit Hinweis auf die HTTP-API in der App', strpos((string)$GLOBALS['objs'][$gvid('goe_feed_status')]['Value'], 'keine Antwort') !== false);
+// Eco-Status lesen
+$gh->prop['GoePvFeed'] = false; $gh->prop['GoeHttpRead'] = true;
+$gh->requests = []; $gh->replies = ['{"fup":true,"lmo":4,"lpsc":1000}'];
+$gh->GoeFeedTick();
+check('go-e HTTP: Status wird gelesen (fup, lmo)', strpos($gh->requests[0] ?? '', '/api/status?filter=fup,lmo,lpsc') === 0 && $GLOBALS['objs'][$gvid('goe_use_pv')]['Value'] === true && $GLOBALS['objs'][$gvid('goe_logic_mode')]['Value'] === 4);
+check('go-e HTTP: fup an und lpsc ändert sich -> „Wallbox rechnet selbst“', $GLOBALS['objs'][$gvid('goe_eco_running')]['Value'] === true && $gh->ReadAttributeBoolean('GoeEcoRunning') === true);
+$cs2 = (new ReflectionMethod($gh, 'ControlState'))->invoke($gh);
+check('go-e HTTP: Regelung zeigt „go-e Controller“, wenn die Wallbox selbst rechnet', $cs2['owner'] === 'goe-controller' && $cs2['source'] === 'wallbox');
+$gh->WriteAttributeInteger('GoeReadAt', 0); $gh->WriteAttributeInteger('GoeLpscChangedAt', time() - 300);
+$gh->requests = []; $gh->replies = ['{"fup":true,"lmo":4,"lpsc":1000}'];
+$gh->GoeFeedTick();
+check('go-e HTTP: lpsc unverändert seit über 90 s -> rechnet nicht mehr', $gh->ReadAttributeBoolean('GoeEcoRunning') === false && $GLOBALS['objs'][$gvid('goe_eco_running')]['Value'] === false);
+// Netz mit Vorzeichen: export-Konvention
+$gh->prop['SurplusGridSign'] = 'export'; $GLOBALS['objs'][52300]['Value'] = 1200; // + = Einspeisung -> Import −1200
+check('Netz mit Vorzeichen: Einstellung „+ = Einspeisung“ ergibt −1200 W Bezug', abs((new ReflectionMethod($gh, 'FindGridImportW'))->invoke($gh) + 1200.0) < 0.01);
+unset($GLOBALS['byGuid']['{BBE2C593-1A91-426D-A714-29A9C7E87589}']);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

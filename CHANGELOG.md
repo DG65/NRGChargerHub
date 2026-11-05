@@ -5,6 +5,24 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.11.0-beta.1] - 2026-11-05
+
+### Added
+- **go-e: Netz-, PV- und Speicherleistung an die Wallbox senden (HTTP-API, Wunsch Dietmar):** Neue Einstellung (Standard aus, nur
+  go-eCharger im direkten Verbindungsweg). Alle 5 s wird `ids` (`pGrid`, `pPv`, `pAkku`) an die go-e gesendet: Netzleistung aus
+  MeterHub-Zähler oder eigener Variable, PV und Speicher aus dem InverterHub. Die Wallbox kann damit den Überschuss selbst regeln
+  (Eco) und bucht die Energieherkunft im go-e-Portal. Ohne aktuelle Netzleistung wird nichts gesendet (die Wallbox beendet den
+  Überschuss nach 10 s selbst). Status in der Variable „PV-Daten an die Wallbox“.
+- **go-e: Eco-Status lesen:** Neue Einstellung (Standard aus). Liest alle 30 s `fup`, `lmo` und `lpsc` und legt die Variablen
+  „PV-Überschuss (Eco) in der Wallbox“, „Logikmodus der Wallbox“ und „Wallbox rechnet PV-Überschuss selbst“ an. „Regelung (wer,
+  warum)“ nennt dann den go-e Controller, wenn die Wallbox selbst rechnet.
+- Hinweis im Formular und im Status, wenn dabei zusätzlich ein zweiter Regler (EMS, eigenes Überschussladen) am Stromlimit schreiben
+  könnte. `fup` und Logikmodus werden nicht automatisch geschaltet.
+
+### Changed
+- Intern: Die Netzleistung wird jetzt auch mit Vorzeichen bereitgestellt (`FindGridImportW`), das Überschussladen rechnet daraus
+  unverändert (nur Überschuss, nie negativ).
+
 ## [0.10.1] - 2026-10-30
 
 ### Fixed
