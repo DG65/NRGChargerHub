@@ -942,6 +942,24 @@ preg_match('/public function ApplyChanges\(\)\s*\{(.*?)\n    \}\n/s', $src, $mAp
 check('Geschwister-Abgleich steht nicht mehr in ApplyChanges()', isset($mApply[1]) && strpos($mApply[1], 'AdoptDismissFromSibling') === false);
 check('Geschwister-Abgleich läuft beim Öffnen des Formulars (GetConfigurationForm)', (bool)preg_match('/function GetConfigurationForm\(\)\s*\{[^}]*AdoptDismissFromSibling/s', $src));
 
+// go-e HTTP: Dubletten-Schutz (nur die zählende Instanz sendet ids).
+$GLOBALS['objs'][52300]['Value'] = 800; $GLOBALS['objs'][52300]['VariableUpdated'] = time();
+$GLOBALS['inst'][9990] = true;
+$gh->prop['SurplusGridSign'] = 'import'; $gh->prop['GoePvFeed'] = true; $gh->prop['GoeHttpRead'] = false;
+$gh->prop['DuplicateOfKey'] = 'ocpphub:9990';
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+check('Dubletten-Schutz: als Dublette markierte Instanz sendet nichts', $gh->requests === []);
+check('Dubletten-Schutz: Statuszeile nennt die zählende Instanz', strpos((string)$GLOBALS['objs'][$gvid('goe_feed_status')]['Value'], 'Dublette von OCPPHub-Instanz #9990') !== false);
+$gh->prop['DuplicateOfKey'] = 'ocpphub:123456'; // Zielinstanz existiert nicht mehr -> Zuordnung ungültig -> sendet normal
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+check('Dubletten-Schutz: ungültige Zuordnung (Ziel gelöscht) -> sendet normal', count($gh->requests) === 1);
+$gh->prop['DuplicateOfKey'] = '';
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+check('Dubletten-Schutz: ohne Markierung sendet die Instanz wie bisher', count($gh->requests) === 1);
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

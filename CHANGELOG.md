@@ -5,6 +5,14 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.11.2-beta.1] - 2026-11-09
+
+### Added
+- **go-e PV-Daten: Dubletten-Schutz.** Ist die Instanz als Dublette einer anderen markiert (dieselbe Wallbox hängt zusätzlich an einer
+  anderen ChargerHub- oder OCPPHub-Instanz), sendet sie `ids` nicht; nur die zählende Instanz schreibt. Sonst gäbe es zwei Schreiber
+  im 5-Sekunden-Takt. Die Statuszeile „PV-Daten an die Wallbox“ nennt dann die zählende Instanz. Eine ungültige Zuordnung (Ziel
+  gelöscht) hat keine Wirkung, die Instanz sendet normal. Das Lesen des Eco-Status bleibt davon unberührt.
+
 ## [0.11.1] - 2026-11-09
 
 Stable-Version. Inhaltlich identisch mit 0.11.1-beta.1 und damit 0.11.0-beta.1 (go-e: Eco und PV-Daten über die HTTP-API, beide

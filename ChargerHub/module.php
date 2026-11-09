@@ -4559,6 +4559,15 @@ class ChargerHub extends IPSModule
 
     private function GoeSendPvData(): void
     {
+        // Dubletten-Schutz: ist diese Instanz als Dublette einer anderen markiert (dieselbe Wallbox hängt zusätzlich an einer anderen
+        // ChargerHub- oder OCPPHub-Instanz), sendet nur die zählende Instanz — sonst schrieben zwei Schreiber im 5-s-Takt `ids`.
+        $dup = $this->GetDuplicateOf();
+        if ($dup !== null) {
+            $src = $dup['source'] === 'ocpphub' ? 'OCPPHub' : 'ChargerHub';
+            $this->SetGoeFeedStatus('ℹ️ Nicht gesendet: diese Instanz ist als Dublette von ' . $src . '-Instanz #' . $dup['instanceID']
+                . ' markiert, die zählende Instanz muss die Leistungen senden (sonst schrieben zwei Instanzen `ids`).');
+            return;
+        }
         $grid = $this->FindGridImportW();
         if ($grid === null) {
             // Fail-Safe: ohne aktuellen Netzwert NICHTS senden. Die go-e beendet den Überschuss nach 10 s von selbst.
@@ -5255,7 +5264,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.11.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.11.2-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5402,7 +5411,7 @@ class ChargerHub extends IPSModule
                         ['type' => 'Label', 'caption' => 'Zusätzlicher Weg neben Modbus (die go-e kennt diese Funktionen nur per HTTP). In der go-e-App muss die „HTTP-API (v2)“ eingeschaltet sein; die Wallbox wird über die oben eingetragene Adresse erreicht (nicht im Symbox-Gateway-Weg). Beides ist standardmäßig aus und wirkt beim nächsten Übernehmen.'],
                         ['type' => 'CheckBox', 'name' => 'GoeHttpRead', 'caption' => 'Eco-Status der Wallbox lesen (Eco an? rechnet die Wallbox selbst?)'],
                         ['type' => 'CheckBox', 'name' => 'GoePvFeed', 'caption' => 'Netz-, PV- und Speicherleistung an die Wallbox senden (alle 5 s, für Eco in der Wallbox und die Energieherkunft im go-e-Portal)'],
-                        ['type' => 'Label', 'caption' => 'Netzleistung kommt aus dem MeterHub-Zähler oder der eigenen Variable (Panel „Steuerungshoheit & Sicherheit“), PV und Speicher aus dem InverterHub, soweit vorhanden. Ohne aktuelle Netzleistung wird nichts gesendet, die Wallbox beendet den Überschuss dann nach 10 Sekunden von selbst.'],
+                        ['type' => 'Label', 'caption' => 'Netzleistung kommt aus dem MeterHub-Zähler oder der eigenen Variable (Panel „Steuerungshoheit & Sicherheit“), PV und Speicher aus dem InverterHub, soweit vorhanden. Ohne aktuelle Netzleistung wird nichts gesendet, die Wallbox beendet den Überschuss dann nach 10 Sekunden von selbst. Ist diese Wallbox oben als Dublette einer anderen Instanz markiert, sendet nur die zählende Instanz.'],
                         ['type' => 'Label', 'caption' => '⚠️ Damit die Wallbox selbst nach Überschuss regelt, müssen in der go-e-App „PV-Überschuss nutzen“ und der Eco-Modus eingeschaltet sein; das schaltet der ChargerHub nicht für dich. Bei Eco in der Wallbox sollte kein zweiter Regler (EMS, eigenes Überschussladen) das Stromlimit schreiben.'],
                     ],
                 ],
