@@ -44,6 +44,7 @@ function SetValueFloat($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function GetValueBoolean($id) { return (bool)($GLOBALS['objs'][$id]['Value'] ?? false); }
 function SetValueInteger($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function IPS_DeleteVariable($id) { unset($GLOBALS['objs'][$id]); }
+function IPS_ObjectExists($id) { return isset($GLOBALS['objs'][$id]); }
 function IPS_GetName($id) { return 'Name' . $id; }
 function IPS_SemaphoreEnter($n, $ms) { return true; }
 function IPS_SemaphoreLeave($n) {}
@@ -54,6 +55,7 @@ class IPSModule {
     public $InstanceID = 1; public $attr = []; public $prop = [];
     public function __construct($id = 1) { $this->InstanceID = $id; }
     public function Create() {} public function ApplyChanges() {}
+    public function UnregisterVariable($ident) { foreach ($GLOBALS['objs'] as $id => $o) { if (($o['ObjectIdent'] ?? '') === $ident && ($o['ParentID'] ?? 0) === $this->InstanceID && ($o['ObjectType'] ?? 0) === 2) { unset($GLOBALS['objs'][$id]); return true; } } return false; }
     public function SetStatus($s) { $this->status = $s; }
     public function SendDataToParent($j) { $r = $GLOBALS['parentReply']; if ($r instanceof Throwable) throw $r; return $r; }
     public function ReadPropertyInteger($n) { return $this->prop[$n] ?? 0; }
@@ -910,6 +912,35 @@ check('go-e HTTP: lpsc unverändert seit über 90 s -> rechnet nicht mehr', $gh-
 $gh->prop['SurplusGridSign'] = 'export'; $GLOBALS['objs'][52300]['Value'] = 1200; // + = Einspeisung -> Import −1200
 check('Netz mit Vorzeichen: Einstellung „+ = Einspeisung“ ergibt −1200 W Bezug', abs((new ReflectionMethod($gh, 'FindGridImportW'))->invoke($gh) + 1200.0) < 0.01);
 unset($GLOBALS['byGuid']['{BBE2C593-1A91-426D-A714-29A9C7E87589}']);
+
+// 0.11.1 (Store-Review-Checkliste 26/27, Nutzer-Eigenschaften): Variablen über UnregisterVariable entfernen, Name nur bei Neuanlage,
+// Geschwister-Abgleich nicht in ApplyChanges.
+$GLOBALS['objs'][63000] = ['ObjectIdent' => 'CAT_old', 'ObjectType' => 0, 'ParentID' => 7920];
+$GLOBALS['objs'][63001] = ['ObjectIdent' => 'obsolete_var', 'ObjectType' => 2, 'ParentID' => 63000]; // alte Variable noch in der Kategorie
+$GLOBALS['objs'][63002] = ['ObjectIdent' => '', 'ObjectType' => 6, 'ParentID' => 63001];              // Link darunter (Visualisierung)
+$GLOBALS['objs'][63003] = ['ObjectIdent' => 'direct_var', 'ObjectType' => 2, 'ParentID' => 7920];
+function IPS_DeleteLink($id) { unset($GLOBALS['objs'][$id]); }
+$rh = new ChargerHub(7920);
+$rov = new ReflectionMethod($rh, 'RemoveOwnVariable');
+$rov->invoke($rh, 63001, 'obsolete_var');
+check('Entfernen: Variable in alter Kategorie wird über UnregisterVariable entfernt, Link darunter vorher gelöscht', !isset($GLOBALS['objs'][63001]) && !isset($GLOBALS['objs'][63002]));
+$rov->invoke($rh, 63003, 'direct_var');
+check('Entfernen: direkte Variable wird über UnregisterVariable entfernt', !isset($GLOBALS['objs'][63003]));
+check('Entfernen: ChargerHub ruft IPS_DeleteVariable nicht mehr auf', strpos(file_get_contents(__DIR__ . '/../ChargerHub/module.php'), 'IPS_DeleteVariable(') === false || preg_match('/@?IPS_DeleteVariable\(/', preg_replace('#//[^\n]*#', '', file_get_contents(__DIR__ . '/../ChargerHub/module.php'))) === 0);
+// Name nur bei Neuanlage
+$nh = new ChargerHub(7921);
+$rvn = new ReflectionMethod($nh, 'RegisterVar');
+$rvn->invoke($nh, ['connected', 'Verbindung', 'B', '', false, 'errors', ''], 1);
+$nvid = (new ReflectionMethod($nh, 'FindVarByIdent'))->invoke($nh, 'connected');
+check('Name: bei Neuanlage gesetzt', ($GLOBALS['objs'][$nvid]['ObjectName'] ?? '') === 'Verbindung');
+$GLOBALS['objs'][$nvid]['ObjectName'] = 'Meine Umbenennung';
+$rvn->invoke($nh, ['connected', 'Verbindung (neu formuliert)', 'B', '', false, 'errors', ''], 1);
+check('Name: Umbenennung des Nutzers bleibt bei erneutem Übernehmen erhalten', ($GLOBALS['objs'][$nvid]['ObjectName'] ?? '') === 'Meine Umbenennung');
+// Abgleich mit Geschwistern: nicht in ApplyChanges
+$src = file_get_contents(__DIR__ . '/../ChargerHub/module.php');
+preg_match('/public function ApplyChanges\(\)\s*\{(.*?)\n    \}\n/s', $src, $mApply);
+check('Geschwister-Abgleich steht nicht mehr in ApplyChanges()', isset($mApply[1]) && strpos($mApply[1], 'AdoptDismissFromSibling') === false);
+check('Geschwister-Abgleich läuft beim Öffnen des Formulars (GetConfigurationForm)', (bool)preg_match('/function GetConfigurationForm\(\)\s*\{[^}]*AdoptDismissFromSibling/s', $src));
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);

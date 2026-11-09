@@ -3431,9 +3431,6 @@ class ChargerHub extends IPSModule
 
         $this->CreateProfiles();
         $this->RegisterVariables();
-        // Vor der Bereitschaftsprüfung (die bei inaktiven/unkonfigurierten
-        // Instanzen früh zurückkehrt) — das Ausblenden gilt unabhängig davon.
-        $this->AdoptDismissFromSibling();
 
         // Im Symbox-Gateway-Modus ist Host ausgeblendet und damit leer — die
         // Bereitschaftsprüfung darf ihn dort nicht voraussetzen (Fund
@@ -5199,6 +5196,9 @@ class ChargerHub extends IPSModule
 
     public function GetConfigurationForm()
     {
+        // Abgleich mit Geschwister-Instanzen hier statt in ApplyChanges: beim Neuladen sind die anderen Instanzen dort evtl.
+        // noch nicht geladen (Store-Review-Checkliste 27). Das Ausblenden gilt unabhängig vom Verbindungszustand.
+        $this->AdoptDismissFromSibling();
         $driver = $this->GetDriver();
 
         $groupItems = [['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkVehicleStatus']];
@@ -5255,7 +5255,7 @@ class ChargerHub extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.11.0-beta.1)',
+                    'caption'  => '📖  Dokumentation & Hilfe (Version 0.11.1-beta.1)',
                     'expanded' => false,
                     'items'    => [
                         ['type' => 'Label', 'caption' => 'ChargerHub liest und steuert Wallboxen verschiedener Hersteller per Modbus TCP. Hersteller wählen, IP-Adresse/Hostname eintragen, Datenpunkt-Gruppen aktivieren.'],
@@ -5769,8 +5769,8 @@ class ChargerHub extends IPSModule
     }
 
     /**
-     * Gegenrichtung zu PropagateDismiss(): eine Instanz sieht bei jedem
-     * ApplyChanges() bei einer beliebigen Geschwister-Instanz nach und
+     * Gegenrichtung zu PropagateDismiss(): eine Instanz sieht beim Öffnen des
+     * Formulars bei einer beliebigen Geschwister-Instanz nach und
      * übernimmt deren Stand, statt "Wozu dieses Modul?"/"Was ist Neu?"/den
      * Rückmeldungs-Hinweis erneut zu zeigen, obwohl der Nutzer sie an
      * anderer Stelle schon bestätigt hat. Zieht nur vor (false→true, ältere→
@@ -5958,7 +5958,7 @@ class ChargerHub extends IPSModule
                 // Fremder/nicht mehr gültiger Ident (abgewählte Gruppe,
                 // Herstellerwechsel) — alle Fundstellen löschen.
                 foreach ($entries as $e) {
-                    $this->DeleteVariableSafely($e['id']);
+                    $this->RemoveOwnVariable($e['id'], (string)$ident);
                 }
                 continue;
             }
@@ -5974,18 +5974,18 @@ class ChargerHub extends IPSModule
                 // die Karteileiche.
                 foreach ($entries as $e) {
                     if ($e['directChild']) {
-                        $this->DeleteVariableSafely($e['id']);
+                        $this->RemoveOwnVariable($e['id'], (string)$ident);
                     }
                 }
             }
         }
     }
 
-    // IPS_DeleteVariable() scheitert still (kein Fehler, keine Löschung),
-    // wenn unter der Variable noch ein Kind-Objekt hängt — live beobachtet
-    // bei einer Karteileiche mit einem Link-Objekt darunter (vermutlich aus
-    // einer Visualisierung). Kind-Objekte vorher entfernen.
-    private function DeleteVariableSafely(int $vid): void
+    // Entfernt eine eigene Variable über $this->UnregisterVariable($ident) (Store-Review-Checkliste 26) statt über
+    // IPS_DeleteVariable. UnregisterVariable findet nur DIREKTE Instanz-Kinder: eine noch in einer früheren Kategorie stehende
+    // Variable wird zuerst unter die Instanz gehängt. Hängt noch ein Kind-Objekt (z. B. ein Link aus einer Visualisierung)
+    // unter der Variable, scheitert das Entfernen still (live beobachtet) — diese Links werden vorher gelöscht.
+    private function RemoveOwnVariable(int $vid, string $ident): void
     {
         foreach (@IPS_GetChildrenIDs($vid) ?: [] as $cid) {
             $obj = IPS_GetObject($cid);
@@ -5993,7 +5993,20 @@ class ChargerHub extends IPSModule
                 @IPS_DeleteLink($cid);
             }
         }
-        @IPS_DeleteVariable($vid);
+        if ($ident === '') {
+            return;
+        }
+        // Zwei Versuche: bei einer Doppelung (direkte Variable gleichen Idents neben der verschachtelten) entfernt der erste
+        // Aufruf die direkte, der zweite dann die zuvor verschachtelte.
+        for ($try = 0; $try < 2; $try++) {
+            if (!@IPS_ObjectExists($vid)) {
+                return;
+            }
+            if (IPS_GetParent($vid) !== $this->InstanceID) {
+                @IPS_SetParent($vid, $this->InstanceID);
+            }
+            $this->UnregisterVariable($ident);
+        }
     }
 
     // Erzeugung über RegisterVariableX (nötig für die Kernel-Standardaktion,
@@ -6018,7 +6031,7 @@ class ChargerHub extends IPSModule
         // Typ-Migration: IPS kann den Typ einer Variable nicht nachträglich
         // ändern — bei Typwechsel neu anlegen.
         if ($vid && IPS_GetVariable($vid)['VariableType'] !== $vtype) {
-            @IPS_DeleteVariable($vid);
+            $this->RemoveOwnVariable($vid, $ident);
             $vid = 0;
         }
         // Einmalige Migration für "control"-Variablen, die noch VOR dem
@@ -6032,7 +6045,7 @@ class ChargerHub extends IPSModule
         // feuerte und die IDs bei jedem Aufruf neu vergeben wurden — ein
         // Attribut kann das nicht, es wird exakt einmal auf true gesetzt.
         if ($vid && $group === 'control' && !$this->ReadAttributeBoolean('ControlActionsMigrated')) {
-            @IPS_DeleteVariable($vid);
+            $this->RemoveOwnVariable($vid, $ident);
             $vid = 0;
         }
         $isNewVar = !$vid;
@@ -6089,7 +6102,11 @@ class ChargerHub extends IPSModule
         if ($isNewVar || $moved) {
             IPS_SetPosition($vid, $pos);
         }
-        IPS_SetName($vid, $caption);
+        // Der Name gehört nach dem Anlegen dem Nutzer (Store-Review: Nutzer-Eigenschaften nur voreinstellen): nur bei Neuanlage
+        // setzen, damit eine Umbenennung in der Konsole bei „Übernehmen“ nicht überschrieben wird.
+        if ($isNewVar) {
+            IPS_SetName($vid, $caption);
+        }
 
         // Profil grundsätzlich nachziehen (0.9.11-Fix: RegisterVariableX setzt
         // es nur bei Neuanlage, ein Hersteller-/Typwechsel kann aber ein

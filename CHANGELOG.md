@@ -5,6 +5,16 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.11.1-beta.1] - 2026-11-09
+
+### Fixed
+- **Store-Review-Punkte (Checkliste 26, 27 und Nutzer-Eigenschaften):**
+  - Eigene Variablen werden mit `UnregisterVariable($ident)` entfernt statt mit `IPS_DeleteVariable` (Aufräumen nicht mehr gültiger
+    Variablen, Typwechsel, einmalige Steuervariablen-Migration). Links aus einer Visualisierung unter der Variable werden vorher gelöscht.
+  - Der Abgleich der „Ausblenden“-Hinweise mit Geschwister-Instanzen läuft beim Öffnen des Formulars statt in `ApplyChanges`, wo andere
+    Instanzen beim Neuladen noch nicht bereit sein können.
+  - Der Name einer Variable wird nur noch bei der Neuanlage gesetzt. Eine Umbenennung in der Konsole bleibt bei „Übernehmen“ erhalten.
+
 ## [0.11.0-beta.1] - 2026-11-05
 
 ### Added
