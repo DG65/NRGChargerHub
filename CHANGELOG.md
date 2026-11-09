@@ -5,6 +5,11 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.11.1] - 2026-11-09
+
+Stable-Version. Inhaltlich identisch mit 0.11.1-beta.1 und damit 0.11.0-beta.1 (go-e: Eco und PV-Daten über die HTTP-API, beide
+Einstellungen standardmäßig aus) und den Store-Review-Fixes aus 0.11.1-beta.1. Nur die Versionsnummer ändert sich.
+
 ## [0.11.1-beta.1] - 2026-11-09
 
 ### Fixed
