@@ -88,21 +88,25 @@ class ChargerHubBridge extends IPSModule
     public function GetConfigurationForm()
     {
         $unit = $this->UnitId();
+        // Zeilen mit eingesetzten Werten uebersetzt das Modul selbst (die Konsole kennt nur feste Texte).
         $state = !$this->ParentConnected()
-            ? '⚠️ Kein ModBus-Gateway verknüpft (🔌-Symbol oben am Instanz-Kopf).'
+            ? '⚠️ No Modbus gateway linked (🔌 icon at the top of the instance header).'
             : ($this->ParentStatus() === 102
-                ? '✅ Gateway verknüpft und aktiv.'
-                : '⚠️ Gateway verknüpft, aber nicht aktiv (Status ' . $this->ParentStatus() . ').');
+                ? '✅ Gateway linked and active.'
+                : sprintf($this->Translate('⚠️ Gateway linked, but not active (status %s).'), (string)$this->ParentStatus()));
+        $unitText = $unit === null
+            ? $this->Translate('Unit ID read from the gateway: not readable / no gateway')
+            : sprintf($this->Translate('Unit ID read from the gateway: %s'), (string)$unit);
         return json_encode([
             'elements' => [
-                ['type' => 'Label', 'caption' => '🔗 Brücke zwischen ChargerHub und dem ModBus Gateway. Keine eigenen Einstellungen — in ChargerHub „Symbox-Gateway" wählen und „Brücke anlegen und verbinden" klicken.'],
-                ['type' => 'Label', 'caption' => '⚠️ Eine Brücke = genau eine Unit-ID („DeviceID" des Gateways). Weitere Unit-IDs: eigenes Gateway und eigene Brücke.'],
+                ['type' => 'Label', 'caption' => '🔗 Bridge between ChargerHub and the Modbus gateway. No settings of its own: in ChargerHub choose "Symbox gateway" and click "Create bridge and connect".'],
+                ['type' => 'Label', 'caption' => '⚠️ One bridge = exactly one unit ID (the gateway\'s "DeviceID"). For more unit IDs, use a separate gateway and a separate bridge.'],
                 ['type' => 'Label', 'caption' => $state],
-                ['type' => 'Label', 'caption' => 'Gelesene Unit-ID des Gateways: ' . ($unit === null ? 'nicht lesbar / kein Gateway' : (string)$unit)],
+                ['type' => 'Label', 'caption' => $unitText],
             ],
             'status' => [
-                ['code' => 102, 'icon' => 'active', 'caption' => 'Gateway verknüpft.'],
-                ['code' => 104, 'icon' => 'inactive', 'caption' => 'Kein ModBus-Gateway verknüpft.'],
+                ['code' => 102, 'icon' => 'active', 'caption' => 'Gateway linked.'],
+                ['code' => 104, 'icon' => 'inactive', 'caption' => 'No Modbus gateway linked.'],
             ],
         ]);
     }

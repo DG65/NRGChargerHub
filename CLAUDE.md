@@ -40,26 +40,35 @@ Sitzungen** gearbeitet:
 4. **Ein veröffentlichter Vertrag wird nicht umbenannt.** Sobald ein Modul im Store ist, sind
    Feldnamen öffentliche API. Das gilt ausdrücklich auch für **Idents** (`ctl_*`,
    `energy_total`, `vehicle_plugged` …) — Idents sind API und werden nie umbenannt.
-5. **Sprachregel: alles Nutzersichtbare auf Deutsch** (Anweisung Dietmar, 2026-07-22, gilt
-   verbundweit). Deutsch sind: Formularbeschriftungen, Hinweis-/Warntexte, Fehler- und
-   Statusmeldungen, Rückgabe-Texte, Log-Meldungen, Variablen- und Profil-**Anzeigenamen**,
-   README/Dokumentation. Vermeidbare Anglizismen ersetzen (Scan → Suche, Link → Verknüpfung,
-   Event → Ereignis, Button → Schaltfläche, Dry-Run → Probelauf).
-   **Ausgenommen** (bleibt englisch): Bezeichner im Code — Klassen-, Methoden-, Variablen-,
-   Property- und Ident-Namen, Formularelement-Typen (`'type' => 'Button'`) sowie die
-   `CHUB_GetFunctions`-Feldnamen — und feststehende Fachbegriffe, bei denen das englische
-   Wort DER Fachbegriff ist (Modbus TCP, Holding-/Input-Register, FC 0x16, Unit-ID, RFID,
-   LED, SelectVariable, WebFront). Faustregel: eindeutschen, wo es das Verständnis
-   verbessert; stehen lassen, wo es das Verständnis erschwert.
-   Beim Ersetzen **den Diff Zeile für Zeile lesen**, nie blind ersetzen — drei erprobte
-   Stolperfallen aus dem Verbund:
-   1. *Genus-Kongruenz*: der Portcheck → die Port-Prüfung ⇒ Artikel und Adjektivendungen
-      mitziehen („einen zuverlässigen Portcheck" → „eine zuverlässige Port-Prüfung").
-   2. *Objekt-Verwechslung bei scannen*: Ein **Bereich** wird durchsucht/abgesucht, ein
-      **Gerät** wird gefunden. „Geräte hinter Gateways lassen sich nicht durchsuchen" ist
-      grammatisch richtig, inhaltlich falsch — korrekt: „… findet die Suche nicht
-      zuverlässig". Im Englischen steht beide Male „scan".
-   3. *Fachbegriffe nicht überdehnen* (siehe Ausnahmeliste oben).
+5. **Sprachregel: zweisprachig Deutsch und Englisch** (Anweisung Dietmar, 2026-11-10; löst die frühere Regel „alles
+   Nutzersichtbare auf Deutsch“ vom 2026-07-22 ab; gilt verbundweit nach SUITE.md, Prüfliste 25–29). Die Quelltexte im Code
+   sind **englisch**, die deutsche Fassung steht in `libs/locale.json` (Quelle; `php .tools/locale-bauen.php` kopiert sie in
+   die drei Modulordner, weil Symcon die `locale.json` nur dort liest). Nutzersichtbar sind: Formularbeschriftungen,
+   Hinweis-/Warntexte, Fehler- und Statusmeldungen, Rückgabe-Texte, Log-Meldungen, Variablen- und Profil-**Anzeigenamen**,
+   README/Dokumentation (`README.md` deutsch, `README.en.md` englisch — beide gleichzeitig pflegen).
+   - **Formular nicht selbst übersetzen** (Prüfliste 25): `caption`/`label`/Optionen stehen englisch im Code, die Konsole
+     übersetzt sie anhand der `locale.json`. **Selbst übersetzen** nur, was die Konsole nicht sieht: Variablennamen,
+     Profil-Texte, Meldungen, Rückgabe-/Popup-Texte, Statuszeilen mit eingesetzten Werten und Listenzellen — über
+     `CHUB_Text::t('English %s', $wert)` (`libs/CHUB_Text.php`; eine Merkliste, weil `Translate()` bei jedem Aufruf die
+     `locale.json` liest, SUITE.md Stolperstein 24). Clients und Treiber (keine IPSModule) nutzen denselben Übersetzer.
+   - **Platzhalter-Sätze statt Verkettung:** `t('Done: %s of %s', $a, $b)`, nie `'Fertig: ' . $a . …`, sonst lässt sich die
+     Wortstellung nicht übersetzen. Ein Prozentzeichen im Text als `%%`.
+   - **Nie übersetzen:** Bezeichner im Code (Klassen-, Methoden-, Variablen-, Property-, Attribut- und Ident-Namen),
+     `CHUB_GetFunctions`-Feldnamen und feste Vertragsschlüssel (z. B. `controlSource`: `einstellung`/`ueberschuss`/`manuell`),
+     Produkt- und Eigennamen, feststehende Fachbegriffe (Modbus TCP, Holding-/Input-Register, FC 0x16, Unit-ID, RFID, LED).
+     Code-Kommentare bleiben deutsch.
+   - **Prüfen vor jedem Push:** `php .tools/locale-pruefen.php` (alle drei `locale.json` gleich der Quelle, Platzhalter in
+     Deutsch und Englisch gleich, jeder übersetzte Text hat einen Eintrag, kein Eintrag veraltet) und `php .tools/test-bridge.php`.
+   - **Qualität der deutschen Fassung** (Erfahrung aus dem Verbund) — vermeidbare Anglizismen ersetzen (Scan → Suche, Link →
+     Verknüpfung, Event → Ereignis, Button → Schaltfläche, Dry-Run → Probelauf). Beim Ersetzen **den Diff Zeile für Zeile
+     lesen**, nie blind ersetzen:
+     1. *Genus-Kongruenz*: der Portcheck → die Port-Prüfung ⇒ Artikel und Adjektivendungen mitziehen.
+     2. *Objekt-Verwechslung bei scannen*: Ein **Bereich** wird durchsucht, ein **Gerät** wird gefunden. Im Englischen steht
+        beide Male „scan“.
+     3. *Fachbegriffe nicht überdehnen* (siehe Ausnahmeliste oben). Faustregel: eindeutschen, wo es das Verständnis
+        verbessert; stehen lassen, wo es das Verständnis erschwert.
+   - **Benutzerdefiniertes Profil/Darstellung nie setzen** (Prüfliste 28): das Profil kommt über `RegisterVariable*`
+     (Standarddarstellung), nie über `IPS_SetVariableCustomProfile`/`…CustomPresentation`; der Prüfstand sucht danach.
 6. **Emojis sind erwünscht, wo sie Nutzen stiften** (Entscheidung Dietmar, 2026-07-23, gilt
    verbundweit; ersetzt jede frühere „keine Emojis"-Regel). Zwei legitime Verwendungen:
    (1) als **Panel-Icon** — ein Zeichen am Anfang einer ExpansionPanel-Überschrift
