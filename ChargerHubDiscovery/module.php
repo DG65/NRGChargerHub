@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/../libs/CHUB_Text.php';
+
 // ---------------------------------------------------------------------------
 // ChargerHubDiscovery — Configurator-Modul: durchsucht einen IP-Bereich nach
 // Wallboxen auf Modbus-TCP-Port 502, erkennt den Hersteller anhand weniger
@@ -53,16 +55,19 @@ class ChargerHubDiscovery extends IPSModule
         'alfen'       => 'Alfen Eve Single/Double Pro-line',
         'heidelberg'  => 'Heidelberg Energy Control',
         'goe'         => 'go-eCharger Gemini/HOME+',
-        'daheimlader' => 'DaheimLader (Smart/Touch/PRO-Serie)',
+        'daheimlader' => 'DaheimLader (Smart/Touch/PRO series)',
         'abl'         => 'ABL eMH1/eMH2/eMH3',
         'foxess'      => 'Fox ESS EV Charger (A/L/C)',
-        'peblar'      => 'Peblar Home/Business (experimentell)',
-        'charx'       => 'Phoenix Contact CHARX SEC-3xxx (experimentell)',
+        'peblar'      => 'Peblar Home/Business (experimental)',
+        'charx'       => 'Phoenix Contact CHARX SEC-3xxx (experimental)',
     ];
 
     public function Create()
     {
         parent::Create();
+        CHUB_Text::setzen(function (string $text): string {
+            return $this->Translate($text);
+        });
 
         $prefix = $this->guessLocalSubnetPrefix();
         $this->RegisterPropertyString('RangeStart', $prefix !== '' ? $prefix . '.1'   : '');
@@ -92,12 +97,12 @@ class ChargerHubDiscovery extends IPSModule
         }
         return [
             'type' => 'ExpansionPanel', 'name' => 'PurposeIntroPanel', 'expanded' => true,
-            'caption' => '👋  Wozu dieses Modul?',
+            'caption' => '👋  What is this module for?',
             'items' => [
-                ['type' => 'Label', 'caption' => 'ChargerHub Suche durchsucht das lokale Netz nach Wallboxen (KEBA, Alfen, Heidelberg, go-eCharger) auf Modbus TCP und legt auf Klick passende ChargerHub-Instanzen mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
-                ['type' => 'Label', 'caption' => 'Der Nutzen: Wallboxen von Hand einrichten heißt, IP-Adresse und Unit-ID selbst herauszufinden — hier reicht ein Klick, gerade praktisch bei mehreren Ladepunkten auf einmal.'],
-                ['type' => 'Label', 'caption' => 'Läuft bereits eine andere Anbindung derselben Wallbox (anderes Modul, gleiche IP/Unit-ID)? Dann erkennt die Suche das über MigrationsHub und bietet eine Migration der bestehenden Historie an, statt doppelt zu zählen.'],
-                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUBD_AckPurposeIntro($id);'],
+                ['type' => 'Label', 'caption' => 'ChargerHub Search scans the local network for wallboxes (KEBA, Alfen, Heidelberg, go-eCharger) via Modbus TCP and, on a click, creates matching ChargerHub instances with the IP address, unit ID and manufacturer already filled in.'],
+                ['type' => 'Label', 'caption' => 'The benefit: setting up wallboxes by hand means finding out the IP address and unit ID yourself — here a single click is enough, especially handy with several charge points at once.'],
+                ['type' => 'Label', 'caption' => 'Is another integration of the same wallbox already running (a different module, same IP/unit ID)? Then the search detects this via MigrationsHub and offers to migrate the existing history instead of counting twice.'],
+                ['type' => 'Button', 'caption' => 'Understood – do not show again', 'onClick' => 'CHUBD_AckPurposeIntro($id);'],
             ],
         ];
     }
@@ -123,11 +128,11 @@ class ChargerHubDiscovery extends IPSModule
         }
         return [
             'type' => 'ExpansionPanel', 'name' => 'ForumHintPanel', 'expanded' => true,
-            'caption' => '💬  Feedback im Symcon-Forum',
+            'caption' => '💬  Feedback in the Symcon forum',
             'items' => [
-                ['type' => 'Label', 'caption' => 'ChargerHub Suche ist Beta — Rückmeldungen sind willkommen, gerade zu nicht erkannten Wallboxen.'],
-                ['type' => 'Button', 'caption' => 'Zum Forums-Thread', 'onClick' => "echo '" . self::FORUM_THREAD_URL . "';", 'link' => true],
-                ['type' => 'Button', 'caption' => 'Verstanden – nicht mehr anzeigen', 'onClick' => 'CHUBD_AckForumHint($id);'],
+                ['type' => 'Label', 'caption' => 'ChargerHub Search is beta — feedback is welcome, especially about wallboxes that are not detected.'],
+                ['type' => 'Button', 'caption' => 'To the forum thread', 'onClick' => "echo '" . self::FORUM_THREAD_URL . "';", 'link' => true],
+                ['type' => 'Button', 'caption' => 'Understood – do not show again', 'onClick' => 'CHUBD_AckForumHint($id);'],
             ],
         ];
     }
@@ -154,14 +159,14 @@ class ChargerHubDiscovery extends IPSModule
     {
         return [
             'type' => 'ExpansionPanel', 'expanded' => false,
-            'caption' => '🧡  Über dieses Modul',
+            'caption' => '🧡  About this module',
             'items' => [
-                ['type' => 'Label', 'caption' => 'Entstanden aus echter Begeisterung für die eigene Anlage — und ein paar durchgetippten Abenden. Trotzdem: Software-Hobby hin oder her, das hier ist geistiges Eigentum und echte Arbeit steckt drin.'],
-                ['type' => 'Label', 'caption' => 'Lizenz: PolyForm Noncommercial 1.0.0 — privat und nicht-kommerziell frei nutzbar, für den gewerblichen Einsatz braucht es eine gesonderte Lizenz vom Rechteinhaber.'],
-                ['type' => 'Button', 'caption' => 'Lizenztext ansehen', 'onClick' => "echo '" . self::LICENSE_URL . "';", 'link' => true],
-                ['type' => 'Label', 'caption' => 'Gewerbliche Nutzung oder Fragen zur Lizenz? Einfach melden: dietmar@gureth.eu'],
-                ['type' => 'Label', 'caption' => 'Gefällt dir das Modul und du möchtest trotzdem etwas dalassen? Über eine kleine Spende freue ich mich — völlig freiwillig, keine Gegenleistung nötig.'],
-                ['type' => 'Button', 'caption' => '☕  Spenden via PayPal', 'onClick' => "echo '" . self::PAYPAL_URL . "';", 'link' => true],
+                ['type' => 'Label', 'caption' => 'Created out of genuine enthusiasm for my own installation — and a few evenings of typing. Still: hobby software or not, this is intellectual property and real work went into it.'],
+                ['type' => 'Label', 'caption' => 'License: PolyForm Noncommercial 1.0.0 — free for private and non-commercial use, commercial use requires a separate license from the rights holder.'],
+                ['type' => 'Button', 'caption' => 'View license text', 'onClick' => "echo '" . self::LICENSE_URL . "';", 'link' => true],
+                ['type' => 'Label', 'caption' => 'Commercial use or questions about the license? Just get in touch: dietmar@gureth.eu'],
+                ['type' => 'Label', 'caption' => 'Do you like the module and would still like to leave something? I would be happy about a small donation — completely voluntary, nothing expected in return.'],
+                ['type' => 'Button', 'caption' => '☕  Donate via PayPal', 'onClick' => "echo '" . self::PAYPAL_URL . "';", 'link' => true],
             ],
         ];
     }
@@ -260,7 +265,7 @@ class ChargerHubDiscovery extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
-        $this->RegisterVariableBoolean('ScanAbort', 'Suche abbrechen (intern)', '', 100);
+        $this->RegisterVariableBoolean('ScanAbort', CHUB_Text::t('Cancel search (internal)'), '', 100);
         IPS_SetHidden($this->GetIDForIdent('ScanAbort'), true);
         $this->AdoptDismissFromSibling();
     }
@@ -275,7 +280,7 @@ class ChargerHubDiscovery extends IPSModule
         if (@IPS_GetObjectIDByIdent('ScanAbort', $this->InstanceID)) {
             $this->SetValue('ScanAbort', true);
         }
-        @$this->UpdateFormField('ScanProgress', 'caption', 'Abbruch angefordert – bitte kurz warten …');
+        @$this->UpdateFormField('ScanProgress', 'caption', CHUB_Text::t('Cancellation requested – please wait a moment …'));
         @$this->UpdateFormField('ScanProgress', 'indeterminate', true);
     }
 
@@ -293,17 +298,18 @@ class ChargerHubDiscovery extends IPSModule
         $values = [];
         foreach ($results as $r) {
             $key = $r['ip'] . '|' . $r['unitId'];
+            $label = CHUB_Text::t((string)$r['label']);
             $vendorCounter[$r['vendor']] = ($vendorCounter[$r['vendor']] ?? 0) + 1;
             $nr = $vendorCounter[$r['vendor']];
 
             if ($template !== '') {
                 $instanceName = str_replace(
-                    ['{hersteller}', '{ip}', '{unitid}', '{nr}'],
-                    [$r['label'], $r['ip'], $r['unitId'], $nr],
+                    ['{hersteller}', '{manufacturer}', '{ip}', '{unitid}', '{nr}'],
+                    [$label, $label, $r['ip'], $r['unitId'], $nr],
                     $template
                 );
             } else {
-                $instanceName = $r['label'] . ' ' . $nr;
+                $instanceName = $label . ' ' . $nr;
             }
 
             $legacy = $this->LegacyCandidateFor($r['ip'], $r['unitId'], $existing[$key] ?? 0);
@@ -323,7 +329,7 @@ class ChargerHubDiscovery extends IPSModule
             }
 
             if ($legacy['ambiguous']) {
-                $legacyText = '⚠️ Mehrere Alt-Instanzen (' . $legacy['name'] . ') — bitte manuell in MigrationsHub verknüpfen';
+                $legacyText = CHUB_Text::t('⚠️ Several legacy instances (%s) — please link manually in MigrationsHub', $legacy['name']);
             } elseif ($legacy['id'] > 0) {
                 $legacyText = '⚠️ ' . $legacy['name'] . ' (#' . $legacy['id'] . ')';
             } else {
@@ -331,8 +337,8 @@ class ChargerHubDiscovery extends IPSModule
             }
 
             $values[] = [
-                'name'         => $r['label'] . ' @ ' . $r['ip'] . ' (Unit ' . $r['unitId'] . ')',
-                'manufacturer' => $r['label'],
+                'name'         => CHUB_Text::t('%s @ %s (unit %s)', $label, $r['ip'], $r['unitId']),
+                'manufacturer' => $label,
                 'ip'           => $r['ip'],
                 'unitId'       => $r['unitId'],
                 'legacy'       => $legacyText,
@@ -349,41 +355,41 @@ class ChargerHubDiscovery extends IPSModule
             'elements' => [
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '📖  Dokumentation & Hilfe',
+                    'caption'  => '📖  Documentation & help',
                     'expanded' => false,
                     'items'    => [
-                        ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wallboxen auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs.'],
-                        ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen, dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten — Klick auf „Erstellen" legt eine ChargerHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
-                        ['type' => 'Label', 'caption' => 'Erkannt werden: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO-Serie), ABL eMH1/eMH2/eMH3, Fox ESS EV Charger (A/L/C), Peblar Home/Business (experimentell), Phoenix Contact CHARX SEC-3xxx (experimentell, ein Eintrag je IP-Adresse; die Nummer des Ladepunkts danach in der Instanz einstellen). Die Erkennungskriterien sind aus den Hersteller-Dokumentationen abgeleitet — wird eine Wallbox nicht gefunden, bitte die ChargerHub-Instanz manuell anlegen.'],
-                        ['type' => 'Label', 'caption' => '🆕 ABL spricht Modbus ASCII statt binärem Modbus TCP — die Suche prüft das automatisch mit, ein zusätzlicher Schritt ist nicht nötig.'],
-                        ['type' => 'Label', 'caption' => 'Wird ein bekanntes Gerät nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen) um dessen IP durchsuchen — das nutzt eine langsamere, aber zuverlässigere Port-Prüfung.'],
-                        ['type' => 'Label', 'caption' => '⚠️ go-eCharger: Der Modbus-Server muss am Gerät erst aktiviert sein (go-e-App → Internet → Erweiterte Einstellungen → Modbus, oder HTTP-API „men=true"), sonst ist Port 502 geschlossen und das Gerät für die Suche unsichtbar. In der Praxis beobachtet: Auch bei gespeichertem „aktiviert" lief der Server erst nach einem Aus-/Einschalten der Einstellung bzw. Neustart der Wallbox — zum Prüfen im Browser aufrufen: http://<wallbox-ip>/api/status?filter=men'],
-                        ['type' => 'Label', 'caption' => '🔀 Neue Instanz kommt mit „Kommunikation aktiv" bereits eingeschaltet. Falls ein Umstieg von einem anderen Wallbox-/Hub-Modul mit Übernahme der Historie geplant ist: direkt nach dem Anlegen an der neuen ChargerHub-Instanz wieder ausschalten, bis MigrationsHub die alte Historie übernommen hat — sonst überlappen sich die neu geloggten Werte mit der übertragenen Alt-Historie.'],
+                        ['type' => 'Label', 'caption' => 'Scans an IP range in the local network for wallboxes on Modbus TCP port 502 and identifies the manufacturer from a few typical registers/unit IDs.'],
+                        ['type' => 'Label', 'caption' => 'Enter the start and end IP, then click “Scan network”. Devices found appear below — clicking “Create” creates a ChargerHub instance with the IP address, unit ID and manufacturer already filled in.'],
+                        ['type' => 'Label', 'caption' => 'Detected: KEBA KeContact P30/P40, Alfen Eve Single/Double Pro-line, Heidelberg Energy Control, go-eCharger Gemini/HOME+, DaheimLader (Smart/Touch/PRO series), ABL eMH1/eMH2/eMH3, Fox ESS EV Charger (A/L/C), Peblar Home/Business (experimental), Phoenix Contact CHARX SEC-3xxx (experimental, one entry per IP address; set the charge point number afterwards in the instance). The detection criteria are derived from the manufacturers’ documentation — if a wallbox is not found, please create the ChargerHub instance manually.'],
+                        ['type' => 'Label', 'caption' => '🆕 ABL speaks Modbus ASCII instead of binary Modbus TCP — the search checks this automatically, no extra step is needed.'],
+                        ['type' => 'Label', 'caption' => 'If a known device is not found: scan a NARROW range (up to 64 addresses) around its IP — this uses a slower but more reliable port check.'],
+                        ['type' => 'Label', 'caption' => '⚠️ go-eCharger: the Modbus server must first be enabled on the device (go-e app → Internet → Advanced settings → Modbus, or HTTP API “men=true”), otherwise port 502 is closed and the device is invisible to the search. Observed in practice: even with “enabled” saved, the server only ran after the setting was switched off and on again or the wallbox was restarted — to check, open this in a browser: http://<wallbox-ip>/api/status?filter=men'],
+                        ['type' => 'Label', 'caption' => '🔀 A new instance comes with “Communication active” already switched on. If you plan to switch from another wallbox/hub module and take over the history: switch it off again on the new ChargerHub instance right after creating it, until MigrationsHub has taken over the old history — otherwise the newly logged values overlap with the transferred legacy history.'],
                     ],
                 ],
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '🔎  Suchbereich',
+                    'caption'  => '🔎  Search range',
                     'expanded' => true,
                     'items'    => [
-                        ['type' => 'ValidationTextBox', 'name' => 'RangeStart', 'caption' => 'Start-IP', 'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
-                        ['type' => 'ValidationTextBox', 'name' => 'RangeEnd',   'caption' => 'End-IP',   'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
-                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'Modbus-TCP-Port', 'minimum' => 1, 'maximum' => 65535],
-                        ['type' => 'ValidationTextBox', 'name' => 'NameTemplate', 'caption' => 'Namensvorlage (leer = Hersteller + lfd. Nr.)'],
-                        ['type' => 'Label', 'caption' => 'Platzhalter für die Vorlage: {hersteller} {ip} {unitid} {nr} — z. B. "{hersteller} Carport ({ip})"'],
-                        ['type' => 'ValidationTextBox', 'name' => 'IgnoreIPs', 'caption' => 'IPs ignorieren (Komma-getrennt)'],
+                        ['type' => 'ValidationTextBox', 'name' => 'RangeStart', 'caption' => 'Start IP', 'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
+                        ['type' => 'ValidationTextBox', 'name' => 'RangeEnd',   'caption' => 'End IP',   'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
+                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'Modbus TCP port', 'minimum' => 1, 'maximum' => 65535],
+                        ['type' => 'ValidationTextBox', 'name' => 'NameTemplate', 'caption' => 'Name template (empty = manufacturer + running no.)'],
+                        ['type' => 'Label', 'caption' => 'Placeholders for the template: {manufacturer} {ip} {unitid} {nr} — e.g. "{manufacturer} Carport ({ip})"'],
+                        ['type' => 'ValidationTextBox', 'name' => 'IgnoreIPs', 'caption' => 'Ignore IPs (comma-separated)'],
                         [
                             'type'  => 'RowLayout',
                             'items' => [
-                                ['type' => 'Button', 'name' => 'BtnScan',  'caption' => '🔎  Netzwerk durchsuchen', 'onClick' => 'CHUBD_Discover($id);'],
-                                ['type' => 'Button', 'name' => 'BtnAbort', 'caption' => '✖  Suche abbrechen', 'onClick' => 'CHUBD_AbortScan($id);', 'visible' => false],
+                                ['type' => 'Button', 'name' => 'BtnScan',  'caption' => '🔎  Scan network', 'onClick' => 'CHUBD_Discover($id);'],
+                                ['type' => 'Button', 'name' => 'BtnAbort', 'caption' => '✖  Cancel search', 'onClick' => 'CHUBD_AbortScan($id);', 'visible' => false],
                             ],
                         ],
                         ['type' => 'Label', 'name' => 'DiscoverySummary', 'caption' => $this->getDiscoverySummaryLine()],
                         [
                             'type'          => 'ProgressBar',
                             'name'          => 'ScanProgress',
-                            'caption'       => 'Bereit.',
+                            'caption'       => 'Ready.',
                             'minimum'       => 0,
                             'maximum'       => 100,
                             'current'       => 0,
@@ -394,36 +400,36 @@ class ChargerHubDiscovery extends IPSModule
                 ],
                 [
                     'type'     => 'ExpansionPanel',
-                    'caption'  => '🛠️  Erstellen',
+                    'caption'  => '🛠️  Create',
                     'expanded' => true,
                     'items'    => [
                         [
                             'type'     => 'Configurator',
                             'name'     => 'DiscoveryList',
-                            'caption'  => 'Gefundene Wallboxen',
+                            'caption'  => 'Wallboxes found',
                             'rowCount' => 6,
                             'delete'   => false,
                             'sort'     => ['column' => 'ip', 'direction' => 'ascending'],
                             'columns'  => [
-                                ['caption' => 'Hersteller', 'name' => 'manufacturer', 'width' => '250px'],
-                                ['caption' => 'IP-Adresse', 'name' => 'ip',           'width' => '150px'],
+                                ['caption' => 'Manufacturer', 'name' => 'manufacturer', 'width' => '250px'],
+                                ['caption' => 'IP address', 'name' => 'ip',           'width' => '150px'],
                                 ['caption' => 'Unit ID',    'name' => 'unitId',       'width' => '100px'],
-                                ['caption' => 'Alt-Instanz gefunden (MigrationsHub)', 'name' => 'legacy', 'width' => '280px',
+                                ['caption' => 'Legacy instance found (MigrationsHub)', 'name' => 'legacy', 'width' => '280px',
                                  'visible' => $this->hasLegacyFinder()],
                             ],
                             'values' => $values,
                         ],
                         [
-                            'type' => 'Label', 'caption' => '🔀 Migration von einer Alt-Instanz (anderes Modul, gleiche IP/Unit-ID): erst oben „Erstellen" klicken — Kommunikation bleibt bei erkannter Alt-Instanz automatisch aus —, dann hier „Migration vorbereiten". Verknüpft die neue mit der alten Instanz in MigrationsHub; Simulation, Bestätigung und Ausführung bleiben dort bewusst manuelle Schritte. Bei mehreren Treffern: nach jeder abgeschlossenen Migration erneut klicken.',
+                            'type' => 'Label', 'caption' => '🔀 Migration from a legacy instance (a different module, same IP/unit ID): first click “Create” above — communication stays off automatically when a legacy instance is detected — then click “Prepare migration” here. This links the new instance with the old one in MigrationsHub; simulation, confirmation and execution deliberately remain manual steps there. With several matches: click again after each completed migration.',
                             'visible' => $this->hasLegacyFinder(),
                         ],
                         [
-                            'type' => 'Button', 'name' => 'BtnPrepareMigration', 'caption' => '🔀  Migration vorbereiten',
+                            'type' => 'Button', 'name' => 'BtnPrepareMigration', 'caption' => '🔀  Prepare migration',
                             'onClick' => 'CHUBD_PrepareMigration($id);',
                             'visible' => $this->hasLegacyFinder(),
                         ],
                         ['type' => 'Label', 'name' => 'MigrationResult', 'caption' => '', 'visible' => false],
-                        ['type' => 'OpenObjectButton', 'name' => 'BtnOpenMigration', 'caption' => '→ Zur MigrationsHub-Instanz', 'objectID' => 0, 'visible' => false],
+                        ['type' => 'OpenObjectButton', 'name' => 'BtnOpenMigration', 'caption' => '→ To the MigrationsHub instance', 'objectID' => 0, 'visible' => false],
                     ],
                 ],
             ],
@@ -431,11 +437,11 @@ class ChargerHubDiscovery extends IPSModule
                 // Praktisch nach einem Modul-Update, wenn der reguläre Weg
                 // (Modulverwaltung → Aktualisieren → Übernehmen) einmal nicht
                 // gegriffen hat (EMS-Vorschlag, Muster wie dort).
-                ['type' => 'Button', 'caption' => '🔄 Übernehmen erzwingen (ohne Formularänderung)', 'onClick' => "IPS_ApplyChanges(\$id); echo '✅ ApplyChanges() ausgeführt.';"],
+                ['type' => 'Button', 'caption' => '🔄 Force apply (without a form change)', 'onClick' => "IPS_ApplyChanges(\$id); echo '✅ ApplyChanges() executed.';"],
             ],
             'status' => [
-                ['code' => 102, 'icon' => 'active',   'caption' => 'Bereit.'],
-                ['code' => 104, 'icon' => 'inactive', 'caption' => 'Bitte Such-IP-Bereich eintragen.'],
+                ['code' => 102, 'icon' => 'active',   'caption' => 'Ready.'],
+                ['code' => 104, 'icon' => 'inactive', 'caption' => 'Please enter the search IP range.'],
             ],
         ];
 
@@ -493,7 +499,7 @@ class ChargerHubDiscovery extends IPSModule
             $ips = array_slice($ips, 0, 1024);
         }
 
-        $this->ShowProgress('Durchsuche ' . count($ips) . ' IP-Adressen auf Port ' . $port . ' …', 0);
+        $this->ShowProgress(CHUB_Text::t('Scanning %s IP addresses on port %s …', count($ips), $port), 0);
 
         $ignore = $this->ParseIgnoreIPs();
         if (count($ignore) > 0) {
@@ -509,7 +515,7 @@ class ChargerHubDiscovery extends IPSModule
         foreach ($openIps as $ip) {
             if ($this->scanAborted()) { $aborted = true; break; }
             $i++;
-            $this->ShowProgress("Prüfe Hersteller: $ip ($i von $total offenen Ports) …", (int)round(($i / max(1, $total)) * 100));
+            $this->ShowProgress(CHUB_Text::t('Checking manufacturer: %s (%s of %s open ports) …', $ip, $i, $total), (int)round(($i / max(1, $total)) * 100));
             $found = $this->identifyVendor($ip, $port);
             if ($found !== null) {
                 $results[] = $found;
@@ -517,9 +523,9 @@ class ChargerHubDiscovery extends IPSModule
         }
 
         if ($aborted) {
-            $this->ShowProgress('Suche abgebrochen – ' . count($results) . ' Wallboxen bis dahin gefunden.', 100);
+            $this->ShowProgress(CHUB_Text::t('Search cancelled – %s wallboxes found so far.', count($results)), 100);
         } else {
-            $this->ShowProgress('Fertig: ' . count($results) . ' Wallboxen gefunden (von ' . $total . ' offenen Ports).', 100);
+            $this->ShowProgress(CHUB_Text::t('Done: %s wallboxes found (of %s open ports).', count($results), $total), 100);
         }
 
         $this->WriteAttributeString('ResultsJSON', json_encode($results));
@@ -539,12 +545,12 @@ class ChargerHubDiscovery extends IPSModule
     {
         $ts = $this->ReadAttributeInteger('LastDiscoveryTs');
         if ($ts === 0) {
-            return 'ℹ️ Noch nicht gesucht — Button oben drücken.';
+            return CHUB_Text::t('ℹ️ Not searched yet — press the button above.');
         }
         $results = json_decode((string)$this->ReadAttributeString('ResultsJSON'), true);
         $count = is_array($results) ? count($results) : 0;
         $icon = $count > 0 ? '✅' : '⚠️';
-        return sprintf('%s %d Wallbox(en) gefunden (zuletzt %s Uhr).', $icon, $count, date('H:i:s', $ts));
+        return CHUB_Text::t('%s %s wallbox(es) found (last at %s).', $icon, $count, date('H:i:s', $ts));
     }
 
     private function findExistingInstances()
@@ -670,7 +676,7 @@ class ChargerHubDiscovery extends IPSModule
             $this->UpdateFormField('MigrationResult', 'visible', true);
         };
         if (!$this->hasMigrationApi()) {
-            $say('❌ MigrationsHub ist nicht installiert.');
+            $say(CHUB_Text::t('❌ MigrationsHub is not installed.'));
             return;
         }
 
@@ -698,8 +704,7 @@ class ChargerHubDiscovery extends IPSModule
                 // Nicht automatisch verknüpfen (siehe LegacyCandidateFor) —
                 // vorher lief das hier still durch, ohne dass der Nutzer
                 // erfuhr, warum nichts passiert ist.
-                $say('⚠️ Mehrere Alt-Instanzen an „' . $r['ip'] . '" gefunden (' . $legacy['name'] .
-                    ') — bitte manuell in MigrationsHub verknüpfen, keine automatische Zuordnung möglich.');
+                $say(CHUB_Text::t('⚠️ Several legacy instances found at “%s” (%s) — please link manually in MigrationsHub, automatic assignment is not possible.', $r['ip'], $legacy['name']));
                 continue;
             }
             if ($legacy['id'] <= 0) {
@@ -727,14 +732,13 @@ class ChargerHubDiscovery extends IPSModule
             $prepared[] = $targetID;
             $this->WriteAttributeString('PreparedTargets', json_encode($prepared));
 
-            $say('✅ Migration vorbereitet: „' . $legacy['name'] . '" (#' . $legacy['id'] . ') → „' .
-                IPS_GetName($targetID) . '" (#' . $targetID . '). Weiter in der MigrationsHub-Instanz — dort simulieren, prüfen, ausführen.');
+            $say(CHUB_Text::t('✅ Migration prepared: “%s” (#%s) → “%s” (#%s). Continue in the MigrationsHub instance — simulate, check and execute there.', $legacy['name'], $legacy['id'], IPS_GetName($targetID), $targetID));
             $this->UpdateFormField('BtnOpenMigration', 'objectID', $migID);
             $this->UpdateFormField('BtnOpenMigration', 'visible', true);
             return;
         }
 
-        $say('🔎 Keine passende Kombination aus bereits erstellter ChargerHub-Instanz und gefundener Alt-Instanz — erst oben „Erstellen" klicken.');
+        $say(CHUB_Text::t('🔎 No matching combination of an already created ChargerHub instance and a legacy instance found — first click “Create” above.'));
     }
 
     private function ParseIgnoreIPs()
@@ -773,7 +777,7 @@ class ChargerHubDiscovery extends IPSModule
             foreach ($ips as $ip) {
                 if ($this->scanAborted()) { break; }
                 $i++;
-                $this->ShowProgress("Port-Prüfung (genau) … $i von $total", (int)round(($i / max(1, $total)) * 90));
+                $this->ShowProgress(CHUB_Text::t('Port check (precise) … %s of %s', $i, $total), (int)round(($i / max(1, $total)) * 90));
                 $s = @fsockopen($ip, $port, $errno, $errstr, min(0.8, $timeoutSec));
                 if ($s !== false) {
                     $open[] = $ip;
@@ -830,7 +834,7 @@ class ChargerHubDiscovery extends IPSModule
                 $elapsed = $now - $startTime;
                 $pct     = (int)round(min(95, ($elapsed / $timeoutSec) * 90));
                 $this->ShowProgress(
-                    "Port-Prüfung läuft … " . count($open) . " offen, " . count($pending) . " von $totalOpen noch offen",
+                    CHUB_Text::t('Port check running … %s open, %s of %s still pending', count($open), count($pending), $totalOpen),
                     $pct
                 );
                 $deadline += microtime(true) - $now;

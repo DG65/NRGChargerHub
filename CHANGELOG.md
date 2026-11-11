@@ -5,6 +5,39 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.12.0] - 2026-11-11
+
+Stable-Version. Inhaltlich identisch mit 0.12.0-beta.1 (Zweisprachigkeit, Profile nur als Standarddarstellung) und 0.11.2-beta.1 (go-e Dubletten-Schutz beim Senden). Nur die Versionsnummer ändert sich.
+
+## [0.12.0-beta.1] - 2026-11-10
+
+### Added
+- **Zweisprachig (Deutsch und Englisch)** für ChargerHub, ChargerHub Suche und die Brücke (Anweisung Dietmar, Prüfliste 25–29).
+  Die Texte folgen der Sprache der Symcon-Installation: Formular, Variablen- und Profilnamen, Statuszeilen, Meldungen im
+  Protokoll, Rückgabetexte, Fortschrittsanzeige der Suche. Die Quelltexte sind englisch, die deutsche Fassung steht in
+  `libs/locale.json` (628 Einträge; `.tools/locale-bauen.php` kopiert sie in die drei Modulordner). Das Formular übersetzt die
+  Konsole selbst, nur Variablennamen, Meldungen und Statuszeilen mit Werten übersetzt das Modul (`libs/CHUB_Text.php` mit
+  Merkliste, damit `Translate()` je Text höchstens einmal je Prozess liest). Die Registerhinweise der neun Treiber sind
+  Wort für Wort mit dem bisherigen Stand abgeglichen. Neue Prüfwerkzeuge: `.tools/locale-pruefen.php` und Tests im Prüfstand.
+  `README.en.md` ergänzt.
+- Namensvorlage der Suche: zusätzlich zu `{hersteller}` gilt `{manufacturer}` (gespeicherte Vorlagen bleiben gültig).
+
+### Changed
+- **Variablenprofile (Prüfliste 28):** Das Profil wird nur noch als Standarddarstellung über `RegisterVariable*` gesetzt, nie als
+  benutzerdefiniertes Profil (`IPS_SetVariableCustomProfile` entfällt). Bei Hersteller- oder Typwechsel folgt die
+  Standarddarstellung weiter; ein vom Nutzer gesetztes Profil bleibt unberührt. Die Beschreibung (Registerhinweis) einer Variable
+  wird nur noch bei der Neuanlage gesetzt.
+- Bestehende Variablen behalten ihre Namen; neue Variablen entstehen in der aktuellen Sprache. Idents, Eigenschaften, Attribute und
+  der Vertrag `CHUB_GetFunctions` (1.12) bleiben unverändert. `controlReason` kommt jetzt in der Sprache der Installation.
+
+## [0.11.2-beta.1] - 2026-11-09
+
+### Added
+- **go-e PV-Daten: Dubletten-Schutz.** Ist die Instanz als Dublette einer anderen markiert (dieselbe Wallbox hängt zusätzlich an einer
+  anderen ChargerHub- oder OCPPHub-Instanz), sendet sie `ids` nicht; nur die zählende Instanz schreibt. Sonst gäbe es zwei Schreiber
+  im 5-Sekunden-Takt. Die Statuszeile „PV-Daten an die Wallbox“ nennt dann die zählende Instanz. Eine ungültige Zuordnung (Ziel
+  gelöscht) hat keine Wirkung, die Instanz sendet normal. Das Lesen des Eco-Status bleibt davon unberührt.
+
 ## [0.11.1] - 2026-11-09
 
 Stable-Version. Inhaltlich identisch mit 0.11.1-beta.1 und damit 0.11.0-beta.1 (go-e: Eco und PV-Daten über die HTTP-API, beide

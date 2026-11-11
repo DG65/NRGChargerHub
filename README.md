@@ -1,6 +1,8 @@
 # ChargerHub
 
-![Modul Version](https://img.shields.io/badge/Modul_Version-0.10.0-blue)
+**Deutsch** · [English](README.en.md)
+
+![Modul Version](https://img.shields.io/badge/Modul_Version-0.12.0-blue)
 ![Symcon Version](https://img.shields.io/badge/Symcon_Version-9.0%2B-blue)
 ![License](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-lightgrey)
 [![Check Style](https://github.com/DG65/NRGChargerHub/actions/workflows/check-style.yml/badge.svg)](https://github.com/DG65/NRGChargerHub/actions/workflows/check-style.yml)
@@ -17,6 +19,9 @@ Teil des **NRG-Stack** — dem Energie-Modulverbund von DG65.
 Modbus-Dokumentationen der Hersteller, sind aber — mit Ausnahme von go-eCharger (siehe unten) —
 **noch nicht an echter Hardware verifiziert**. Rückmeldungen zu falschen/fehlenden Werten sind
 willkommen — bitte mit Wallbox-Typ und betroffenem Register melden.
+
+Das Modul folgt der Sprache der Symcon-Installation (Deutsch oder Englisch): Variablennamen, Profile, Meldungen und das
+Konfigurationsformular. Bezeichner (Idents) und der Vertrag `CHUB_GetFunctions` sind in beiden Sprachen gleich.
 
 ## Unterstützte Wallboxen
 
@@ -168,8 +173,8 @@ kann. Der Vertrag ist **mit der EMS-Entwicklung abgestimmt** (Version 1.3); je L
 | `phaseSwitchPauseSec` | int | **1.8.** Ladepause durch eine Phasenumschaltung in Sekunden; nur belegt bei DaheimLader (120 laut Doku), sonst 0 = unbekannt |
 | `currentStepA` | float | **1.8.** Kleinste Stromstufe des Sollwerts `currentLimitID`: 1,0 (ganzzahlige Variable), bei Alfen 0,1 |
 | `controlOwner` | string | **1.9.** Wer regelt den Ladepunkt gerade: `none`, `ems`, `surplus` (eigene Überschussregelung des ChargerHub), `goe-controller`, `tibber`, `p14a`, `marketer`, `other`. Reine Auskunft, abgeleitet aus `managedBy`, EMS-Aktivität und Überschussregelung |
-| `controlSource` | string | **1.9.** Herkunft der Aussage: `einstellung` (Formular „Wer regelt?“), `ems`, `ueberschuss`, `manuell` |
-| `controlReason` | string | **1.9.** Grund als deutscher Klartext (für Anzeige gedacht, nicht maschinell auswerten) |
+| `controlSource` | string | **1.9.** Herkunft der Aussage: `einstellung` (Formular „Wer regelt?“), `ems`, `ueberschuss`, `manuell` (diese vier Werte sind feste Vertragsschlüssel und bleiben deutsch) |
+| `controlReason` | string | **1.9.** Grund als Klartext in der Sprache der Symcon-Installation (für Anzeige gedacht, nicht maschinell auswerten) |
 | `controlSince` | int | **1.9.** Unix-Zeitstempel des letzten Besitzerwechsels (0 = seit Start nicht gewechselt/unbekannt) |
 | `sessionEnergyID` | int | **1.10.** Variablen-ID „Energie akt. Sitzung“ (`energy_session`, kWh); 0 = nicht vorhanden (Alfen, Heidelberg, ABL). Springt je Sitzung zurück, daher **kein Zählerstand** (dafür `energyImportID`) |
 | `energyLimitID` | int | **1.10.** Variablen-ID „Energie-Limit Ladevorgang“ (`ctl_energy_limit`, hartes Limit der Wallbox, per `RequestAction` schreibbar); 0 = nicht vorhanden. Nur go-e |

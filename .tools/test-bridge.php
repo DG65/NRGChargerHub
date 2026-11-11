@@ -51,11 +51,14 @@ function IPS_SemaphoreLeave($n) {}
 function CHUBB_GetState($id) { return $GLOBALS['bridge']->GetState(); }
 function CHUBB_Forward($id, $json) { return $GLOBALS['bridge']->Forward($json); }
 
+// Zweisprachigkeit: der Prüfstand läuft mit der deutschen Fassung (wie eine deutsche Symcon-Installation)
+$GLOBALS['uebersetzung'] = json_decode(file_get_contents(__DIR__ . '/../libs/locale.json'), true)['translations']['de'];
 class IPSModule {
     public $InstanceID = 1; public $attr = []; public $prop = [];
     public function __construct($id = 1) { $this->InstanceID = $id; }
     public function Create() {} public function ApplyChanges() {}
     public function UnregisterVariable($ident) { foreach ($GLOBALS['objs'] as $id => $o) { if (($o['ObjectIdent'] ?? '') === $ident && ($o['ParentID'] ?? 0) === $this->InstanceID && ($o['ObjectType'] ?? 0) === 2) { unset($GLOBALS['objs'][$id]); return true; } } return false; }
+    public function Translate($t) { return $GLOBALS['uebersetzung'][$t] ?? $t; }
     public function SetStatus($s) { $this->status = $s; }
     public function SendDataToParent($j) { $r = $GLOBALS['parentReply']; if ($r instanceof Throwable) throw $r; return $r; }
     public function ReadPropertyInteger($n) { return $this->prop[$n] ?? 0; }
@@ -102,6 +105,8 @@ class IPSModule {
 $fail = 0;
 function check($name, $ok) { global $fail; echo ($ok ? "OK   " : "FEHL ") . $name . "\n"; if (!$ok) $fail++; }
 
+require __DIR__ . '/../libs/CHUB_Text.php';
+CHUB_Text::setzen(function (string $t): string { return $GLOBALS['uebersetzung'][$t] ?? $t; });
 require __DIR__ . '/../ChargerHubBridge/module.php';
 $bridge = new ChargerHubBridge(10); $GLOBALS['bridge'] = $bridge;
 
@@ -209,7 +214,7 @@ class FakeHub {
     public $groups = [];
     function GroupActive($g) { return $this->groups[$g] ?? true; }
     public $notes = [];
-    function LogNote($m) { $this->notes[] = $m; }
+    function LogNote($m) { $this->notes[] = CHUB_Text::t($m); }
     public $phaseInfo = null;
     function SetPhaseInfo($p, $s) { $this->phaseInfo = [$p, $s]; }
     function GetMaxCurrentA() { return 16; }
@@ -452,6 +457,11 @@ foreach (['ChargerHub/module.php', 'ChargerHubBridge/module.php', 'ChargerHubDis
     }
 }
 check('Presentation: keine Presentation-OPTIONS/Farbschlüssel in den Moduldateien (klassische Profile)', $noPresentation);
+$noCustomProfile = true;
+foreach (['ChargerHub/module.php', 'ChargerHubDiscovery/module.php', 'ChargerHubBridge/module.php'] as $f) {
+    if (preg_match('/IPS_SetVariableCustom(Profile|Presentation)\\(/', file_get_contents(__DIR__ . '/../' . $f))) { $noCustomProfile = false; echo "  Fundstelle: $f\n"; }
+}
+check('Prüfliste 28: kein benutzerdefiniertes Profil/Darstellung gesetzt (nur Standarddarstellung über RegisterVariable*)', $noCustomProfile);
 $rvm = new ReflectionMethod('ChargerHub', 'RegisterVariables');
 $rvLines = array_slice(file($rvm->getFileName()), $rvm->getStartLine() - 1, $rvm->getEndLine() - $rvm->getStartLine() + 1);
 $rvBody = implode('', $rvLines);
@@ -539,7 +549,7 @@ check('go-e Formularhinweis: ohne Merker kein Hinweis', $hi->invoke($hf) === [])
 $hf->RegisterAttributeString('DriverFlags', '{}');
 $hf->SetDriverFlag('goe_order_mismatch', true);
 $items = $hi->invoke($hf);
-check('go-e Formularhinweis: bei Vertauschung ⚠️-Zeile mit App-Anleitung (Register tauschen) und „NICHT übernommen“', count($items) === 1 && strpos($items[0]['caption'], '⚠️') === 0 && strpos($items[0]['caption'], 'Register tauschen') !== false && strpos($items[0]['caption'], 'API Einstellungen') !== false && strpos($items[0]['caption'], 'NICHT übernommen') !== false);
+check('go-e Formularhinweis: bei Vertauschung ⚠️-Zeile mit App-Anleitung (Register tauschen) und „NICHT übernommen“', count($items) === 1 && strpos($items[0]['caption'], '⚠️') === 0 && strpos($items[0]['caption'], 'Swap registers') !== false && strpos($items[0]['caption'], 'API settings') !== false && strpos($items[0]['caption'], 'NOT adopted') !== false);
 $hf->prop['GoeWordSwap'] = true;
 check('go-e Formularhinweis: bei erzwungener Option kein Hinweis', $hi->invoke($hf) === []);
 
@@ -941,6 +951,41 @@ $src = file_get_contents(__DIR__ . '/../ChargerHub/module.php');
 preg_match('/public function ApplyChanges\(\)\s*\{(.*?)\n    \}\n/s', $src, $mApply);
 check('Geschwister-Abgleich steht nicht mehr in ApplyChanges()', isset($mApply[1]) && strpos($mApply[1], 'AdoptDismissFromSibling') === false);
 check('Geschwister-Abgleich läuft beim Öffnen des Formulars (GetConfigurationForm)', (bool)preg_match('/function GetConfigurationForm\(\)\s*\{[^}]*AdoptDismissFromSibling/s', $src));
+
+// go-e HTTP: Dubletten-Schutz (nur die zählende Instanz sendet ids).
+$GLOBALS['objs'][52300]['Value'] = 800; $GLOBALS['objs'][52300]['VariableUpdated'] = time();
+$GLOBALS['inst'][9990] = true;
+$gh->prop['SurplusGridSign'] = 'import'; $gh->prop['GoePvFeed'] = true; $gh->prop['GoeHttpRead'] = false;
+$gh->prop['DuplicateOfKey'] = 'ocpphub:9990';
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+check('Dubletten-Schutz: als Dublette markierte Instanz sendet nichts', $gh->requests === []);
+check('Dubletten-Schutz: Statuszeile nennt die zählende Instanz', strpos((string)$GLOBALS['objs'][$gvid('goe_feed_status')]['Value'], 'Dublette von OCPPHub-Instanz #9990') !== false);
+$gh->prop['DuplicateOfKey'] = 'ocpphub:123456'; // Zielinstanz existiert nicht mehr -> Zuordnung ungültig -> sendet normal
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+check('Dubletten-Schutz: ungültige Zuordnung (Ziel gelöscht) -> sendet normal', count($gh->requests) === 1);
+$gh->prop['DuplicateOfKey'] = '';
+$gh->requests = []; $gh->replies = ['{"ids":true}'];
+$gh->GoeFeedTick();
+check('Dubletten-Schutz: ohne Markierung sendet die Instanz wie bisher', count($gh->requests) === 1);
+
+// Zweisprachigkeit (Store-Pruefliste 25-29)
+check('Sprache: Platzhalter-Satz wird deutsch und mit Werten gefuellt',
+    CHUB_Text::t('Done: %s wallboxes found (of %s open ports).', 3, 5) === 'Fertig: 3 Wallboxen gefunden (von 5 offenen Ports).');
+$vor = CHUB_Text::$anfragen;
+for ($i = 0; $i < 50; $i++) { CHUB_Text::t('Ready'); }
+check('Sprache: ein Text fragt Symcon hoechstens einmal je Prozess (Stolperstein 24)', CHUB_Text::$anfragen - $vor <= 1);
+check('Sprache: unbekannter Text bleibt unveraendert (Englisch)', CHUB_Text::t('Text without entry %s', 7) === 'Text without entry 7');
+CHUB_Text::setzen(function (string $t): string { return $t; });   // englische Installation: Uebersetzer gibt den Quelltext zurueck
+check('Sprache: englische Installation zeigt den Quelltext', CHUB_Text::t('Done: %s wallboxes found (of %s open ports).', 3, 5) === 'Done: 3 wallboxes found (of 5 open ports).');
+CHUB_Text::setzen(function (string $t): string { return $GLOBALS['uebersetzung'][$t] ?? $t; });
+$bz = (new ReflectionClass('ChargerHubDiscovery'))->newInstance(900);
+$bz->prop = ['RangeStart' => '', 'RangeEnd' => ''];
+$bf = json_decode($bz->GetConfigurationForm(), true);
+check('Sprache: Discovery-Formular ist englischer Quelltext (die Konsole uebersetzt)', strpos(json_encode($bf), 'Scan network') !== false && strpos(json_encode($bf), 'durchsuchen') === false);
+exec('php ' . escapeshellarg(__DIR__ . '/locale-pruefen.php') . ' 2>&1', $lp, $lpRc);
+check('Sprache: locale-pruefen.php meldet keine Luecke' . ($lpRc ? ' (' . implode(' | ', array_slice($lp, 0, 3)) . ')' : ''), $lpRc === 0);
 
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
