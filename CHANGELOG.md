@@ -5,6 +5,10 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.12.0] - 2026-11-11
+
+Stable-Version. Inhaltlich identisch mit 0.12.0-beta.1 (Zweisprachigkeit, Profile nur als Standarddarstellung) und 0.11.2-beta.1 (go-e Dubletten-Schutz beim Senden). Nur die Versionsnummer ändert sich.
+
 ## [0.12.0-beta.1] - 2026-11-10
 
 ### Added

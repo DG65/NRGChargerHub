@@ -3102,7 +3102,7 @@ class ChargerHub extends IPSModule
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
     private const NEWS_VERSION = '0.12.0';
     // Modulversion für die Anzeige im Doku-Panel (gleich library.json, Prüfstand vergleicht).
-    private const VERSION = '0.12.0-beta.1';
+    private const VERSION = '0.12.0';
     private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
