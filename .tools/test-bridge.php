@@ -987,6 +987,15 @@ check('Sprache: Discovery-Formular ist englischer Quelltext (die Konsole ueberse
 exec('php ' . escapeshellarg(__DIR__ . '/locale-pruefen.php') . ' 2>&1', $lp, $lpRc);
 check('Sprache: locale-pruefen.php meldet keine Luecke' . ($lpRc ? ' (' . implode(' | ', array_slice($lp, 0, 3)) . ')' : ''), $lpRc === 0);
 
+// openWB: Bearer-Token liegt im Attribut, nicht in der Property; leeres Feld löscht es
+$ow = new ChargerHub(901);
+$ow->RegisterAttributeString('OpenWBToken', '');
+$ow->prop = ['Manufacturer' => 'openwb'];
+$owMsg = $ow->SetOpenWBToken('  geheim  ');
+check('openWB: Token wird im Attribut gespeichert (getrimmt), Property bleibt leer', $ow->ReadAttributeString('OpenWBToken') === 'geheim' && ($ow->prop['OpenWBBearerToken'] ?? '') === '' && $owMsg !== '');
+$ow->SetOpenWBToken('');
+check('openWB: leeres Feld löscht das gespeicherte Token', $ow->ReadAttributeString('OpenWBToken') === '');
+
 // module.json beider Module
 $main = json_decode(file_get_contents(__DIR__ . '/../ChargerHub/module.json'), true);
 $br = json_decode(file_get_contents(__DIR__ . '/../ChargerHubBridge/module.json'), true);

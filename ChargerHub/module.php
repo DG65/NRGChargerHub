@@ -677,6 +677,151 @@ class CHUB_ModbusGatewayClient extends CHUB_ModbusTcpClient
 // ChargerDriverInterface — Vertrag, den jeder Wallbox-Treiber erfüllt
 // ---------------------------------------------------------------------------
 
+// openWB Primary (software2): HTTP/simpleAPI, never the Pro's Modbus port.
+// Keep the standard ChargerHub driver interface; this client deliberately has
+// no Modbus read/write implementation. A subclass is used only to preserve
+// the existing GetModbusClient() return type and logging contract.
+class CHUB_OpenWBHttpClient extends CHUB_ModbusTcpClient
+{
+    private int $chargePointId;
+    private bool $https;
+    private string $bearerToken;
+    private string $lastError = '';
+
+    public function __construct(string $host, int $port, int $chargePointId, bool $https = false, string $bearerToken = '')
+    {
+        parent::__construct($host, $port, 0);
+        $this->chargePointId = $chargePointId;
+        $this->https = $https;
+        $this->bearerToken = $bearerToken;
+    }
+
+    public function getLastError(): string
+    {
+        return $this->lastError;
+    }
+
+    // Protected transport boundary makes offline fixture tests possible.
+    // No redirect is followed (in particular, never forward a bearer token).
+    protected function httpRequest(string $method, array $parameters): ?string
+    {
+        if ($this->bearerToken !== '' && !$this->https) {
+            $this->lastError = CHUB_Text::t('Bearer authentication requires HTTPS.');
+            return null;
+        }
+        $url = ($this->https ? 'https://' : 'http://') . $this->host . ':' . $this->port
+            . '/openWB/simpleAPI/simpleapi.php';
+        $payload = http_build_query($parameters, '', '&', PHP_QUERY_RFC3986);
+        $headers = ['Accept: application/json'];
+        if ($this->bearerToken !== '') {
+            $headers[] = 'Authorization: Bearer ' . $this->bearerToken;
+        }
+        if ($method === 'GET') {
+            $url .= '?' . $payload;
+        } else {
+            $headers[] = 'Content-Type: application/x-www-form-urlencoded';
+        }
+        $context = stream_context_create([
+            'http' => [
+                'method' => $method,
+                'timeout' => 3.0,
+                'ignore_errors' => true,
+                'follow_location' => 0,
+                'header' => implode("\r\n", $headers) . "\r\n",
+                'content' => $method === 'POST' ? $payload : '',
+            ],
+            'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
+        ]);
+        $body = @file_get_contents($url, false, $context);
+        $responseHeaders = $http_response_header ?? [];
+        $status = 0;
+        foreach ($responseHeaders as $line) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string)$line, $m)) {
+                $status = (int)$m[1];
+            }
+        }
+        if ($body === false) {
+            $this->lastError = CHUB_Text::t('HTTP connection failed (address, port, TLS or timeout).');
+            return null;
+        }
+        if ($status < 200 || $status >= 300) {
+            $this->lastError = CHUB_Text::t('HTTP status %s from openWB Primary.', $status);
+            return null;
+        }
+        $this->lastError = '';
+        return (string)$body;
+    }
+
+    public function getChargePoint(): ?array
+    {
+        if ($this->chargePointId < 0) {
+            $this->lastError = CHUB_Text::t('An explicit openWB chargepoint ID is required.');
+            return null;
+        }
+        $body = $this->httpRequest('GET', ['get_chargepoint_all' => $this->chargePointId]);
+        if ($body === null) {
+            return null;
+        }
+        $decoded = json_decode($body, true);
+        $key = 'chargepoint_' . $this->chargePointId;
+        $data = is_array($decoded) ? ($decoded[$key] ?? null) : null;
+        // No partial "healthy" snapshot: otherwise an absent meter or plug
+        // field would leave a plausible-looking zero in the EMS/Dashboard.
+        if (!is_array($data) || !isset($data['power'], $data['imported'])
+            || !is_numeric($data['power']) || !is_numeric($data['imported'])
+            || !is_finite((float)$data['power']) || !is_finite((float)$data['imported'])
+            || (float)$data['power'] < 0 || (float)$data['imported'] < 0
+            || !in_array($data['plug_state'] ?? null, [true, false, 0, 1, '0', '1'], true)) {
+            $this->lastError = CHUB_Text::t('Invalid openWB response (power/imported/plug_state incomplete).');
+            return null;
+        }
+        $this->lastError = '';
+        return $data;
+    }
+
+    private function postCommand(string $name, $value): bool
+    {
+        $this->lastWriteError = '';
+        if ($this->chargePointId < 0) {
+            $this->lastWriteError = CHUB_Text::t('No chargepoint ID configured.');
+            return false;
+        }
+        $params = [$name => $value, 'chargepoint_nr' => $this->chargePointId];
+        $body = $this->httpRequest('POST', $params);
+        if ($body === null) {
+            $this->lastWriteError = $this->lastError;
+            return false;
+        }
+        $reply = json_decode($body, true);
+        if (is_array($reply) && (isset($reply['error']) && $reply['error'] !== ''
+            || array_key_exists('ok', $reply) && $reply['ok'] === false
+            || array_key_exists('success', $reply) && $reply['success'] === false)) {
+            $this->lastWriteError = CHUB_Text::t('openWB Primary rejected %s.', $name);
+            return false;
+        }
+        $this->writeTrace[] = CHUB_Text::t('openWB Primary: %s=%s (chargepoint_nr=%s, HTTP 2xx)', $name, (string)$value, $this->chargePointId);
+        return true;
+    }
+
+    public function setChargeMode(string $mode): bool
+    {
+        if (!in_array($mode, ['instant', 'stop'], true)) {
+            $this->lastWriteError = CHUB_Text::t('Only explicit instant/stop control is supported.');
+            return false;
+        }
+        return $this->postCommand('set_chargemode', $mode);
+    }
+
+    public function setCurrent(int $amps): bool
+    {
+        if ($amps < 6 || $amps > 32) {
+            $this->lastWriteError = CHUB_Text::t('Current outside openWB simpleAPI range (6–32 A).');
+            return false;
+        }
+        return $this->postCommand('chargecurrent', $amps);
+    }
+}
+
 interface ChargerDriverInterface
 {
     /**
@@ -934,6 +1079,216 @@ class CHUB_MqttMiniClient
 //   noch nicht gesondert behandelt.
 // Weiterhin UNGETESTET an echter Hardware in diesem Modul.
 // ---------------------------------------------------------------------------
+
+// openWB software2 Primary: a Pro remains paired to its Primary. Only the
+// Primary is queried/commanded; no direct Modbus/OCPP access to the Pro.
+// Source: https://wiki.openwb.de/doku.php?id=openwb:vc:2.3.x:simpleapi
+class OpenWBPrimaryDriver implements ChargerDriverInterface
+{
+    public function getBaseVars()
+    {
+        return [
+            ['connected', 'Connection', 'B', '~Alert.Reversed', true, 'errors', 'openWB Primary simpleAPI GET'],
+            ['vehicle_plugged', 'Vehicle connected', 'B', 'CHB.Connected', true, 'device', 'plug_state'],
+            ['power', 'Charging power', 'F', 'NRG.Watt', true, 'device', 'power (W)'],
+            ['energy_total', 'Total energy', 'F', 'NRG.kWh', true, 'device', 'imported (Wh converted to kWh)'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            'GroupPhases' => ['caption' => 'Voltage/current per phase', 'vars' => [
+                ['voltage_l1', 'Voltage L1', 'F', 'NRG.Volt', true, 'phases', 'voltages[0]'],
+                ['voltage_l2', 'Voltage L2', 'F', 'NRG.Volt', true, 'phases', 'voltages[1]'],
+                ['voltage_l3', 'Voltage L3', 'F', 'NRG.Volt', true, 'phases', 'voltages[2]'],
+                ['current_l1', 'Current L1', 'F', 'NRG.Ampere', true, 'phases', 'currents[0]'],
+                ['current_l2', 'Current L2', 'F', 'NRG.Ampere', true, 'phases', 'currents[1]'],
+                ['current_l3', 'Current L3', 'F', 'NRG.Ampere', true, 'phases', 'currents[2]'],
+            ]],
+            'GroupOpenWBStatus' => ['caption' => 'openWB charging/status information', 'vars' => [
+                ['openwb_mode', 'openWB charging mode', 'S', '', true, 'device', 'chargemode'],
+                ['openwb_state_text', 'Charging status text', 'S', '', true, 'device', 'state_str'],
+                ['openwb_soc', 'SoC of vehicle assigned in openWB', 'F', 'CHB.OpenWBSoc', true, 'device', 'soc / soc.soc: assigned vehicle, even when unplugged; not pro_soc'],
+                ['openwb_soc_available', 'Assigned-vehicle SoC available', 'B', '', true, 'device', 'false = unknown; true does not imply that a vehicle is plugged in'],
+                ['openwb_vehicle_name', 'Vehicle from openWB', 'S', '', true, 'device', 'vehicle_name'],
+                ['error_code', 'openWB fault code', 'I', '', true, 'errors', 'fault_state'],
+                ['openwb_fault_text', 'openWB fault description', 'S', '', true, 'errors', 'fault_str'],
+            ]],
+            'GroupDevice' => ['caption' => 'Device information', 'vars' => [
+                ['dev_serial', 'Serial number', 'S', '', false, 'device', 'serial_number'],
+                ['dev_firmware', 'Firmware version', 'S', '', false, 'device', 'version'],
+            ]],
+            // Explicit opt-in. The Primary remains the only low-level EVSE
+            // regulator. The NRG EMS may set its high-level instant mode
+            // only after the user consciously transfers the policy authority.
+            'GroupOpenWBControl' => ['caption' => 'Enable NRG EMS commands via openWB Primary (advanced; default off)', 'default' => false, 'vars' => [
+                ['ctl_enable', 'Charging enable', 'B', '~Switch', true, 'control', 'set_chargemode=instant/stop'],
+                ['ctl_curr_limit', 'Current limit (A)', 'I', 'CHB.Ampere6to32', true, 'control', 'chargecurrent (only in instant mode)'],
+            ]],
+        ];
+    }
+
+    public function getProfiles()
+    {
+        return [
+            'NRG.Watt' => [VARIABLETYPE_FLOAT, ' W', 0.0, 22000.0, 1.0, 0],
+            'NRG.kWh' => [VARIABLETYPE_FLOAT, ' kWh', 0.0, 9999999.0, 0.01, 2],
+            'NRG.Volt' => [VARIABLETYPE_FLOAT, ' V', 0.0, 260.0, 0.1, 1],
+            'NRG.Ampere' => [VARIABLETYPE_FLOAT, ' A', 0.0, 80.0, 0.1, 1],
+            'CHB.Ampere6to32' => [VARIABLETYPE_INTEGER, ' A', 0, 32, 1, 0],
+            'CHB.OpenWBSoc' => [VARIABLETYPE_FLOAT, ' %', 0.0, 100.0, 0.1, 1],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        return [];
+    }
+
+    private static function number(array $data, string $key): ?float
+    {
+        if (!isset($data[$key]) || !is_numeric($data[$key])) {
+            return null;
+        }
+        $v = (float)$data[$key];
+        return is_finite($v) ? $v : null;
+    }
+
+    private static function boolean($value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if ($value === 0 || $value === 1 || $value === '0' || $value === '1') {
+            return (bool)$value;
+        }
+        return null;
+    }
+
+    // The GET status reports 'instant_charging' (as confirmed on a live
+    // openWB Primary); the simpleAPI POST parameter is instead 'instant'.
+    // Accept older/alternate read representations without changing the
+    // read-only status variable or the documented POST command.
+    private static function isInstantMode(string $mode): bool
+    {
+        return in_array($mode, ['instant_charging', 'instant'], true);
+    }
+
+    public function readValues($mb, $hub)
+    {
+        if (!($mb instanceof CHUB_OpenWBHttpClient)) {
+            $hub->SetVarBool('connected', false);
+            return false;
+        }
+        $data = $mb->getChargePoint();
+        $hub->SetVarBool('connected', $data !== null);
+        if ($data === null) {
+            $hub->SetOpenWBError($mb->getLastError());
+            return false;
+        }
+        $hub->SetOpenWBError('');
+        $hub->SetVarFloat('power', (float)$data['power']);
+        $importWh = self::number($data, 'imported');
+        if ($importWh !== null && $importWh >= 0) {
+            $hub->SetVarFloat('energy_total', $importWh / 1000.0);
+        }
+        $plug = self::boolean($data['plug_state'] ?? null);
+        if ($plug !== null) {
+            $hub->SetVarBool('vehicle_plugged', $plug);
+        }
+        $phases = self::number($data, 'phases_in_use');
+        $hub->SetPhaseInfo($phases !== null ? (int)$phases : 0, -1);
+        if ($hub->GroupActive('GroupPhases')) {
+            foreach (['voltage' => 'voltages', 'current' => 'currents'] as $prefix => $apiKey) {
+                $values = $data[$apiKey] ?? null;
+                if (!is_array($values)) {
+                    continue;
+                }
+                foreach ([0 => 'l1', 1 => 'l2', 2 => 'l3'] as $index => $phase) {
+                    $v = $values[$index] ?? null;
+                    if (is_numeric($v) && is_finite((float)$v)) {
+                        $hub->SetVarFloat($prefix . '_' . $phase, (float)$v);
+                    }
+                }
+            }
+        }
+        if ($hub->GroupActive('GroupOpenWBStatus')) {
+            foreach (['chargemode' => 'openwb_mode', 'state_str' => 'openwb_state_text',
+                'vehicle_name' => 'openwb_vehicle_name', 'fault_str' => 'openwb_fault_text'] as $apiKey => $ident) {
+                if (isset($data[$apiKey]) && is_string($data[$apiKey])) {
+                    $hub->SetVarStr($ident, $data[$apiKey]);
+                }
+            }
+            $fault = self::number($data, 'fault_state');
+            if ($fault !== null) {
+                $hub->SetVarInt('error_code', (int)$fault);
+            }
+            // This is the SoC of the vehicle assigned to the chargepoint in
+            // openWB. It is NOT proof of a physical cable connection and is
+            // NOT the Pro's independent 'pro_soc' measurement. Keep the value
+            // when unplugged; 'vehicle_plugged' is the authoritative flag.
+            $soc = $data['soc'] ?? null;
+            if (is_array($soc)) {
+                $soc = $soc['soc'] ?? null;
+            }
+            if (is_numeric($soc) && is_finite((float)$soc) && (float)$soc >= 0 && (float)$soc <= 100) {
+                $hub->SetVarFloat('openwb_soc', (float)$soc);
+                $hub->SetVarBool('openwb_soc_available', true);
+            } else {
+                $hub->SetVarBool('openwb_soc_available', false);
+            }
+        }
+        if ($hub->GroupActive('GroupDevice')) {
+            foreach (['serial_number' => 'dev_serial', 'version' => 'dev_firmware'] as $apiKey => $ident) {
+                if (isset($data[$apiKey]) && is_string($data[$apiKey])) {
+                    $hub->SetVarStr($ident, $data[$apiKey]);
+                }
+            }
+        }
+        if ($hub->GroupActive('GroupOpenWBControl')) {
+            $mode = $data['chargemode'] ?? null;
+            if (is_string($mode)) {
+                $hub->SetVarBool('ctl_enable', $mode !== 'stop');
+            }
+            $current = self::number($data, 'instant_charging_current');
+            if ($current !== null && $current >= 6 && $current <= 32) {
+                $hub->SetVarInt('ctl_curr_limit', (int)$current);
+            }
+        }
+        return true;
+    }
+
+    public function writeControl($mb, $hub, string $ident, $value)
+    {
+        if (!($mb instanceof CHUB_OpenWBHttpClient) || !$hub->OpenWBWritesAllowed()) {
+            if ($mb instanceof CHUB_OpenWBHttpClient) {
+                $mb->lastWriteError = CHUB_Text::t('openWB is read-only; enable NRG control and assign authority to EMS.');
+            }
+            return;
+        }
+        if ($ident === 'ctl_enable') {
+            $enabled = (bool)$value;
+            if ($mb->setChargeMode($enabled ? 'instant' : 'stop')) {
+                $hub->SetVarBool('ctl_enable', $enabled);
+                $hub->SetVarStr('openwb_mode', $enabled ? 'instant_charging' : 'stop');
+            }
+        } elseif ($ident === 'ctl_curr_limit') {
+            if (!self::isInstantMode((string)$hub->GetVarValue('openwb_mode'))) {
+                $mb->lastWriteError = CHUB_Text::t('Set openWB charging mode to instant before changing its current.');
+                return;
+            }
+            if ($hub->GetMaxCurrentA() < 6) {
+                $mb->lastWriteError = CHUB_Text::t('Configured maximum current below 6 A; no safe charging current can be sent.');
+                return;
+            }
+            $amps = max(6, min(32, $hub->GetMaxCurrentA(), (int)$value));
+            if ($mb->setCurrent($amps)) {
+                $hub->SetVarInt('ctl_curr_limit', $amps);
+            }
+        }
+    }
+}
 
 class KebaDriver implements ChargerDriverInterface
 {
@@ -3100,21 +3455,23 @@ class ChargerHub extends IPSModule
 
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.12.0';
+    private const NEWS_VERSION = '0.13.0';
     // Modulversion für die Anzeige im Doku-Panel (gleich library.json, Prüfstand vergleicht).
-    private const VERSION = '0.12.0';
+    private const VERSION = '0.13.0';
     private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
     private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
     private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
     private const NEWS_ITEMS = [
+        'New: openWB software2 Primary as a new manufacturer. ChargerHub reads power, energy, plug state, phase values, charging status and the assigned vehicle with its SoC through the Primary’s simpleAPI (HTTP). Read-only by default; commands from the EMS only if you enable them and assign the authority to the EMS. Connect ONLY to the Primary, never directly to a Pro that it controls. Writing is untested on real hardware.',
         'New: ChargerHub, the search and the bridge are now bilingual (German and English). The texts follow the language of your Symcon installation. Existing variables keep their names; new variables are created in the current language. Identifiers (idents) and the contract are unchanged.',
         'New: “Control surplus charging myself” (panel “Control authority & safety”) — ChargerHub can now charge from PV surplus on its own, but ONLY as a fallback without an EMS (the EMS always has priority as soon as it runs). Prerequisite: exactly one active ChargerHub instance and a MeterHub meter at the grid connection point with a real-time value. Off by default.',
         'Symbox gateway changeover: the path through Symcon’s native ModBus gateway now runs through its own bridge instance (“NRG-Stack ChargerHub Bridge (ModBus gateway)”). ChargerHub itself no longer needs a parent instance for this — direct instances are unchanged. If you had set up the gateway mode directly on the hub with earlier beta versions: the instance and its history are kept — connection method “Symbox gateway”, select the gateway, click “Create bridge and connect”, “Apply”.',
     ];
 
     private const DRIVERS = [
+        'openwb'     => 'OpenWBPrimaryDriver',
         'keba'       => 'KebaDriver',
         'alfen'      => 'AlfenDriver',
         'heidelberg' => 'HeidelbergDriver',
@@ -3136,6 +3493,7 @@ class ChargerHub extends IPSModule
     // konservativ, die tatsächliche Grenze setzt ohnehin die Property
     // MaxCurrent, die der Nutzer an sein reales Gerät anpassen muss.
     private const DRIVER_MAX_CURRENT = [
+        'openwb'     => 32,
         'keba'       => 63,
         'alfen'      => 32,
         'heidelberg' => 16,
@@ -3200,6 +3558,7 @@ class ChargerHub extends IPSModule
     private const MANAGEDBY_ONLY_GOE = ['goe-controller'];
 
     private $driver = null;
+    private string $driverKey = '';
 
     public function Create()
     {
@@ -3265,6 +3624,9 @@ class ChargerHub extends IPSModule
         // mehr bei jedem Übernehmen stillschweigend zurücküberschrieben.
         $this->RegisterAttributeString('LastSetProfiles', '{}');
         $this->RegisterAttributeString('LastBridgeError', '');
+        $this->RegisterAttributeString('OpenWBLastError', '');
+        // Bearer-Token der openWB Primary: Speicherort ist das Attribut (SUITE.md/CLAUDE.md Regel 7), die Property dient nur als Eingabefeld.
+        $this->RegisterAttributeString('OpenWBToken', '');
 
         $this->RegisterPropertyBoolean('Active', true);
         // Archivierung standardmäßig an (Verbund-Konvention wie InverterHub/
@@ -3319,6 +3681,13 @@ class ChargerHub extends IPSModule
         $this->RegisterPropertyString('Host', '');
         $this->RegisterPropertyInteger('Port', 502);
         $this->RegisterPropertyInteger('UnitId', 255);
+        // openWB software2 Primary simpleAPI. Never connect to the Pro directly.
+        // No implicit ID=auto: choosing the wrong chargepoint could start a
+        // different vehicle. -1 means "not configured".
+        $this->RegisterPropertyInteger('OpenWBChargePointID', -1);
+        $this->RegisterPropertyInteger('OpenWBHttpPort', 80);
+        $this->RegisterPropertyBoolean('OpenWBHTTPS', false);
+        $this->RegisterPropertyString('OpenWBBearerToken', '');
         $this->RegisterPropertyInteger('IntervalFast', 10);
         // Zwei-Regler-Schutz: WER hat die Hoheit über diesen Ladepunkt?
         // (Verbund-Vokabular, siehe MANAGEDBY_ALL). Per Modbus nicht erkennbar
@@ -3440,9 +3809,12 @@ class ChargerHub extends IPSModule
         // Bereitschaftsprüfung darf ihn dort nicht voraussetzen (Fund
         // MeterHub/Forum-Beta-Tester, 19.09.2026: Instanz blieb sonst dauerhaft
         // in Status 104 mit gestoppten Timern, egal ob ein Gateway verbunden war).
-        $hostReady = ($this->ReadPropertyString('ConnectionType') === 'gateway')
-            ? $this->ReadPropertyInteger('BridgeInstanceID') > 0
-            : $this->ReadPropertyString('Host') !== '';
+        $isOpenWB = $this->ReadPropertyString('Manufacturer') === 'openwb';
+        $hostReady = $isOpenWB
+            ? ($this->ReadPropertyString('Host') !== '' && $this->ReadPropertyInteger('OpenWBChargePointID') >= 0)
+            : (($this->ReadPropertyString('ConnectionType') === 'gateway')
+                ? $this->ReadPropertyInteger('BridgeInstanceID') > 0
+                : $this->ReadPropertyString('Host') !== '');
         if (!$this->ReadPropertyBoolean('Active') || !$hostReady || $this->ReadPropertyString('Manufacturer') === '') {
             $this->SetTimerInterval('FastTimer', 0);
             $this->SetTimerInterval('EnableActionsTimer', 0);
@@ -3583,7 +3955,7 @@ class ChargerHub extends IPSModule
         // zurückgebaut, als klar wurde, dass das WB1 ihren einzigen Regler
         // genommen hätte.
         $demo = $this->ReadPropertyBoolean('DemoMode');
-        $action = $demo ? 1 : 0;
+        $action = ($demo || ($this->ReadPropertyString('Manufacturer') === 'openwb' && !$this->OpenWBWritesAllowed())) ? 1 : 0;
         foreach ($driver->getBaseVars() as $v) {
             if ($v[5] === 'control') {
                 $vid = $this->FindVarByIdent($v[0]);
@@ -3621,6 +3993,13 @@ class ChargerHub extends IPSModule
             @$this->UpdateFormField('ConnTestResult', 'caption', CHUB_Text::t('✅ Connection successful, data read (%s).', $ts));
         } else {
             $hint = CHUB_Text::t('Check IP address/port/unit ID.');
+            if ($this->ReadPropertyString('Manufacturer') === 'openwb') {
+                $hint = CHUB_Text::t('Check openWB Primary hostname, HTTP port, chargepoint ID and simpleAPI availability.');
+                $detail = $this->ReadAttributeString('OpenWBLastError');
+                if ($detail !== '') {
+                    $hint .= ' (' . $detail . ')';
+                }
+            }
             if ($this->ReadPropertyString('ConnectionType') === 'gateway') {
                 $hints = [
                     'no_bridge'       => CHUB_Text::t('No bridge selected — select the gateway, click “Create bridge and connect”, then “Apply”.'),
@@ -4072,6 +4451,19 @@ class ChargerHub extends IPSModule
         }
         if ($Ident === 'ManufacturerChanged') {
             $this->UpdateFormField('ChargePointNo', 'visible', (string)$Value === 'charx');
+            $openWB = (string)$Value === 'openwb';
+            foreach (['OpenWBChargePointID', 'OpenWBHttpPort', 'OpenWBHTTPS', 'OpenWBBearerToken', 'OpenWBTokenButton', 'OpenWBInfoLabel'] as $f) {
+                $this->UpdateFormField($f, 'visible', $openWB);
+            }
+            $direct = $this->ReadPropertyString('ConnectionType') !== 'gateway';
+            $this->UpdateFormField('Host', 'visible', $openWB || $direct);
+            $this->UpdateFormField('ConnectionType', 'visible', !$openWB);
+            foreach (['Port', 'UnitId', 'DirectHintLabel', 'PersistentConnection'] as $f) {
+                $this->UpdateFormField($f, 'visible', !$openWB && $direct);
+            }
+            foreach (['GatewayPick', 'CreateBridgeButton', 'BridgeInstanceID', 'GatewayHintLabel', 'GatewayWarnLabel', 'LinkBridgeStatus'] as $f) {
+                $this->UpdateFormField($f, 'visible', !$openWB && !$direct);
+            }
             $this->UpdateFormField('GoeHttpPanel', 'visible', (string)$Value === 'goe');
             $this->UpdateFormField('DaheimEnableVia', 'visible', (string)$Value === 'daheimlader');
             return;
@@ -4096,6 +4488,10 @@ class ChargerHub extends IPSModule
         // umgehen — hier zusätzlich serverseitig zurückweisen.
         if ($this->ReadPropertyBoolean('DemoMode')) {
             $this->LogMessage(CHUB_Text::t("Demo mode: control command '%s' rejected.", $Ident), KL_WARNING);
+            return;
+        }
+        if ($this->ReadPropertyString('Manufacturer') === 'openwb' && !$this->OpenWBWritesAllowed()) {
+            $this->LogMessage(CHUB_Text::t('openWB Primary: command rejected; read-only or EMS authority not granted.'), KL_WARNING);
             return;
         }
         // `duplicateOf` betrifft NUR die Zählung, NICHT das Schreibrecht
@@ -4457,6 +4853,12 @@ class ChargerHub extends IPSModule
     {
         $hw = self::DRIVER_MAX_CURRENT[$this->ReadPropertyString('Manufacturer')] ?? 32;
         $cfg = (int)$this->ReadPropertyInteger('MaxCurrent');
+        // Normally the form enforces >= 6 A. If an external config import
+        // nevertheless sets a lower value, never treat it as permission to
+        // use the hardware maximum on the openWB control path.
+        if ($this->ReadPropertyString('Manufacturer') === 'openwb' && $cfg < self::MIN_CURRENT) {
+            return max(0, $cfg);
+        }
         return ($cfg >= self::MIN_CURRENT) ? min($hw, $cfg) : $hw;
     }
 
@@ -4487,6 +4889,11 @@ class ChargerHub extends IPSModule
     // Vokabulars): 'goe-controller' nur beim go-eCharger.
     private function ManagedByAllowed(): array
     {
+        if ($this->ReadPropertyString('Manufacturer') === 'openwb') {
+            // NRG does not supersede the Primary's built-in policy unless
+            // the user explicitly grants EMS authority and enables commands.
+            return ['other', 'ems'];
+        }
         $all = self::MANAGEDBY_ALL;
         if ($this->ReadPropertyString('Manufacturer') !== 'goe') {
             $all = array_values(array_diff($all, self::MANAGEDBY_ONLY_GOE));
@@ -4687,14 +5094,16 @@ class ChargerHub extends IPSModule
             return ['ok' => false, 'error' => CHUB_Text::t('Value “%s” is not permitted for this manufacturer.', $value),
                 'previous' => $previous, 'current' => $previous];
         }
-        if ($value === $previous && !$this->ReadPropertyBoolean('ExternallyManaged')) {
+        if ($value === $this->ReadPropertyString('ManagedBy') && !$this->ReadPropertyBoolean('ExternallyManaged')) {
             return ['ok' => true, 'error' => '', 'previous' => $previous, 'current' => $previous];
         }
         IPS_SetProperty($this->InstanceID, 'ManagedBy', $value);
         IPS_SetProperty($this->InstanceID, 'ExternallyManaged', false);
         IPS_ApplyChanges($this->InstanceID);
         $this->LogMessage(CHUB_Text::t('Controller authority changed: “%s” → “%s” (via CHUB_SetManagedBy).', $previous, $value), KL_NOTIFY);
-        return ['ok' => true, 'error' => '', 'previous' => $previous, 'current' => $value];
+        // openWB: ohne freigegebene Steuergruppe wird 'ems' auf 'other' zurückgestuft, dann den wirksamen Wert melden.
+        $current = $this->ReadPropertyString('Manufacturer') === 'openwb' ? $this->GetManagedBy() : $value;
+        return ['ok' => true, 'error' => '', 'previous' => $previous, 'current' => $current];
     }
 
     // Aufgelöste Regler-Kennzeichnung. Rückfall auf die Alt-Property
@@ -4714,7 +5123,43 @@ class ChargerHub extends IPSModule
         if (!in_array($v, $this->ManagedByAllowed(), true)) {
             $v = 'other';
         }
+        if ($this->ReadPropertyString('Manufacturer') === 'openwb'
+            && (!$this->ReadPropertyBoolean('GroupOpenWBControl')
+                || !$this->ReadPropertyBoolean('GroupOpenWBStatus'))) {
+            $v = 'other';
+        }
         return $v;
+    }
+
+    /** The only openWB write mode: opt-in AND explicit transfer to NRG EMS. */
+    public function OpenWBWritesAllowed(): bool
+    {
+        return $this->ReadPropertyString('Manufacturer') === 'openwb'
+            && $this->ReadPropertyBoolean('GroupOpenWBControl')
+            && $this->ReadPropertyBoolean('GroupOpenWBStatus')
+            && $this->ReadPropertyString('ManagedBy') === 'ems'
+            && $this->ReadPropertyBoolean('Active')
+            && !$this->ReadPropertyBoolean('DemoMode');
+    }
+
+    /**
+     * Legt das Bearer-Token der openWB Primary im Attribut ab (nicht in der Property: dort wäre es im Formular und im Export
+     * sichtbar) und leert das Eingabefeld. Ein leeres Feld löscht das gespeicherte Token.
+     */
+    public function SetOpenWBToken(string $token): string
+    {
+        $token = trim($token);
+        $this->WriteAttributeString('OpenWBToken', $token);
+        @$this->UpdateFormField('OpenWBBearerToken', 'value', '');
+        return $token === '' ? CHUB_Text::t('Stored token deleted.') : CHUB_Text::t('Token stored. It is used from the next read.');
+    }
+
+    /** Last connection failure for the test button, without credentials. */
+    public function SetOpenWBError(string $reason): void
+    {
+        if ($reason !== $this->ReadAttributeString('OpenWBLastError')) {
+            $this->WriteAttributeString('OpenWBLastError', $reason);
+        }
     }
 
     // Gibt die aufgelöste Dubletten-Zuordnung zurück, oder null, wenn keine
@@ -4770,12 +5215,13 @@ class ChargerHub extends IPSModule
         if ($plan !== '') {
             $items[] = ['type' => 'Label', 'caption' => CHUB_Text::t('🗓️ Plan: %s', $plan)];
         }
-        if ($this->FindVarByIdent('ctl_enable')) {
+        $allowOpenWB = $this->ReadPropertyString('Manufacturer') !== 'openwb' || $this->OpenWBWritesAllowed();
+        if ($allowOpenWB && $this->FindVarByIdent('ctl_enable')) {
             $items[] = ['type' => 'CheckBox', 'name' => 'FormCtlEnable', 'caption' => 'Charging enable (takes effect immediately)',
                 'value' => (bool)$this->GetVarValue('ctl_enable'),
                 'onChange' => 'IPS_RequestAction($id, "FormCtlEnable", $FormCtlEnable);'];
         }
-        if ($this->FindVarByIdent('ctl_curr_limit')) {
+        if ($allowOpenWB && $this->FindVarByIdent('ctl_curr_limit')) {
             $max = max(self::MIN_CURRENT, $this->GetMaxCurrentA());
             $items[] = ['type' => 'Label', 'caption' => CHUB_Text::t('Current limit in amperes (takes effect immediately, %d to %d A)', self::MIN_CURRENT, $max)];
             $items[] = ['type' => 'HorizontalSlider', 'name' => 'FormCtlCurrent', 'minimum' => self::MIN_CURRENT, 'maximum' => $max,
@@ -4783,7 +5229,7 @@ class ChargerHub extends IPSModule
                 'onChange' => 'IPS_RequestAction($id, "FormCtlCurrent", $FormCtlCurrent);'];
         }
         $phaseVid = $this->FindVarByIdent('ctl_phase_mode');
-        if ($phaseVid) {
+        if ($allowOpenWB && $phaseVid) {
             $profile = (string)(@IPS_GetVariable($phaseVid)['VariableCustomProfile'] ?: @IPS_GetVariable($phaseVid)['VariableProfile']);
             $options = [];
             if ($profile !== '' && @IPS_VariableProfileExists($profile)) {
@@ -4920,6 +5366,10 @@ class ChargerHub extends IPSModule
         $powerID = $this->FindVarByIdent('power');
         $enableID = $this->FindVarByIdent('ctl_enable');
         $limitID  = $this->FindVarByIdent('ctl_curr_limit');
+        if ($this->ReadPropertyString('Manufacturer') === 'openwb' && !$this->OpenWBWritesAllowed()) {
+            $enableID = 0;
+            $limitID = 0;
+        }
 
         // Energie: kumulierten Gesamtzähler bevorzugen — der Sitzungswert
         // springt je Ladevorgang zurück und taugt nicht als Zählerstand.
@@ -5055,12 +5505,13 @@ class ChargerHub extends IPSModule
 
     private function GetDriver()
     {
-        if ($this->driver !== null) {
+        $key = $this->ReadPropertyString('Manufacturer');
+        if ($this->driver !== null && $this->driverKey === $key) {
             return $this->driver;
         }
-        $key   = $this->ReadPropertyString('Manufacturer');
         $class = self::DRIVERS[$key] ?? self::DRIVERS['keba'];
         $this->driver = new $class();
+        $this->driverKey = $key;
         return $this->driver;
     }
 
@@ -5133,6 +5584,15 @@ class ChargerHub extends IPSModule
 
     private function GetModbusClient(): CHUB_ModbusTcpClient
     {
+        if ($this->ReadPropertyString('Manufacturer') === 'openwb') {
+            return new CHUB_OpenWBHttpClient(
+                $this->ReadPropertyString('Host'),
+                $this->ReadPropertyInteger('OpenWBHttpPort'),
+                $this->ReadPropertyInteger('OpenWBChargePointID'),
+                $this->ReadPropertyBoolean('OpenWBHTTPS'),
+                $this->ReadAttributeString('OpenWBToken') !== '' ? $this->ReadAttributeString('OpenWBToken') : $this->ReadPropertyString('OpenWBBearerToken')
+            );
+        }
         // ASCII (ABL) geht IMMER über den direkten Socket-Weg — das native
         // Symcon-Gateway kennt laut eigener Doku kein ASCII-Framing (siehe
         // CHUB_ModbusGatewayClient-Klassenkommentar), unabhängig vom
@@ -5271,6 +5731,7 @@ class ChargerHub extends IPSModule
             $duplicateOfOptions[] = ['caption' => CHUB_Text::t('⚠️ Saved, but not found any more (%s)', $currentKey), 'value' => $currentKey];
         }
 
+        $openWB = $this->ReadPropertyString('Manufacturer') === 'openwb';
         $form = [
             'elements' => [
                 [
@@ -5278,7 +5739,8 @@ class ChargerHub extends IPSModule
                     'caption'  => CHUB_Text::t('📖  Documentation & help (version %s)', self::VERSION),
                     'expanded' => false,
                     'items'    => [
-                        ['type' => 'Label', 'caption' => 'ChargerHub reads and controls wallboxes from several manufacturers via Modbus TCP. Select the manufacturer, enter the IP address/hostname and activate the data point groups.'],
+                        ['type' => 'Label', 'caption' => 'ChargerHub reads and controls wallboxes from several manufacturers via Modbus TCP, or via openWB Primary simpleAPI (HTTP). Select the manufacturer, enter the IP address/hostname and activate the data point groups.'],
+                        ['type' => 'Label', 'caption' => '• openWB software2: connect ONLY to the Primary, never directly to a Pro that is controlled by the Primary. Select an explicit chargepoint ID (often 0, but verify in the openWB status page). Default is read-only: openWB Primary continues to handle PV, safety and phase switching. Optional NRG EMS control writes instant/stop mode and instant current through the Primary only, after explicit authorization.'],
                         ['type' => 'Label', 'caption' => '⚠️ The register addresses of the drivers come from the manufacturers’ public documentation but have not yet been verified on real hardware. After the initial setup please check the values against the real wallbox before the control (charging enable/current limit) is used productively.'],
                         ['type' => 'Label', 'caption' => '• KEBA KeContact P30/P40: default unit ID 255, port 502.'],
                         ['type' => 'Label', 'caption' => '• Alfen Eve Single/Double Pro-line: default unit ID 1, port 502. Only socket 1 is served.'],
@@ -5302,6 +5764,7 @@ class ChargerHub extends IPSModule
                     'onChange' => 'IPS_RequestAction($id, "ManufacturerChanged", $Manufacturer);',
                     'options' => [
                         ['label' => '— please select —',                'value' => ''],
+                        ['label' => 'openWB Primary (software2, HTTP simpleAPI)', 'value' => 'openwb'],
                         ['label' => 'KEBA (KeContact P30/P40)',        'value' => 'keba'],
                         ['label' => 'Alfen (Eve Single/Double Pro-line)', 'value' => 'alfen'],
                         ['label' => 'Heidelberg Energy Control',       'value' => 'heidelberg'],
@@ -5328,27 +5791,34 @@ class ChargerHub extends IPSModule
                             'type'    => 'Select',
                             'name'    => 'ConnectionType',
                             'caption' => '🆕 Connection method',
+                            'visible' => !$openWB,
                             'options' => [
                                 ['caption' => 'Direct (own TCP connection, default)', 'value' => 'direct'],
                                 ['caption' => 'Symbox gateway (built-in RS485 port, read only)', 'value' => 'gateway'],
                             ],
                             'onChange' => 'IPS_RequestAction($id, "ConnectionTypeChanged", $ConnectionType);',
                         ],
-                        ['type' => 'Label', 'caption' => 'ℹ️ Via the search (module “ChargerHub Search”) host/port/unit ID are filled in automatically when the instance is created — entering them by hand is only necessary if the instance was created manually or the wallbox’s IP address was changed.', 'name' => 'DirectHintLabel', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
-                        ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP address or hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
-                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP port', 'minimum' => 1, 'maximum' => 65535, 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
-                        ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 255, 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'Label', 'caption' => 'ℹ️ Via the search (module “ChargerHub Search”) host/port/unit ID are filled in automatically when the instance is created — entering them by hand is only necessary if the instance was created manually or the wallbox’s IP address was changed.', 'name' => 'DirectHintLabel', 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'ValidationTextBox', 'name' => 'Host', 'caption' => 'IP address or hostname', 'validate' => '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$', 'visible' => $openWB || $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'TCP port', 'minimum' => 1, 'maximum' => 65535, 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'UnitId', 'caption' => 'Unit ID', 'minimum' => 1, 'maximum' => 255, 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'NumberSpinner', 'name' => 'OpenWBChargePointID', 'caption' => 'openWB chargepoint ID (status page; zero-based)', 'minimum' => -1, 'maximum' => 255, 'visible' => $openWB],
+                        ['type' => 'NumberSpinner', 'name' => 'OpenWBHttpPort', 'caption' => 'Primary HTTP(S) port (80 or 443)', 'minimum' => 1, 'maximum' => 65535, 'visible' => $openWB],
+                        ['type' => 'CheckBox', 'name' => 'OpenWBHTTPS', 'caption' => 'Use HTTPS (verify server certificate)', 'visible' => $openWB],
+                        ['type' => 'PasswordTextBox', 'name' => 'OpenWBBearerToken', 'caption' => 'Bearer token (optional; requires HTTPS)', 'visible' => $openWB],
+                        ['type' => 'Button', 'name' => 'OpenWBTokenButton', 'caption' => 'Store token (field is cleared afterwards; an empty field deletes the stored token)', 'onClick' => 'echo CHUB_SetOpenWBToken($id, $OpenWBBearerToken);', 'visible' => $openWB],
+                        ['type' => 'Label', 'name' => 'OpenWBInfoLabel', 'caption' => 'Only the openWB Primary address belongs here (NOT the Pro). A Bearer token is never sent over plain HTTP. The chargepoint ID must be explicitly selected; automatic selection is deliberately disabled.', 'visible' => $openWB],
                         ['type' => 'NumberSpinner', 'name' => 'ChargePointNo', 'caption' => '🆕 Charge point number (CHARX only; 1000 = no. 1, 2000 = no. 2 …)', 'minimum' => 1, 'maximum' => 48, 'visible' => $this->ReadPropertyString('Manufacturer') === 'charx'],
                         // Feld-Sichtbarkeit statt nur Warntext (Fund/Fix MeterHub, 18.09.2026):
                         // Host/Port/Unit ID sehen sonst wie benutzbar aus, greifen im
                         // Symbox-Modus aber gar nicht — die Unit-ID sitzt stattdessen an der
                         // uebergeordneten Gateway-Splitter-Instanz (Property "DeviceID").
-                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => 'ModBus gateway to the device', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
-                        ['type' => 'Button', 'name' => 'CreateBridgeButton', 'caption' => 'Create bridge and connect', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
-                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => 'NRG-Stack bridge to the ModBus gateway', 'moduleID' => self::BRIDGE_GUID, 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
-                        ['type' => 'Label', 'caption' => '🔗 Select the gateway, “Create bridge and connect”, apply. Unit ID = “DeviceID” at the gateway; one bridge = exactly one unit ID.', 'name' => 'GatewayHintLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
-                        ['type' => 'Label', 'caption' => '⚠️ Reading works, writing (charging enable/current limit) is still untested.', 'name' => 'GatewayWarnLabel', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
-                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBridgeStatus', 'visible' => $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'SelectInstance', 'name' => 'GatewayPick', 'caption' => 'ModBus gateway to the device', 'moduleID' => self::MODBUS_GATEWAY_GUID, 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Button', 'name' => 'CreateBridgeButton', 'caption' => 'Create bridge and connect', 'onClick' => 'echo CHUB_CreateBridge($id, $GatewayPick);', 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'SelectInstance', 'name' => 'BridgeInstanceID', 'caption' => 'NRG-Stack bridge to the ModBus gateway', 'moduleID' => self::BRIDGE_GUID, 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => '🔗 Select the gateway, “Create bridge and connect”, apply. Unit ID = “DeviceID” at the gateway; one bridge = exactly one unit ID.', 'name' => 'GatewayHintLabel', 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => '⚠️ Reading works, writing (charging enable/current limit) is still untested.', 'name' => 'GatewayWarnLabel', 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') === 'gateway'],
+                        ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkBridgeStatus', 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') === 'gateway'],
                     ],
                 ],
                 [
@@ -5369,6 +5839,7 @@ class ChargerHub extends IPSModule
                     'expanded' => true,
                     'items'    => [
                         ['type' => 'Select', 'name' => 'ManagedBy', 'caption' => '🆕 Who controls this charge point?', 'options' => $managedByOptions],
+                        ['type' => 'Label', 'caption' => 'openWB: “Other” means the Primary controls charging (recommended). NRG EMS commands are possible ONLY if “EMS” is selected here AND “Enable NRG EMS commands” is checked under Data points. These commands switch the Primary into instant/stop mode; they override its PV strategy. Use only after intentionally transferring charging policy to NRG EMS.', 'visible' => $openWB],
                         ['type' => 'Select', 'name' => 'DuplicateOfKey', 'caption' => '🆕 This wallbox is the same device as …', 'options' => $duplicateOfOptions, 'onChange' => 'IPS_RequestAction($id, "DuplicateOfKeyChanged", $DuplicateOfKey);'],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkDuplicateStatus'],
                         ['type' => 'Label', 'caption' => 'Only set if the same physical wallbox already runs through another instance (ChargerHub or OCPPHub). Affects ONLY the counting — EMS/Dashboard/MeterHub then skip this instance in totals/sessions/power in favour of the selected one. Who actually CONTROLS the wallbox is still decided solely by “Who controls this charge point?” above — an instance can therefore be marked as a duplicate AND be the active controller at the same time. For a complete stop (measuring AND control) there is also CHUB_SetActive().'],
@@ -5379,13 +5850,13 @@ class ChargerHub extends IPSModule
                             ['caption' => 'Via charging command, register 95 (default, according to the manufacturer PDF)', 'value' => 'cmd'],
                             ['caption' => 'Via current limit, register 91 (like evcc; lock = 0.1 A)', 'value' => 'limit'],
                         ]],
-                        ['type' => 'CheckBox', 'name' => 'PersistentConnection', 'caption' => '🆕 Persistent connection instead of reconnecting for every access', 'visible' => $this->ReadPropertyString('ConnectionType') !== 'gateway'],
+                        ['type' => 'CheckBox', 'name' => 'PersistentConnection', 'caption' => '🆕 Persistent connection instead of reconnecting for every access', 'visible' => !$openWB && $this->ReadPropertyString('ConnectionType') !== 'gateway'],
                         ['type' => 'Label', 'caption' => 'By default ChargerHub reconnects for every read/write access and disconnects again immediately afterwards. Some wallboxes (observed with a DaheimLader Touch PRO) do not tolerate this: the device acknowledges write commands but they have no effect. If a very long read interval helps, this option usually helps too — try it if control commands remain ineffective despite confirmation.'],
                         ['type' => 'CheckBox', 'name' => 'WriteLog', 'caption' => '🆕 Log write commands in the message log (troubleshooting)'],
                         ['type' => 'NumberSpinner', 'name' => 'MaxCurrent', 'caption' => 'Maximum connection current (A)', 'minimum' => 6, 'maximum' => 63, 'suffix' => 'A'],
                         ['type' => 'Label', 'caption' => 'Supply line/fuse of this charge point — hard upper limit for every current limit written through this module (in addition to the wallbox’s hardware limit), regardless of what an EMS requests.'],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkEmsStatus'],
-                        ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Control surplus charging myself (fallback without an EMS only)'],
+                        ['type' => 'CheckBox', 'name' => 'EnableSurplusCharging', 'caption' => '🆕 Control surplus charging myself (fallback without an EMS only)', 'visible' => !$openWB],
                         ['type' => 'Label', 'caption' => 'Only effective if “Who controls?” above is set to “Nobody” AND no active EMS is installed AND exactly one ChargerHub instance is active (with several wallboxes please use the EMS for coordination) AND a MeterHub meter at the grid connection point delivers a real-time value. If an EMS is active it always has priority — this option then automatically does not take effect. A visible status (active/why not) appears as its own variable “Surplus charging” as soon as this option is ticked.'],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkGridStatus'],
                         // Kommt der Netzzähler automatisch (MeterHub-Vertrag) und ist das Feld leer,

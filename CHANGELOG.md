@@ -5,6 +5,29 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.13.0] - 2026-11-15
+
+Stable-Version. Inhaltlich identisch mit 0.13.0-beta.1 (openWB software2 Primary). Nur die Versionsnummer ändert sich.
+
+## [0.13.0-beta.1] - 2026-11-15
+
+### Added
+- **openWB software2 Primary als neuer Hersteller** (Beitrag von Dirk, Forum „dallard“; in den Verbund übernommen und angepasst).
+  Eigener Treiber über die HTTP-simpleAPI der Primary, nie direkt zur gesteuerten Pro: `power` (W), `imported` (Wh → kWh),
+  Steckzustand, Phasenwerte, Lade- und Fehlerstatus, zugeordnetes Fahrzeug mit Ladezustand (mit Gültigkeitskennzeichen).
+  Pflichtfelder `power`/`imported`/`plug_state`; unvollständige Antworten setzen `connected=false` statt einer erfundenen Null.
+  Ladepunkt-ID ausdrücklich (kein automatischer Rückfall). Optional HTTPS mit Zertifikatsprüfung, keine Weiterleitungen.
+- **Standard nur lesend:** `CHUB_GetFunctions` meldet `managedBy=other` und `chargeEnableID`/`currentLimitID` = 0. Befehle
+  (Sofortladen/Stopp, Stromlimit 6–32 A, nie in PV-/ECO-/Zeitplanmodi) gehen nur mit aktivierter Steuergruppe und
+  `managedBy=ems`, begrenzt durch `MaxCurrent`; unter 6 A wird nichts geschrieben. **Schreiben an Hardware nicht getestet.**
+- Bearer-Token: Schaltfläche „Token speichern“ legt es im Attribut ab (nicht in der Property), nur über HTTPS gesendet.
+- Dokumentation `docs/OPENWB_PRIMARY.md`, Offline-Tests `.tools/test-openwb-primary.php`, lesende Abnahme `tests/Symcon_ReadOnly_Abnahme.php`.
+
+### Changed
+- Meldungen der openWB-Anbindung laufen über die Übersetzung (Deutsch/Englisch). `CHUB_SetManagedBy` meldet bei openWB den
+  wirksamen Wert (ohne freigegebene Steuergruppe wird `ems` zu `other`); alle anderen Hersteller unverändert.
+- Vertrag `CHUB_GetFunctions` bleibt 1.12, Idents und Properties der bisherigen Hersteller unverändert.
+
 ## [0.12.0] - 2026-11-11
 
 Stable-Version. Inhaltlich identisch mit 0.12.0-beta.1 (Zweisprachigkeit, Profile nur als Standarddarstellung) und 0.11.2-beta.1 (go-e Dubletten-Schutz beim Senden). Nur die Versionsnummer ändert sich.
