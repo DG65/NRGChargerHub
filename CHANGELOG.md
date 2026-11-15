@@ -5,6 +5,10 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.13.0] - 2026-11-15
+
+Stable-Version. Inhaltlich identisch mit 0.13.0-beta.1 (openWB software2 Primary). Nur die Versionsnummer ändert sich.
+
 ## [0.13.0-beta.1] - 2026-11-15
 
 ### Added
