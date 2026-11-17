@@ -5,6 +5,10 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.14.0] - 2026-11-17
+
+Stable-Version. Inhaltlich identisch mit 0.14.0-beta.1 (Gerätesperre Lesen/Schreiben, Schreibstatus-Variablen). Nur die Versionsnummer ändert sich.
+
 ## [0.14.0-beta.1] - 2026-11-17
 
 ### Added
