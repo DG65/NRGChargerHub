@@ -5,6 +5,31 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.14.0] - 2026-11-17
+
+Stable-Version. Inhaltlich identisch mit 0.14.0-beta.1 (Gerätesperre Lesen/Schreiben, Schreibstatus-Variablen). Die Versionsnummer ändert sich, und `date` in `library.json` steht jetzt auf dem Veröffentlichungszeitpunkt (der Store zeigt es an; bisher stand dort der 28.08.2026).
+
+## [0.14.0-beta.1] - 2026-11-17
+
+### Added
+- **Schreibstatus als Variablen** (Verbund-Regel SUITE.md Stolperstein 31): `ctl_write_fail_count`, `ctl_write_fail_time`,
+  `ctl_write_fail_text`, `ctl_write_ok_time` (Unixzeit; „hängt“ heißt `fail_time > ok_time`). Das EMS wertet sie ab 0.105.0
+  generisch aus. Neue Idents, keine bestehenden geändert.
+
+### Changed
+- **Lesen und Schreiben am selben Gerät sperren sich gegeneinander** (Vorfall Paul 15.11.2026, InverterHub 0.86.0):
+  Sperre je Host:Port um jeden Lesezyklus (wartet 8 s, sonst fällt der Zyklus aus) und jeden Schreibvorgang (wartet 20 s);
+  eine hängengebliebene Sperre (> 45 s) wird freigegeben. Gilt für den direkten Weg (Modbus TCP und ABL-ASCII), nicht für
+  das Symbox-Gateway (der Splitter serialisiert) und nicht für openWB (HTTP).
+- **Ein Lesezyklus nutzt eine Verbindung** statt einer je Registerblock (nur einfacher Modbus-TCP-Weg ohne „Dauerhafte
+  Verbindung“).
+- **Ein Wiederholversuch** nach 1,5 s, wenn ein Schreibbefehl an einem Verbindungs- oder Zeitüberschreitungsfehler scheitert;
+  eine Modbus-Exception (Gerät lehnt ab) wird nicht wiederholt.
+
+### Fixed
+- Schreibfehler zeigt den echten Verbindungsgrund (`errstr`/`errno`, z. B. „Connection refused (61)“) statt immer „Keine
+  Antwort vom Gerät“; der Grund wurde bisher überschrieben.
+
 ## [0.13.0] - 2026-11-15
 
 Stable-Version. Inhaltlich identisch mit 0.13.0-beta.1 (openWB software2 Primary). Nur die Versionsnummer ändert sich.

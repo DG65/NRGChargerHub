@@ -42,6 +42,12 @@ class CHUB_ModbusTcpClient
     // Fehlersuche; die Instanz gibt es nur aus, wenn „Schreibbefehle protokollieren“ an ist.
     public $writeTrace = [];
 
+    // Grund des letzten fehlgeschlagenen Verbindungsaufbaus (errstr/errno von fsockopen), damit das Log nicht nur
+    // „fehlgeschlagen“ sagt (SUITE.md Stolperstein 31 d). $writeRetryable: der letzte Schreibfehler war ein
+    // Verbindungs-/Zeitüberschreitungsfehler, ein Wiederholversuch ist sinnvoll (eine Modbus-Exception ist es nicht).
+    public $connectError = '';
+    public $writeRetryable = false;
+
     // Dauerhafte statt einer für jeden Zugriff neuen Verbindung (Property „PersistentConnection“,
     // von GetModbusClient() gesetzt). Fund sieckendieck, 22.09.2026: eine DaheimLader Touch PRO
     // ließ sich per ChargerHub trotz bit-identischer Schreibanfrage nicht starten/stoppen — mit
@@ -61,6 +67,8 @@ class CHUB_ModbusTcpClient
         if ($s !== false) {
             stream_set_timeout($s, 3);
             $this->batchSock = $s;
+        } else {
+            $this->connectError = sprintf('%s (%d)', (string)$errstr, (int)$errno);
         }
     }
 
@@ -114,6 +122,8 @@ class CHUB_ModbusTcpClient
         if ($s !== false) {
             stream_set_timeout($s, 3);
             self::$persistentSockets[$key] = $s;
+        } else {
+            $this->connectError = sprintf('%s (%d)', (string)$errstr, (int)$errno);
         }
         return $s;
     }
@@ -140,6 +150,7 @@ class CHUB_ModbusTcpClient
         if (!$this->persistent) {
             $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
             if ($sock === false) {
+                $this->connectError = sprintf('%s (%d)', (string)$errstr, (int)$errno);
                 return $body(false, false);
             }
             stream_set_timeout($sock, 3);
@@ -235,11 +246,16 @@ class CHUB_ModbusTcpClient
     public function writeSingle($reg, $value)
     {
         $this->lastWriteError = '';
+        $this->writeRetryable = false;
+        $this->connectError = '';
         $pdu  = pack('Cnn', 0x06, $reg, $value & 0xFFFF);
         $mbap = pack('nnn', mt_rand(1, 65535), 0, strlen($pdu) + 1) . chr($this->unitId);
         $resp = $this->withSocket(function ($sock) use ($mbap, $pdu) {
             if ($sock === false) {
-                $this->lastWriteError = CHUB_Text::t('Connection failed');
+                $this->lastWriteError = $this->connectError !== ''
+                    ? CHUB_Text::t('Connection failed: %s', $this->connectError)
+                    : CHUB_Text::t('Connection failed');
+                $this->writeRetryable = true;
                 return false;
             }
             @fwrite($sock, $mbap . $pdu);
@@ -253,6 +269,8 @@ class CHUB_ModbusTcpClient
     public function writeMultiple($startReg, $values)
     {
         $this->lastWriteError = '';
+        $this->writeRetryable = false;
+        $this->connectError = '';
         $count     = count($values);
         $byteCount = $count * 2;
         $dataPart  = '';
@@ -263,7 +281,10 @@ class CHUB_ModbusTcpClient
         $mbap = pack('nnn', mt_rand(1, 65535), 0, strlen($pdu) + 1) . chr($this->unitId);
         $resp = $this->withSocket(function ($sock) use ($mbap, $pdu) {
             if ($sock === false) {
-                $this->lastWriteError = CHUB_Text::t('Connection failed');
+                $this->lastWriteError = $this->connectError !== ''
+                    ? CHUB_Text::t('Connection failed: %s', $this->connectError)
+                    : CHUB_Text::t('Connection failed');
+                $this->writeRetryable = true;
                 return false;
             }
             @fwrite($sock, $mbap . $pdu);
@@ -281,8 +302,14 @@ class CHUB_ModbusTcpClient
     // simples false durchgereicht.
     private function CheckWriteResponse($resp, int $expectedFc): bool
     {
+        // Schon ein Verbindungsfehler (mit errstr/errno) eingetragen: nicht durch „keine Antwort“ überschreiben
+        // — bisher ging so der eigentliche Grund (z. B. „Connection refused“) verloren.
+        if (($resp === false || $resp === '') && $this->lastWriteError !== '') {
+            return false;
+        }
         if ($resp === false || $resp === '') {
             $this->lastWriteError = CHUB_Text::t('No response from the device (timeout)');
+            $this->writeRetryable = true;
             return false;
         }
         if (strlen($resp) < 8) {
@@ -509,9 +536,11 @@ class CHUB_ModbusAsciiClient extends CHUB_ModbusTcpClient
     public function writeMultiple($startReg, $values)
     {
         $this->lastWriteError = '';
+        $this->writeRetryable = false;
         $sock = @fsockopen($this->host, $this->port, $errno, $errstr, 3.0);
         if ($sock === false) {
             $this->lastWriteError = CHUB_Text::t('Connection failed: %s (%d)', $errstr, $errno);
+            $this->writeRetryable = true;
             return false;
         }
         stream_set_timeout($sock, 3);
@@ -528,6 +557,7 @@ class CHUB_ModbusAsciiClient extends CHUB_ModbusTcpClient
 
         if ($response === null) {
             $this->lastWriteError = CHUB_Text::t('No response from the device (timeout or checksum error)');
+            $this->writeRetryable = true;
             return false;
         }
         if (strlen($response) < 2) {
@@ -3455,15 +3485,16 @@ class ChargerHub extends IPSModule
 
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.13.0';
+    private const NEWS_VERSION = '0.14.0';
     // Modulversion für die Anzeige im Doku-Panel (gleich library.json, Prüfstand vergleicht).
-    private const VERSION = '0.13.0';
+    private const VERSION = '0.14.0';
     private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
     private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
     private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
     private const NEWS_ITEMS = [
+        'New: reading and writing at the same wallbox no longer collide. Many wallboxes and gateways accept only ONE Modbus TCP connection at a time; so far a control command could be refused while the read timer was connected. Reads and writes are now locked against each other per device, a read cycle uses one connection, and a failed write is tried once more. New variables “Write failures (count)”, “Last write failure at/(reason)” and “Last successful write at” show whether commands arrive; the EMS evaluates them.',
         'New: openWB software2 Primary as a new manufacturer. ChargerHub reads power, energy, plug state, phase values, charging status and the assigned vehicle with its SoC through the Primary’s simpleAPI (HTTP). Read-only by default; commands from the EMS only if you enable them and assign the authority to the EMS. Connect ONLY to the Primary, never directly to a Pro that it controls. Writing is untested on real hardware.',
         'New: ChargerHub, the search and the bridge are now bilingual (German and English). The texts follow the language of your Symcon installation. Existing variables keep their names; new variables are created in the current language. Identifiers (idents) and the contract are unchanged.',
         'New: “Control surplus charging myself” (panel “Control authority & safety”) — ChargerHub can now charge from PV surplus on its own, but ONLY as a fallback without an EMS (the EMS always has priority as soon as it runs). Prerequisite: exactly one active ChargerHub instance and a MeterHub meter at the grid connection point with a real-time value. Off by default.',
@@ -3883,7 +3914,14 @@ class ChargerHub extends IPSModule
         if ($this->ReadPropertyString('Host') === '') {
             return false;
         }
-        return (bool)@$this->GetModbusClient()->writeMultiple(GoeChargerDriver::REG_FORCE_STATE, [0]);
+        if (!$this->IoLockEnter(20000)) {
+            return false;
+        }
+        try {
+            return (bool)@$this->GetModbusClient()->writeMultiple(GoeChargerDriver::REG_FORCE_STATE, [0]);
+        } finally {
+            $this->IoLockLeave();
+        }
     }
 
     // Öffentlich, für Module wie MeterHubVirtual, die eine doppelt angebundene
@@ -4031,7 +4069,28 @@ class ChargerHub extends IPSModule
         if (!$this->ReadPropertyBoolean('Active')) {
             return;
         }
-        $this->GetDriver()->readValues($this->GetModbusClient(), $this);
+        // Lesen und Schreiben am selben Gerät gegeneinander sperren, ein Lesezyklus = eine Verbindung
+        // (SUITE.md Stolperstein 31): viele Wallboxen/Gateways nehmen nur EINE Modbus-TCP-Verbindung an. Bekommt
+        // dieser Lesezyklus die Sperre nicht (ein Schreibbefehl läuft gerade), fällt er einfach aus.
+        if (!$this->IoLockEnter(8000)) {
+            return;
+        }
+        try {
+            $mb = $this->GetModbusClient();
+            $batch = $this->UseBatchConnection();
+            if ($batch) {
+                $mb->beginBatch();
+            }
+            try {
+                $this->GetDriver()->readValues($mb, $this);
+            } finally {
+                if ($batch) {
+                    $mb->endBatch();
+                }
+            }
+        } finally {
+            $this->IoLockLeave();
+        }
         if ($this->ReadPropertyString('Manufacturer') === 'goe' && $this->ReadPropertyBoolean('MqttCardsEnabled')) {
             // Die Seriennummer (fürs Topic nötig) ist erst NACH dem ersten
             // erfolgreichen Modbus-Lesevorgang bekannt — daher hier statt in
@@ -4051,6 +4110,90 @@ class ChargerHub extends IPSModule
         $this->SurplusChargeControl();
         $this->CheckDuplicateManagedByConflict();
         $this->UpdateControlState();
+    }
+
+    // ---- Gerätesperre (SUITE.md Stolperstein 31, Vorfall Paul 15.11.2026 bei InverterHub) ----------------------
+    // Sperre je Gerät (Host:Port, damit auch mehrere Instanzen an derselben IP — z. B. CHARX-Ladepunkte — sich
+    // nicht überholen) um jeden Lese-ZYKLUS und jeden Schreibvorgang. Schreiben wartet länger als Lesen; ein
+    // Lesezyklus ohne Sperre fällt aus. Verschachtelte Aufrufe zählt $ioDepth. Eine hängengebliebene Sperre
+    // (Zeitstempel im Buffer, > 45 s) wird freigegeben. Nur für direkte Verbindungen (TCP und ASCII); über das
+    // Symbox-Gateway serialisiert der Splitter, openWB läuft über HTTP.
+    private int $ioDepth = 0;
+
+    private function DeviceLockName(): ?string
+    {
+        $m = $this->ReadPropertyString('Manufacturer');
+        if ($m === 'openwb') {
+            return null;
+        }
+        $ascii = in_array($m, self::ASCII_MANUFACTURERS, true);
+        if (!$ascii && $this->ReadPropertyString('ConnectionType') === 'gateway') {
+            return null;
+        }
+        return 'CHUB_IO_' . $this->ReadPropertyString('Host') . ':' . $this->ReadPropertyInteger('Port');
+    }
+
+    // Eine Verbindung für den ganzen Lesezyklus nur beim einfachen Modbus-TCP-Weg: nicht bei ASCII (eigener Socket
+    // je Zugriff), nicht über das Gateway, nicht bei openWB und nicht bei „Dauerhafte Verbindung“ (die hat schon eine).
+    private function UseBatchConnection(): bool
+    {
+        $m = $this->ReadPropertyString('Manufacturer');
+        return $m !== 'openwb'
+            && !in_array($m, self::ASCII_MANUFACTURERS, true)
+            && $this->ReadPropertyString('ConnectionType') !== 'gateway'
+            && !$this->ReadPropertyBoolean('PersistentConnection');
+    }
+
+    private function IoLockEnter(int $waitMs): bool
+    {
+        $name = $this->DeviceLockName();
+        if ($name === null) {
+            return true;
+        }
+        if ($this->ioDepth > 0) {
+            $this->ioDepth++;
+            return true;
+        }
+        $got = @IPS_SemaphoreEnter($name, $waitMs);
+        if (!$got) {
+            $since = (int)@$this->GetBuffer('IoLockSince');
+            if ($since > 0 && time() - $since > 45) {
+                @IPS_SemaphoreLeave($name);
+                $this->LogMessage(CHUB_Text::t('Device lock was stuck for more than 45 s and has been released.'), KL_WARNING);
+                $got = @IPS_SemaphoreEnter($name, 1000);
+            }
+        }
+        if ($got) {
+            $this->ioDepth = 1;
+            @$this->SetBuffer('IoLockSince', (string)time());
+        }
+        return (bool)$got;
+    }
+
+    private function IoLockLeave(): void
+    {
+        $name = $this->DeviceLockName();
+        if ($name === null || $this->ioDepth <= 0) {
+            return;
+        }
+        $this->ioDepth--;
+        if ($this->ioDepth === 0) {
+            @$this->SetBuffer('IoLockSince', '0');
+            @IPS_SemaphoreLeave($name);
+        }
+    }
+
+    // Schreibstatus als Variablen (SUITE.md Stolperstein 31 e): das EMS wertet die Idents generisch aus
+    // („hängt“ heißt fail_time > ok_time).
+    private function RecordWriteResult(string $ident, bool $ok, string $text = ''): void
+    {
+        if ($ok) {
+            $this->SetVarInt('ctl_write_ok_time', time());
+            return;
+        }
+        $this->SetVarInt('ctl_write_fail_count', (int)$this->GetVarValue('ctl_write_fail_count') + 1);
+        $this->SetVarInt('ctl_write_fail_time', time());
+        $this->SetVarStr('ctl_write_fail_text', $ident . ': ' . $text);
     }
 
     // Sicherheitsnetz zum weichen Dubletten-Marker (EMS-Auftrag, 13.09.2026,
@@ -4502,19 +4645,55 @@ class ChargerHub extends IPSModule
         // markiert), wird aber weiterhin von UNS geregelt (managedBy hier
         // „none") — eine Schreibsperre an `duplicateOf` hätte WB1 ihren
         // einzigen Regler genommen.
-        $mb = $this->GetModbusClient();
-        $this->GetDriver()->writeControl($mb, $this, $Ident, $Value);
-        // writeControl setzt den Variablenwert nur bei erfolgreichem Schreiben
-        // (siehe Treiber) — schlägt der Modbus-Zugriff fehl, bleibt der Wert in
-        // der Konsole unverändert (springt nach dem nächsten Poll sichtbar
-        // zurück) und blieb bisher ohne jede Fehlermeldung. Jetzt sichtbar im
-        // Meldungen-Log, Eintrag „Schreibfehler …“ dieser Instanz.
-        if ($mb->lastWriteError !== '') {
-            $this->LogMessage('Schreibfehler ' . $Ident . ': ' . $mb->lastWriteError, KL_ERROR);
+        // Schreiben unter der Gerätesperre (wartet länger als der Lesezyklus), eine Verbindung je Versuch und ein
+        // Wiederholversuch nach 1,5 s bei Verbindungs-/Zeitüberschreitungsfehler (SUITE.md Stolperstein 31). Die
+        // Steuerwerte sind idempotent; eine Modbus-Exception (Gerät lehnt ab) wird nicht wiederholt.
+        if (!$this->IoLockEnter(20000)) {
+            $this->LogMessage(CHUB_Text::t('Write error %s: %s', $Ident, CHUB_Text::t('device busy, another access did not finish in time')), KL_ERROR);
+            $this->RecordWriteResult($Ident, false, CHUB_Text::t('device busy, another access did not finish in time'));
+            return;
         }
-        if ($this->ReadPropertyBoolean('WriteLog') && !empty($mb->writeTrace)) {
-            foreach ($mb->writeTrace as $line) {
-                $this->LogMessage('Schreibprotokoll ' . $Ident . ': ' . $line, KL_MESSAGE);
+        $trace = [];
+        $error = '';
+        $sent  = false;
+        try {
+            $batch = $this->UseBatchConnection();
+            for ($attempt = 0; $attempt < 2; $attempt++) {
+                $mb = $this->GetModbusClient();
+                if ($batch) {
+                    $mb->beginBatch();
+                }
+                try {
+                    $this->GetDriver()->writeControl($mb, $this, $Ident, $Value);
+                } finally {
+                    if ($batch) {
+                        $mb->endBatch();
+                    }
+                }
+                $trace = array_merge($trace, $mb->writeTrace);
+                $error = (string)$mb->lastWriteError;
+                $sent  = !empty($mb->writeTrace);
+                if ($error === '' || !$mb->writeRetryable || $attempt === 1) {
+                    break;
+                }
+                $this->LogMessage(CHUB_Text::t('Write error %s: %s - retrying once', $Ident, $error), KL_WARNING);
+                usleep(1500000);
+            }
+        } finally {
+            $this->IoLockLeave();
+        }
+        // writeControl setzt den Variablenwert nur bei erfolgreichem Schreiben (siehe Treiber) — schlägt der
+        // Modbus-Zugriff fehl, bleibt der Wert in der Konsole unverändert und blieb bisher ohne jede Fehlermeldung.
+        // Jetzt sichtbar im Meldungen-Log (mit Grund) und als Schreibstatus-Variablen.
+        if ($error !== '') {
+            $this->LogMessage(CHUB_Text::t('Write error %s: %s', $Ident, $error), KL_ERROR);
+            $this->RecordWriteResult($Ident, false, $error);
+        } elseif ($sent) {
+            $this->RecordWriteResult($Ident, true);
+        }
+        if ($this->ReadPropertyBoolean('WriteLog') && !empty($trace)) {
+            foreach ($trace as $line) {
+                $this->LogMessage(CHUB_Text::t('Write log %s: %s', $Ident, $line), KL_MESSAGE);
             }
         }
     }
@@ -6365,6 +6544,9 @@ class ChargerHub extends IPSModule
         $valid['control_status'] = true;
         $valid['charging_active'] = true;
         $valid['control_plan'] = true;
+        foreach (['ctl_write_fail_count', 'ctl_write_fail_time', 'ctl_write_fail_text', 'ctl_write_ok_time'] as $wi) {
+            $valid[$wi] = true;
+        }
         $surplusActive = $this->ReadPropertyBoolean('EnableSurplusCharging');
         if ($surplusActive) {
             $valid['surplus_status'] = true;
@@ -6403,6 +6585,10 @@ class ChargerHub extends IPSModule
         $this->RegisterVar(['charging_active', 'Charging', 'B', '', false, 'errors', 'derived: charging power above 100 W'], $pos++);
         $this->RegisterVar(['control_plan', 'Plan (what happens next)', 'S', '', false, 'control', 'Information from outside (e.g. EMS) about the planned charging windows'], $pos++);
         $this->RegisterVar(['control_status', 'Control (who, why)', 'S', '', false, 'control', 'Information: who currently controls the charge point and why'], $pos++);
+        $this->RegisterVar(['ctl_write_fail_count', 'Write failures (count)', 'I', '', false, 'errors', 'derived: counts every control command that did not reach the device'], $pos++);
+        $this->RegisterVar(['ctl_write_fail_time', 'Last write failure at', 'I', '~UnixTimestamp', false, 'errors', 'derived: time of the last failed control command'], $pos++);
+        $this->RegisterVar(['ctl_write_fail_text', 'Last write failure (reason)', 'S', '', false, 'errors', 'derived: reason of the last failed control command'], $pos++);
+        $this->RegisterVar(['ctl_write_ok_time', 'Last successful write at', 'I', '~UnixTimestamp', false, 'errors', 'derived: time of the last control command that reached the device'], $pos++);
         if ($goeHttp) {
             $this->RegisterVar(['goe_use_pv', 'PV surplus (Eco) in the wallbox', 'B', '', false, 'device', 'HTTP API fup'], $pos++);
             $this->RegisterVar(['goe_logic_mode', 'Logic mode of the wallbox', 'I', '', false, 'device', 'HTTP API lmo (3 default, 4 Eco/aWATTar, 5 stop automatically)'], $pos++);
