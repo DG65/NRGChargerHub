@@ -96,6 +96,12 @@ The **ChargerHubDiscovery** module searches an IP range for the wallbox types li
 with the IP address, unit ID and manufacturer already filled in — like InverterHubDiscovery/
 MeterHubDiscovery.
 
+## Simultaneous reading and writing, write status
+
+Many wallboxes and RS485 gateways accept only **one** Modbus TCP connection at a time. So that the read timer and a control command do not reject each other, reading and writing are locked against each other per device (host and port); a read cycle uses one connection, and a control command that fails on a connection or timeout error is tried once more. This applies to the direct path (Modbus TCP and ABL), not to the Symbox gateway and not to openWB.
+
+Four variables show whether commands arrive: `ctl_write_fail_count` (count), `ctl_write_fail_time`, `ctl_write_fail_text` (reason) and `ctl_write_ok_time`. “Stuck” means `ctl_write_fail_time` > `ctl_write_ok_time`; the EMS evaluates them. The reason (for example “Connection refused”) is also in the message log.
+
 ## Archiving
 
 ChargerHub archives measured values and counters **only if the user switches it on** (form, panel “Polling”: “Archive variables”, off by default). The Dashboard (history charts, charging sessions, costs) and MigrationsHub for a device change need archived values. Cumulative energy counters (total energy, energy per RFID card) are archived as counters (aggregation type 1). Instances that already archived before this setting existed keep archiving as before; “Disable archiving” is additionally shown there. Archiving that was switched on from outside (for example by the device takeover) is not switched off by ChargerHub.

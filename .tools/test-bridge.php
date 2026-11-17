@@ -46,8 +46,8 @@ function SetValueInteger($id, $v) { $GLOBALS['objs'][$id]['Value'] = $v; }
 function IPS_DeleteVariable($id) { unset($GLOBALS['objs'][$id]); }
 function IPS_ObjectExists($id) { return isset($GLOBALS['objs'][$id]); }
 function IPS_GetName($id) { return 'Name' . $id; }
-function IPS_SemaphoreEnter($n, $ms) { return true; }
-function IPS_SemaphoreLeave($n) {}
+function IPS_SemaphoreEnter($n, $ms) { $GLOBALS['semaLog'][] = 'enter ' . $n; return !($GLOBALS['semaBusy'] ?? false); }
+function IPS_SemaphoreLeave($n) { $GLOBALS['semaLog'][] = 'leave ' . $n; }
 function CHUBB_GetState($id) { return $GLOBALS['bridge']->GetState(); }
 function CHUBB_Forward($id, $json) { return $GLOBALS['bridge']->Forward($json); }
 
@@ -79,6 +79,8 @@ class IPSModule {
     public $logs = [];
     public function LogMessage($text, $type) { $this->logs[] = [$type, $text]; }
     public function EnableAction($ident) {}
+    public function GetBuffer($n) { return $this->buf[$n] ?? ''; }
+    public function SetBuffer($n, $v) { $this->buf[$n] = $v; }
     public $formFields = [];
     public function UpdateFormField($name, $prop, $value) { $this->formFields[$name][$prop] = $value; }
     public function GetIDForIdent($ident)
@@ -392,6 +394,40 @@ check('Zeiten: Option aus -> nie Zeitstempel', $GLOBALS['objs'][40002]['Value'] 
 $pt4 = new ChargerHub(779);
 $pt4->prop = ['Manufacturer' => 'alfen', 'PlugTimes' => true];
 check('Zeiten: Alfen hat kein „Fahrzeug verbunden“ -> Funktion nicht aktiv', (new ReflectionMethod($pt4, 'PlugTimesActive'))->invoke($pt4) === false);
+
+
+// Stolperstein 31 (Vorfall Paul 15.11.2026): Lesen und Schreiben am selben Gerät gegeneinander sperren,
+// Schreibfehler sichtbar machen, ein Wiederholversuch bei Verbindungsfehler.
+$closed = stream_socket_server('tcp://127.0.0.1:0', $e1, $e2); $closedPort = (int)substr(strrchr(stream_socket_get_name($closed, false), ':'), 1); fclose($closed);
+$cc = new CHUB_ModbusTcpClient('127.0.0.1', $closedPort, 1);
+$cc->writeSingle(5, 1);
+check('Schreibfehler: Verbindungsgrund (errstr/errno) im Fehlertext', strpos($cc->lastWriteError, 'Verbindung fehlgeschlagen:') === 0 && $cc->connectError !== '');
+check('Schreibfehler: Verbindungsfehler ist wiederholbar', $cc->writeRetryable === true);
+$GLOBALS['objs'][50001] = ['ObjectIdent' => 'ctl_write_fail_count', 'ObjectType' => 2, 'ParentID' => 790, 'Value' => 0];
+$GLOBALS['objs'][50002] = ['ObjectIdent' => 'ctl_write_fail_time',  'ObjectType' => 2, 'ParentID' => 790, 'Value' => 0];
+$GLOBALS['objs'][50003] = ['ObjectIdent' => 'ctl_write_fail_text',  'ObjectType' => 2, 'ParentID' => 790, 'Value' => ''];
+$GLOBALS['objs'][50004] = ['ObjectIdent' => 'ctl_write_ok_time',    'ObjectType' => 2, 'ParentID' => 790, 'Value' => 0];
+$sh = new ChargerHub(790);
+$sh->prop = ['Active' => true, 'Manufacturer' => 'goe', 'ConnectionType' => 'direct', 'Host' => '127.0.0.1', 'Port' => $closedPort, 'UnitId' => 1];
+$GLOBALS['semaLog'] = []; $GLOBALS['semaBusy'] = false;
+$t0 = microtime(true);
+$sh->RequestAction('ctl_enable', true);
+$dt = microtime(true) - $t0;
+check('Schreiben: Sperre je Host:Port wird geholt und wieder freigegeben', ($GLOBALS['semaLog'][0] ?? '') === 'enter CHUB_IO_127.0.0.1:' . $closedPort && end($GLOBALS['semaLog']) === 'leave CHUB_IO_127.0.0.1:' . $closedPort);
+check('Schreiben: Verbindungsfehler -> ein Wiederholversuch nach ca. 1,5 s', $dt >= 1.4 && $dt < 6);
+check('Schreiben: Fehler zählt in ctl_write_fail_count, fail_time und fail_text gesetzt', $GLOBALS['objs'][50001]['Value'] === 1 && abs($GLOBALS['objs'][50002]['Value'] - time()) <= 5 && strpos($GLOBALS['objs'][50003]['Value'], 'ctl_enable: ') === 0);
+check('Schreiben: Fehlerlog enthält den Grund, Wiederholung als Warnung', count(array_filter($sh->logs, fn ($l) => $l[0] === KL_ERROR && strpos($l[1], 'Schreibfehler ctl_enable:') === 0)) === 1 && count(array_filter($sh->logs, fn ($l) => $l[0] === KL_WARNING && strpos($l[1], 'Wiederholversuch') !== false)) === 1);
+// Sperre belegt: Schreiben fällt mit Grund aus, ohne das Gerät anzufassen; der Lesezyklus fällt still aus.
+$GLOBALS['semaBusy'] = true; $GLOBALS['semaLog'] = [];
+$sh->RequestAction('ctl_enable', true);
+check('Schreiben: Sperre belegt -> Fehler „Gerät belegt“ gezählt', $GLOBALS['objs'][50001]['Value'] === 2 && strpos($GLOBALS['objs'][50003]['Value'], 'Gerät belegt') !== false);
+check('Schreiben: Sperre belegt -> keine Freigabe einer fremden Sperre', !in_array('leave CHUB_IO_127.0.0.1:' . $closedPort, $GLOBALS['semaLog'], true));
+$GLOBALS['semaBusy'] = false;
+// Gateway/openWB: keine Gerätesperre (Splitter serialisiert / HTTP).
+$gw = new ChargerHub(791); $gw->prop = ['Manufacturer' => 'keba', 'ConnectionType' => 'gateway', 'Host' => 'x', 'Port' => 502];
+$ow = new ChargerHub(792); $ow->prop = ['Manufacturer' => 'openwb', 'Host' => 'x', 'Port' => 80];
+$dln = new ReflectionMethod($gw, 'DeviceLockName');
+check('Gerätesperre: Gateway und openWB ohne Sperre, direkter Weg mit', $dln->invoke($gw) === null && $dln->invoke($ow) === null && $dln->invoke($sh) === 'CHUB_IO_127.0.0.1:' . $closedPort);
 
 // Vertrag 1.7: Zeit-Referenzfelder (0 = Variable nicht vorhanden).
 $GLOBALS['objs'][40010] = ['ObjectIdent' => 'plugged_in_at',        'ObjectType' => 2, 'ParentID' => 780];

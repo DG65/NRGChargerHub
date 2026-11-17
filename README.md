@@ -95,6 +95,12 @@ Wallbox-Typen (Modbus-TCP-Port 502) und legt gefundene Geräte per Klick als Cha
 mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an — analog zu InverterHubDiscovery/
 MeterHubDiscovery.
 
+## Gleichzeitiges Lesen und Schreiben, Schreibstatus
+
+Viele Wallboxen und RS485-Gateways nehmen nur **eine** Modbus-TCP-Verbindung gleichzeitig an. Damit der Lese-Timer und ein Steuerbefehl sich nicht gegenseitig abweisen, sperren sich Lesen und Schreiben je Gerät (Host und Port) gegeneinander; ein Lesezyklus nutzt eine Verbindung, und ein Steuerbefehl, der an einem Verbindungs- oder Zeitüberschreitungsfehler scheitert, wird einmal wiederholt. Das gilt für den direkten Weg (Modbus TCP und ABL), nicht für das Symbox-Gateway und nicht für openWB.
+
+Ob Befehle ankommen, zeigen vier Variablen: `ctl_write_fail_count` (Anzahl), `ctl_write_fail_time`, `ctl_write_fail_text` (Grund) und `ctl_write_ok_time`. „Hängt“ heißt `ctl_write_fail_time` > `ctl_write_ok_time`; das EMS wertet sie aus. Der Fehlergrund (z. B. „Connection refused“) steht außerdem im Meldungen-Log.
+
 ## Archivierung
 
 Der ChargerHub archiviert Messwerte und Zähler **nur, wenn der Nutzer es einschaltet** (Formular, Panel „Polling“: „Variablen archivieren“, Standard aus). Das Dashboard (Verlaufsgrafiken, Ladesitzungen, Kosten) und der MigrationsHub bei einem Gerätewechsel brauchen archivierte Werte. Kumulative Energiezähler (Gesamtenergie, Energie je RFID-Karte) werden als Zähler (Aggregationstyp 1) archiviert. Instanzen, die schon vor dieser Einstellung archivierten, archivieren wie bisher weiter; dort erscheint zusätzlich „Archivierung deaktivieren“. Eine von außen eingeschaltete Archivierung (etwa durch die Geräte-Übernahme) schaltet der ChargerHub nicht ab.
