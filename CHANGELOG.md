@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.15.0] - 2026-11-21
+
+### Added
+- **Vertrag `CHUB_GetFunctions` 1.13 (additiv):** neue Felder `contractType` (`'charger'`) und `failsafeSec` (Sekunden bis zum
+  Rückfall ohne Sollwert vom Konsumenten). `failsafeSec` ist bei ChargerHub überall `0`: Das Modul fällt nicht von selbst zurück,
+  wenn ein Regler ausfällt (beim Alfen erneuert es seinen eigenen Sollwert selbst, die Gültigkeitsdauer ist an der Box
+  eingestellt und dem Modul unbekannt). `function` und alle bisherigen Felder bleiben unverändert.
+- Anleitung für Fremdmodule: [docs/EIGENES_WALLBOX_MODUL.md](docs/EIGENES_WALLBOX_MODUL.md).
+
 ## [0.14.0] - 2026-11-17
 
 Stable-Version. Inhaltlich identisch mit 0.14.0-beta.1 (Gerätesperre Lesen/Schreiben, Schreibstatus-Variablen). Die Versionsnummer ändert sich, und `date` in `library.json` steht jetzt auf dem Veröffentlichungszeitpunkt (der Store zeigt es an; bisher stand dort der 28.08.2026).

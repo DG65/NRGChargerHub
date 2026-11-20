@@ -3487,7 +3487,7 @@ class ChargerHub extends IPSModule
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
     private const NEWS_VERSION = '0.14.0';
     // Modulversion für die Anzeige im Doku-Panel (gleich library.json, Prüfstand vergleicht).
-    private const VERSION = '0.14.0';
+    private const VERSION = '0.15.0';
     private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
@@ -5571,7 +5571,10 @@ class ChargerHub extends IPSModule
             // 1.10: sessionEnergyID/energyLimitID/chargingStateID (Ladeziel/Frist im EMS).
             // 1.11: stateID/errorCodeID (Ladestatus/Fehlercode, EMS verbindet automatisch).
             // 1.12: planInfoID (Plantext von außen, CHUB_SetPlanInfo).
-            'contractVersion'    => '1.12',
+            // 1.13: contractType ('charger', damit ein Konsument den Eintrag auch ohne Modulkenntnis erkennt) und
+            // failsafeSec (Sekunden bis zum Rückfall ohne Sollwert vom Konsumenten; 0 = kein Rückfall).
+            'contractVersion'    => '1.13',
+            'contractType'       => 'charger',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
             'powerID'            => $powerID ?: 0,
@@ -5667,6 +5670,12 @@ class ChargerHub extends IPSModule
         $fn['errorCodeID'] = $this->FindVarByIdent('error_code') ?: 0;
         // 1.12: Variable „Plan (was als Nächstes passiert)“ — von außen per CHUB_SetPlanInfo() befüllt.
         $fn['planInfoID'] = $this->FindVarByIdent('control_plan') ?: 0;
+        // 1.13: failsafeSec bleibt bei ChargerHub überall 0 (kein Rückfall, der an ausbleibende Sollwerte des
+        // Konsumenten gekoppelt ist). Beim Alfen erneuert ChargerHub einen eigenen Sollwert selbst vor Ablauf der
+        // Gültigkeit (REFRESH_BELOW_S); dadurch würde ein ausgefallenes EMS NICHT zum Rückfall führen, und die an der Box
+        // eingestellte Gültigkeitsdauer kennt das Modul nicht. Eine erfundene Zahl wäre falscher als 0. Gilt nur für Fremdmodule
+        // als Voraussetzung zum Schreiben; ChargerHub selbst bleibt ein bekanntes Modul des EMS.
+        $fn['failsafeSec'] = 0;
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen

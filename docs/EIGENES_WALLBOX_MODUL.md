@@ -5,7 +5,7 @@ Easee, Wallbox Pulsar oder eine Cloud-Anbindung) und es für das EMS und die Anz
 wollen. Das eigene Modul bleibt dabei ein eigenständiges Modul. Es muss weder ChargerHub noch ein anderes NRG-Stack-Modul
 installiert haben, und ChargerHub braucht das Fremdmodul nicht.
 
-Gemeint ist der **Vertrag `charger`, Version 1.12**. Er wird von ChargerHub (`CHUB_GetFunctions`) angeboten. Dieselbe
+Gemeint ist der **Vertrag `charger`, Version 1.13**. Er wird von ChargerHub (`CHUB_GetFunctions`) angeboten. Dieselbe
 Feldliste verwenden auch OCPPHub und ChargerEEBUSHub.
 
 ## Das Prinzip in drei Sätzen
@@ -33,7 +33,7 @@ Felder sind optional. **Fehlt ein optionales Feld, heißt das „unbekannt“, n
 
 | Feld | Pflicht | Bedeutung |
 |---|---|---|
-| `contractVersion` | ja | `'1.12'`. Konsumenten prüfen die Hauptversion (vor dem Punkt). Fehlt das Feld, gilt `'1.0'`. |
+| `contractVersion` | ja | `'1.13'`. Konsumenten prüfen die Hauptversion (vor dem Punkt). Fehlt das Feld, gilt `'1.0'`. |
 | `function` | ja | immer `'charger'` |
 | `contractType` | empfohlen | immer `'charger'`. Das EMS erkennt den Eintrag daran (ältere Einträge ohne das Feld werden über `function` erkannt). |
 | `label` | ja | Anzeigename des Ladepunkts (meist der Instanzname) |
@@ -223,7 +223,7 @@ class MeineWallbox extends IPSModule
         $max = $this->ReadPropertyInteger('MaxCurrent');
         $managedBy = $this->ReadPropertyString('ManagedBy');
         return [[
-            'contractVersion'   => '1.12',
+            'contractVersion'   => '1.13',
             'function'          => 'charger',
             'contractType'      => 'charger',
             'label'             => IPS_GetName($this->InstanceID),
