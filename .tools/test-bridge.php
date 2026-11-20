@@ -619,7 +619,9 @@ function contract18(string $mfr, array $attrs, array $vars): array {
     return $h->GetFunctions()[0];
 }
 $c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
-check('Vertrag 1.12: contractVersion 1.12', $c1['contractVersion'] === '1.12');
+check('Vertrag 1.13: contractVersion 1.13', $c1['contractVersion'] === '1.13');
+check('Vertrag 1.13: contractType charger, function charger unverändert', ($c1['contractType'] ?? '') === 'charger' && $c1['function'] === 'charger');
+check('Vertrag 1.13: failsafeSec ist 0 (kein erfundener Rückfall)', array_key_exists('failsafeSec', $c1) && $c1['failsafeSec'] === 0);
 check('Vertrag 1.12: planInfoID vorhanden (int)', isset($c1['planInfoID']) && is_int($c1['planInfoID']));
 check('Vertrag 1.11: stateID/errorCodeID vorhanden (int)', isset($c1['stateID'], $c1['errorCodeID']) && is_int($c1['stateID']) && is_int($c1['errorCodeID']));
 check('Vertrag 1.10: sessionEnergyID/energyLimitID/chargingStateID vorhanden (int)', isset($c1['sessionEnergyID'], $c1['energyLimitID'], $c1['chargingStateID']) && is_int($c1['sessionEnergyID']) && is_int($c1['energyLimitID']) && is_int($c1['chargingStateID']));
