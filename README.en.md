@@ -211,6 +211,8 @@ The controller authority (“Who controls?”) can also be changed without the f
 
 For the same duplicate situation there is also the public method `CHUB_SetActive($id, bool): string` — deactivates (or reactivates) measuring AND control of an instance completely, with visible feedback. When deactivating, a previously set go-e forced-off lock is additionally released automatically and, if “Who controls?” is still on the default “Nobody”, switched to “Other” (a deliberately set other value is left untouched). A running charge is NOT interrupted by this — only the instance's own observation/control ends.
 
+**Connecting your own wallbox module:** if you have your own wallbox module and want to make it visible to the EMS and the display modules, the contract, the required fields, control through `IPS_RequestAction` and a minimal example are in [docs/EIGENES_WALLBOX_MODUL.md](docs/EIGENES_WALLBOX_MODUL.md) (German).
+
 See [CLAUDE.md](CLAUDE.md) for the conventions of the module family.
 
 ### go-e: Eco and PV data via the HTTP API (since 0.11.0)
