@@ -212,6 +212,8 @@ Die Regler-Hoheit („Wer regelt?“) lässt sich auch ohne Formular umstellen, 
 
 Für dieselbe Dubletten-Situation gibt es außerdem die öffentliche Methode `CHUB_SetActive($id, bool): string` — deaktiviert (oder reaktiviert) Messung UND Steuerung einer Instanz vollständig, mit sichtbarer Rückmeldung. Beim Deaktivieren wird zusätzlich automatisch eine zuvor gesetzte go-e-Zwangs-Aus-Sperre freigegeben und, sofern „Wer regelt?" noch auf dem Default „Niemand" steht, auf „Anderer" umgestellt (ein bewusst gesetzter anderer Wert bleibt unangetastet). Eine laufende Ladung wird dadurch NICHT unterbrochen — nur die eigene Beobachtung/Steuerung endet.
 
+**Eigenes Wallbox-Modul anbinden:** Wer ein eigenes Wallbox-Modul hat und es für das EMS und die Anzeigemodule sichtbar machen möchte, findet den Vertrag, die Pflichtfelder, das Steuern über `IPS_RequestAction` und ein minimales Beispiel in [docs/EIGENES_WALLBOX_MODUL.md](docs/EIGENES_WALLBOX_MODUL.md).
+
 Siehe [CLAUDE.md](CLAUDE.md) für die Konventionen des Verbunds.
 
 ### go-e: Eco und PV-Daten über die HTTP-API (seit 0.11.0)
