@@ -35,6 +35,7 @@ Felder sind optional. **Fehlt ein optionales Feld, heißt das „unbekannt“, n
 |---|---|---|
 | `contractVersion` | ja | `'1.12'`. Konsumenten prüfen die Hauptversion (vor dem Punkt). Fehlt das Feld, gilt `'1.0'`. |
 | `function` | ja | immer `'charger'` |
+| `contractType` | empfohlen | immer `'charger'`. Das EMS erkennt den Eintrag daran (ältere Einträge ohne das Feld werden über `function` erkannt). |
 | `label` | ja | Anzeigename des Ladepunkts (meist der Instanzname) |
 | `powerID` | ja | Variablen-ID der Ladeleistung in **Watt** (Float). `0`, wenn nicht verfügbar. |
 | `energyImportID` | ja | Variablen-ID eines **kumulativen** Energiezählers in kWh. Ein Sitzungszähler, der je Ladevorgang auf 0 zurückspringt, ist **kein** Zählerstand. `0`, wenn nicht verfügbar. |
@@ -46,6 +47,8 @@ Felder sind optional. **Fehlt ein optionales Feld, heißt das „unbekannt“, n
 | `managedBy` | ja | wer die Wallbox regelt: `none`, `ems`, `goe-controller`, `tibber`, `p14a`, `marketer` oder `other` (siehe unten) |
 | `externallyManaged` | ja | `true`, sobald `managedBy` nicht `none` oder `ems` ist (aus Kompatibilität zu Version 1.0) |
 | `lastSeenAt` | ja | Unix-Zeit des letzten **erfolgreichen** Kontakts zum Gerät, `0` = noch nie (siehe unten) |
+| `failsafeSec` | zum Steuern | Sekunden, nach denen dein Modul in den sicheren Zustand zurückfällt, wenn `ctl_enable` und `ctl_curr_limit` ausbleiben (siehe „Rückfall“). `0` oder fehlend = kein Rückfall, dann gibt das EMS das Schreiben nicht frei. |
+| `failsafeMode` | nein | `'deadman'` (Standard, wenn das Feld fehlt): der Konsument erneuert die Sollwerte innerhalb von `failsafeSec / 2`, und dein Modul fällt zurück, wenn das Nachschreiben ausbleibt. `'maxDuration'`: dein Modul beendet einen Ein-Wunsch selbst nach `failsafeSec`, ohne Nachschreiben. Für Wallboxen ist `'deadman'` richtig. |
 | `plugStateID` | nein | Variablen-ID „Fahrzeug angesteckt“ (Bool), `0` wenn die Wallbox es nicht meldet |
 | `stateID`, `errorCodeID` | nein | Variablen-ID von Ladestatus (Integer) bzw. Fehlercode (Integer, `0` = kein Fehler). Ein Fehlercode ungleich 0 sperrt im EMS die Freigabe. |
 | `deviceSerial`, `deviceHost`, `manufacturer` | nein | Seriennummer, Adresse und Herstellerschlüssel des Geräts, für die Doppelanbindung (siehe unten) |
@@ -120,15 +123,20 @@ Daraus folgt:
 Eine Wallbox, die nur gemessen werden soll, liefert `chargeEnableID` = 0 und `currentLimitID` = 0. Dann steuert das EMS
 sie nicht.
 
-### Rückfall, wenn keine Befehle mehr kommen
+### Rückfall und `failsafeSec`
 
-Ein übergeordneter Regler kann ausfallen, die Verbindung kann abreißen oder das EMS kann die Steuerung entziehen. Deshalb
-sollte dein Modul oder die Wallbox **von selbst in einen sicheren, dokumentierten Zustand zurückfallen**, wenn eine
-längere Zeit kein Sollwert mehr ankommt, zum Beispiel auf eine feste Grundstromstärke oder die eigene Ladelogik der
-Wallbox. Das gilt besonders, wenn die Wallbox einen Sollwert nach einer gewissen Zeit selbst vergisst oder festhält.
-Beschreibe das Verhalten und die Zeit in deiner Dokumentation. Ein Feld, das diese Zeit im Vertrag meldet, ist **noch nicht
-Teil des Vertrags** und wird nur dann ergänzt, wenn es sich in der Abstimmung als nötig erweist. Ein Regler darf Schreiben
-für ein Fremdmodul erst freigeben, wenn ein solcher Rückfall bekannt ist.
+Ein übergeordneter Regler kann ausfallen, die Verbindung kann abreißen, oder das EMS kann die Steuerung entziehen. Deshalb
+muss dein Modul oder die Wallbox **von selbst in einen sicheren, dokumentierten Zustand zurückfallen**, wenn eine Zeit
+lang kein Sollwert mehr ankommt, zum Beispiel auf eine feste Grundstromstärke oder die eigene Ladelogik der Wallbox. Das
+gilt besonders, wenn die Wallbox einen Sollwert nach einer gewissen Zeit selbst vergisst oder festhält.
+
+- Melde diese Zeit im Eintrag als **`failsafeSec`** (Ganzzahl, Sekunden).
+- Das EMS erneuert `ctl_enable` und `ctl_curr_limit` spätestens nach `failsafeSec / 2` (mindestens alle 10 Sekunden), auch
+  während einer Pause nach einem Wechsel. Dein Modul muss also nur reagieren, wenn **kein** Nachschreiben mehr kommt.
+- `failsafeMode` ist optional. Fehlt es, gilt `'deadman'` (so beschrieben). Für Wallboxen ist das die richtige Wahl.
+- Beschreibe den sicheren Zustand in deiner Dokumentation.
+- `0` oder ein fehlendes Feld heißt **kein Rückfall**. Ein Regler gibt das Schreiben für dein Modul dann nicht frei, und
+  das EMS misst die Wallbox nur.
 
 ### Schreibstatus (empfohlen)
 
@@ -217,6 +225,7 @@ class MeineWallbox extends IPSModule
         return [[
             'contractVersion'   => '1.12',
             'function'          => 'charger',
+            'contractType'      => 'charger',
             'label'             => IPS_GetName($this->InstanceID),
             'powerID'           => $this->GetIDForIdent('power'),
             'energyImportID'    => $this->GetIDForIdent('energy_total'),
@@ -228,6 +237,7 @@ class MeineWallbox extends IPSModule
             'managedBy'         => $managedBy,
             'externallyManaged' => !in_array($managedBy, ['none', 'ems'], true),
             'lastSeenAt'        => $this->ReadAttributeInteger('LastSeenAt'),
+            'failsafeSec'       => 120,   // nach 120 s ohne Sollwert fällt die Box in ihren dokumentierten sicheren Zustand zurück
             'deviceSerial'      => '',
             'duplicateOf'       => null,
         ]];
@@ -249,14 +259,28 @@ $this->WriteAttributeInteger('LastSeenAt', time());
 
 ## Wie wird ein Fremdmodul gefunden?
 
-**Stand heute:** Das EMS fragt feste Module ab (ChargerHub über `CHUB_GetFunctions`, OCPPHub über `OHUB_GetFunctions`
-und ChargerEEBUSHub über `CHEEB_GetFunctions`). Ein beliebiges Fremdmodul mit eigenem Präfix wird vom EMS **noch nicht
-automatisch gefunden**, auch wenn es den Vertrag genau einhält. Eine allgemeine Suche nach `<PRÄFIX>_GetFunctions`
-(ähnlich der Fahrzeugsuche) ist in Klärung. Bis dahin lassen sich im EMS die **Messwerte** (Leistung, angesteckt, Status,
-Fehler) über eigene Variablen verknüpfen. **Gesteuert** wird nur, was als gefundener Eintrag vorliegt. Der Vertrag bleibt so,
-wie er hier beschrieben ist.
+Das EMS (ab Version 0.110.0) sucht Gerätemodule, die eine Funktion `<PRÄFIX>_GetFunctions` anbieten, und übernimmt deren
+Einträge mit `contractType` = `'charger'` (sonst `function` = `'charger'`) und der Hauptversion 1 in `contractVersion`.
+Die Suche läuft nicht im Regelzyklus, sondern im Partnerzyklus des EMS, gekapselt und mit einem Zeitbudget von 3 Sekunden
+je Aufruf. Ein Fehler, eine Ausnahme oder eine andere Hauptversion führt dazu, dass dein Modul in diesem Durchlauf
+übersprungen und im EMS-Log genannt wird. Deaktivierte Instanzen (Status 104) werden ignoriert. Die Module ChargerHub,
+OCPPHub, ChargerEEBUSHub, das EMS selbst, MeterHub und InverterHub werden nicht als Fremdmodul behandelt.
 
-Zusagen zu Zeitpunkt oder Umfang gibt es dazu nicht.
+- **Doppelte Wallboxen:** Ein Eintrag mit `duplicateOf` zählt nicht. Hat dein Eintrag dieselbe `deviceSerial` wie eine
+  Wallbox, die über ChargerHub, OCPPHub oder ChargerEEBUSHub angebunden ist, hat die andere Anbindung Vorrang. Im
+  Formular des EMS erscheint deine Wallbox als „<PRÄFIX> (Fremdmodul)“.
+- **Lesen** geht sofort, mit den Feldern dieses Vertrags (`powerID`, `chargeEnableID` und so weiter) und einer
+  Frischeprüfung über `lastSeenAt`.
+- **Schreiben** (`ctl_enable`, `ctl_curr_limit`, `ctl_phase_mode` über `IPS_RequestAction` auf deine Instanz) gibt es nur,
+  wenn **alle** vier Punkte zutreffen:
+  1. Der Nutzer hat deine Instanz im EMS-Formular in der Liste der Fremdmodule, die das EMS steuern darf, ausdrücklich
+     freigegeben (Standard: leer, also nur Messen).
+  2. Dein Eintrag meldet `failsafeSec` größer 0.
+  3. `lastSeenAt` ist höchstens 10 Minuten alt (falls geliefert).
+  4. `managedBy` ist `none` oder `ems`.
+
+Die Anbindung ist freiwillig und wird vom Nutzer pro Instanz freigegeben. Zusagen zu weiteren Funktionen oder Terminen
+gibt es dazu nicht.
 
 ## Prüfen, ob es klappt
 
