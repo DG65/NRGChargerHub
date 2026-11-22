@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.16.0] - 2026-11-22
+
+### Added
+- **Gruppe (optional)** je Instanz (Panel „Steuerhoheit & Sicherheit“, neue Property `GroupName`, leer = keine Gruppe): ein frei
+  wählbarer Name wie „Garage“ oder „Ladepark“. Rein organisatorisch, Messung und Steuerung bleiben unverändert.
+- **Vertrag `CHUB_GetFunctions` 1.14 (additiv):** neues Feld `groupName` (String, höchstens 60 Zeichen, `''` = keine Gruppe). Der
+  Dashboard-Energiefluss kann Ladepunkte mit demselben Namen unter einem Knoten zusammenfassen (Verschachteln ohne virtuellen
+  MeterHub-Zähler). Die Darstellung im Dashboard liegt dort, nicht hier. Keine bestehenden Felder oder Idents geändert.
+
 ## [0.15.0] - 2026-11-21
 
 ### Added

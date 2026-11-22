@@ -5,7 +5,7 @@ Easee, Wallbox Pulsar oder eine Cloud-Anbindung) und es für das EMS und die Anz
 wollen. Das eigene Modul bleibt dabei ein eigenständiges Modul. Es muss weder ChargerHub noch ein anderes NRG-Stack-Modul
 installiert haben, und ChargerHub braucht das Fremdmodul nicht.
 
-Gemeint ist der **Vertrag `charger`, Version 1.13**. Er wird von ChargerHub (`CHUB_GetFunctions`) angeboten. Dieselbe
+Gemeint ist der **Vertrag `charger`, Version 1.14**. Er wird von ChargerHub (`CHUB_GetFunctions`) angeboten. Dieselbe
 Feldliste verwenden auch OCPPHub und ChargerEEBUSHub.
 
 ## Das Prinzip in drei Sätzen
@@ -33,7 +33,7 @@ Felder sind optional. **Fehlt ein optionales Feld, heißt das „unbekannt“, n
 
 | Feld | Pflicht | Bedeutung |
 |---|---|---|
-| `contractVersion` | ja | `'1.13'`. Konsumenten prüfen die Hauptversion (vor dem Punkt). Fehlt das Feld, gilt `'1.0'`. |
+| `contractVersion` | ja | `'1.14'`. Konsumenten prüfen die Hauptversion (vor dem Punkt). Fehlt das Feld, gilt `'1.0'`. |
 | `function` | ja | immer `'charger'` |
 | `contractType` | empfohlen | immer `'charger'`. Das EMS erkennt den Eintrag daran (ältere Einträge ohne das Feld werden über `function` erkannt). |
 | `label` | ja | Anzeigename des Ladepunkts (meist der Instanzname) |
@@ -49,6 +49,7 @@ Felder sind optional. **Fehlt ein optionales Feld, heißt das „unbekannt“, n
 | `lastSeenAt` | ja | Unix-Zeit des letzten **erfolgreichen** Kontakts zum Gerät, `0` = noch nie (siehe unten) |
 | `failsafeSec` | zum Steuern | Sekunden, nach denen dein Modul in den sicheren Zustand zurückfällt, wenn `ctl_enable` und `ctl_curr_limit` ausbleiben (siehe „Rückfall“). `0` oder fehlend = kein Rückfall, dann gibt das EMS das Schreiben nicht frei. |
 | `failsafeMode` | nein | `'deadman'` (Standard, wenn das Feld fehlt): der Konsument erneuert die Sollwerte innerhalb von `failsafeSec / 2`, und dein Modul fällt zurück, wenn das Nachschreiben ausbleibt. `'maxDuration'`: dein Modul beendet einen Ein-Wunsch selbst nach `failsafeSec`, ohne Nachschreiben. Für Wallboxen ist `'deadman'` richtig. |
+| `groupName` | nein | Gruppenname, den der Nutzer in deiner Instanz setzt (zum Beispiel „Garage“), `''` = keine Gruppe, höchstens 60 Zeichen. Die Anzeige im Dashboard kann Ladepunkte mit demselben Namen unter einem Knoten zusammenfassen. Rein organisatorisch. |
 | `plugStateID` | nein | Variablen-ID „Fahrzeug angesteckt“ (Bool), `0` wenn die Wallbox es nicht meldet |
 | `stateID`, `errorCodeID` | nein | Variablen-ID von Ladestatus (Integer) bzw. Fehlercode (Integer, `0` = kein Fehler). Ein Fehlercode ungleich 0 sperrt im EMS die Freigabe. |
 | `deviceSerial`, `deviceHost`, `manufacturer` | nein | Seriennummer, Adresse und Herstellerschlüssel des Geräts, für die Doppelanbindung (siehe unten) |
@@ -223,7 +224,7 @@ class MeineWallbox extends IPSModule
         $max = $this->ReadPropertyInteger('MaxCurrent');
         $managedBy = $this->ReadPropertyString('ManagedBy');
         return [[
-            'contractVersion'   => '1.13',
+            'contractVersion'   => '1.14',
             'function'          => 'charger',
             'contractType'      => 'charger',
             'label'             => IPS_GetName($this->InstanceID),

@@ -619,7 +619,12 @@ function contract18(string $mfr, array $attrs, array $vars): array {
     return $h->GetFunctions()[0];
 }
 $c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
-check('Vertrag 1.13: contractVersion 1.13', $c1['contractVersion'] === '1.13');
+check('Vertrag 1.14: contractVersion 1.14', $c1['contractVersion'] === '1.14');
+check('Vertrag 1.14: groupName leer, wenn keine Gruppe gesetzt', array_key_exists('groupName', $c1) && $c1['groupName'] === '');
+$gh = new ChargerHub(799); $gh->prop = ['Manufacturer' => 'goe', 'GroupName' => '  Garage  ']; $gh->RegisterAttributeInteger('LastSeenAt', 0);
+check('Vertrag 1.14: groupName getrimmt gemeldet', $gh->GetFunctions()[0]['groupName'] === 'Garage');
+$gh2 = new ChargerHub(799); $gh2->prop = ['Manufacturer' => 'goe', 'GroupName' => str_repeat('ä', 100)]; $gh2->RegisterAttributeInteger('LastSeenAt', 0);
+check('Vertrag 1.14: groupName auf 60 Zeichen begrenzt (mehrbytig)', mb_strlen($gh2->GetFunctions()[0]['groupName']) === 60);
 check('Vertrag 1.13: contractType charger, function charger unverändert', ($c1['contractType'] ?? '') === 'charger' && $c1['function'] === 'charger');
 check('Vertrag 1.13: failsafeSec ist 0 (kein erfundener Rückfall)', array_key_exists('failsafeSec', $c1) && $c1['failsafeSec'] === 0);
 check('Vertrag 1.12: planInfoID vorhanden (int)', isset($c1['planInfoID']) && is_int($c1['planInfoID']));
