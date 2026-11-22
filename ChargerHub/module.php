@@ -3485,15 +3485,16 @@ class ChargerHub extends IPSModule
 
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.14.0';
+    private const NEWS_VERSION = '0.16.0';
     // Modulversion für die Anzeige im Doku-Panel (gleich library.json, Prüfstand vergleicht).
-    private const VERSION = '0.15.0';
+    private const VERSION = '0.16.0';
     private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
     private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
     private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
     private const NEWS_ITEMS = [
+        'New: “Group (optional)” (panel “Control authority & safety”). Give charge points a free group name such as “Garage”; the Dashboard energy flow can then show charge points of the same group together under one node, without a MeterHub virtual meter. Only for display: measuring and control stay unchanged. Contract 1.14 (field groupName).',
         'New: reading and writing at the same wallbox no longer collide. Many wallboxes and gateways accept only ONE Modbus TCP connection at a time; so far a control command could be refused while the read timer was connected. Reads and writes are now locked against each other per device, a read cycle uses one connection, and a failed write is tried once more. New variables “Write failures (count)”, “Last write failure at/(reason)” and “Last successful write at” show whether commands arrive; the EMS evaluates them.',
         'New: openWB software2 Primary as a new manufacturer. ChargerHub reads power, energy, plug state, phase values, charging status and the assigned vehicle with its SoC through the Primary’s simpleAPI (HTTP). Read-only by default; commands from the EMS only if you enable them and assign the authority to the EMS. Connect ONLY to the Primary, never directly to a Pro that it controls. Writing is untested on real hardware.',
         'New: ChargerHub, the search and the bridge are now bilingual (German and English). The texts follow the language of your Symcon installation. Existing variables keep their names; new variables are created in the current language. Identifiers (idents) and the contract are unchanged.',
@@ -3736,6 +3737,10 @@ class ChargerHub extends IPSModule
         // Ladepunkts. Harter Clamp in jedem Treiber-Schreibzugriff — letzte
         // Verteidigungslinie unabhängig vom EMS (EMS-Vertragsabsprache).
         $this->RegisterPropertyInteger('MaxCurrent', 16);
+        // Gruppe (optional): ein frei wählbarer Name, mit dem der Nutzer Ladepunkte (und andere Verbraucher) in der
+        // Darstellung zusammenfasst, z. B. „Garage“ oder „Ladepark“. Rein organisatorisch, ändert nichts an Messung oder
+        // Steuerung; wird als `groupName` über CHUB_GetFunctions gemeldet (Vertrag 1.14). Leer = keine Gruppe.
+        $this->RegisterPropertyString('GroupName', '');
         // Fehlersuche: jeden Schreibbefehl (Anfrage/Antwort als Hex) im Meldungen-Log protokollieren.
         $this->RegisterPropertyBoolean('WriteLog', false);
         // Manche Wallboxen vertragen häufiges Verbinden/Trennen schlecht (Fund sieckendieck,
@@ -5573,7 +5578,8 @@ class ChargerHub extends IPSModule
             // 1.12: planInfoID (Plantext von außen, CHUB_SetPlanInfo).
             // 1.13: contractType ('charger', damit ein Konsument den Eintrag auch ohne Modulkenntnis erkennt) und
             // failsafeSec (Sekunden bis zum Rückfall ohne Sollwert vom Konsumenten; 0 = kein Rückfall).
-            'contractVersion'    => '1.13',
+            // 1.14: groupName (optional, vom Nutzer gesetzter Gruppenname zum Zusammenfassen von Ladepunkten, '' = keine).
+            'contractVersion'    => '1.14',
             'contractType'       => 'charger',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
@@ -5676,6 +5682,8 @@ class ChargerHub extends IPSModule
         // eingestellte Gültigkeitsdauer kennt das Modul nicht. Eine erfundene Zahl wäre falscher als 0. Gilt nur für Fremdmodule
         // als Voraussetzung zum Schreiben; ChargerHub selbst bleibt ein bekanntes Modul des EMS.
         $fn['failsafeSec'] = 0;
+        // 1.14: Gruppenname, vom Nutzer gesetzt (leer = keine Gruppe). Nur zum Zusammenfassen in der Darstellung.
+        $fn['groupName'] = mb_substr(trim($this->ReadPropertyString('GroupName')), 0, 60);
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
@@ -6031,6 +6039,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'Select', 'name' => 'DuplicateOfKey', 'caption' => '🆕 This wallbox is the same device as …', 'options' => $duplicateOfOptions, 'onChange' => 'IPS_RequestAction($id, "DuplicateOfKeyChanged", $DuplicateOfKey);'],
                         ['type' => 'Label', 'caption' => 'LINKSTATUS', 'name' => 'LinkDuplicateStatus'],
                         ['type' => 'Label', 'caption' => 'Only set if the same physical wallbox already runs through another instance (ChargerHub or OCPPHub). Affects ONLY the counting — EMS/Dashboard/MeterHub then skip this instance in totals/sessions/power in favour of the selected one. Who actually CONTROLS the wallbox is still decided solely by “Who controls this charge point?” above — an instance can therefore be marked as a duplicate AND be the active controller at the same time. For a complete stop (measuring AND control) there is also CHUB_SetActive().'],
+                        ['type' => 'ValidationTextBox', 'name' => 'GroupName', 'caption' => '🆕 Group (optional)'],
+                        ['type' => 'Label', 'name' => 'GroupNameHint', 'caption' => 'A free name such as “Garage” or “Charging park”. Charge points with the same name are shown together under one node in the Dashboard energy flow (a click opens the individual charge points). Only for display: measuring and control stay unchanged. Empty = no group.'],
                         ['type' => 'CheckBox', 'name' => 'DemoMode', 'caption' => '🆕 Demo mode (control disabled, display only)'],
                         ['type' => 'Label', 'caption' => 'For publicly accessible demo instances (e.g. a module presentation with its own login): disables switches/sliders for charging enable, current limit etc. in the console/WebFront AND additionally rejects control commands on the server side — measured values remain visible as usual. Do not activate for real operation.'],
                         ['type' => 'Label', 'caption' => '⚠️ Two-controller warning: if something else already controls this wallbox — go-e Controller, load management, Tibber Grid Rewards, a §14a control OR OCPPHub/another OCPP backend on the SAME physical wallbox —, an energy management system must not write charging enable/current limit in parallel (both controllers would otherwise overwrite each other). Particularly important for the go-eCharger: our charging enable “Off” sets FORCE_STATE=1 (forced off) on the device — this then hard-blocks EVERY other channel (app, OCPP backend) until it is released here again. Enter here who has the authority: for everything except “Nobody” and “Energy management (EMS)” the EMS holds back and only reads along; when switching from “Nobody” to another value ChargerHub automatically releases a previously set forced-off lock.'],
