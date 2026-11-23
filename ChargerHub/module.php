@@ -26,6 +26,7 @@
 // ===========================================================================
 
 require_once __DIR__ . '/../libs/CHUB_Text.php';
+require_once __DIR__ . '/../libs/CHUB_Calib.php';
 
 class CHUB_ModbusTcpClient
 {
@@ -3485,15 +3486,16 @@ class ChargerHub extends IPSModule
 
     // „Was ist neu"-Banner (siehe newsBanner()/AckNews()) — Verbund-Konvention
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
-    private const NEWS_VERSION = '0.16.0';
+    private const NEWS_VERSION = '0.17.0';
     // Modulversion für die Anzeige im Doku-Panel (gleich library.json, Prüfstand vergleicht).
-    private const VERSION = '0.16.0';
+    private const VERSION = '0.17.0';
     private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
     private const PAYPAL_URL = 'https://paypal.me/DietmarGureth';
     private const FORUM_THREAD_URL = 'https://community.symcon.de/t/modul-nrg-stack-chargerhub-ein-modbus-tcp-modul-fuer-viele-wallboxen-netzwerksuche/144397';
     private const NEWS_ITEMS = [
+        'New: “Measure charging speed” (panel “Operation”). ChargerHub runs through the current steps once and measures how fast the connected vehicle can charge, so a planner (the EMS) knows how many quarter hours a charge needs. The result is reported in contract 1.15 (measuredMaxPowerW); it is cleared when the vehicle is unplugged. New: charging windows from outside (CHUB_SetPlanWindows, field planWindows) can be shown in a daily plan.',
         'New: “Group (optional)” (panel “Control authority & safety”). Give charge points a free group name such as “Garage”; the Dashboard energy flow can then show charge points of the same group together under one node, without a MeterHub virtual meter. Only for display: measuring and control stay unchanged. Contract 1.14 (field groupName).',
         'New: reading and writing at the same wallbox no longer collide. Many wallboxes and gateways accept only ONE Modbus TCP connection at a time; so far a control command could be refused while the read timer was connected. Reads and writes are now locked against each other per device, a read cycle uses one connection, and a failed write is tried once more. New variables “Write failures (count)”, “Last write failure at/(reason)” and “Last successful write at” show whether commands arrive; the EMS evaluates them.',
         'New: openWB software2 Primary as a new manufacturer. ChargerHub reads power, energy, plug state, phase values, charging status and the assigned vehicle with its SoC through the Primary’s simpleAPI (HTTP). Read-only by default; commands from the EMS only if you enable them and assign the authority to the EMS. Connect ONLY to the Primary, never directly to a Pro that it controls. Writing is untested on real hardware.',
@@ -3630,6 +3632,16 @@ class ChargerHub extends IPSModule
         $this->RegisterAttributeBoolean('SurplusRegulating', false);
         // Plantext von außen (CHUB_SetPlanInfo, z. B. vom EMS): Ablaufzeitpunkt, danach wird er gelöscht.
         $this->RegisterAttributeInteger('PlanValidUntil', 0);
+        // Ladefenster von außen (CHUB_SetPlanWindows, z. B. vom EMS) als JSON-Liste und ihr Ablaufzeitpunkt (Vertrag 1.15).
+        $this->RegisterAttributeString('PlanWindows', '[]');
+        $this->RegisterAttributeInteger('PlanWindowsUntil', 0);
+        // Messung der Ladegeschwindigkeit (Vertrag 1.15): läuft sie, Zustand der Messung, letztes Ergebnis, Steckstand.
+        $this->RegisterAttributeBoolean('Calibrating', false);
+        $this->RegisterAttributeString('CalibState', '');
+        $this->RegisterAttributeInteger('MeasuredMaxPowerW', 0);
+        $this->RegisterAttributeInteger('MeasuredPhases', 0);
+        $this->RegisterAttributeInteger('MeasuredAt', 0);
+        $this->RegisterAttributeInteger('CalibPlug', -1);
         // Zeitpunkt (Unix-Timestamp) des letzten erfolgreichen Lesezyklus —
         // siehe SetVarBool()/GetFunctions() 'lastSeenAt', contractVersion 1.3.
         $this->RegisterAttributeInteger('LastSeenAt', 0);
@@ -3821,11 +3833,18 @@ class ChargerHub extends IPSModule
         $this->RegisterTimer('FastTimer', 0, 'CHUB_Update($_IPS[\'TARGET\']);');
         $this->RegisterTimer('EnableActionsTimer', 0, 'CHUB_EnableActions($_IPS[\'TARGET\']);');
         $this->RegisterTimer('GoeFeedTimer', 0, 'CHUB_GoeFeedTick($_IPS[\'TARGET\']);');
+        // Messung der Ladegeschwindigkeit (CHUB_MeasureChargeCurve): Takt nur, solange eine Messung läuft.
+        $this->RegisterTimer('CalibTimer', 0, 'CHUB_CalibTick($_IPS[\'TARGET\']);');
     }
 
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+        // Eine laufende (oder durch einen Neustart verwaiste) Messung der Ladegeschwindigkeit endet hier, und die Wallbox
+        // bekommt ihren vorherigen Zustand zurück - sonst bliebe der Schutz vor Steuerbefehlen dauerhaft aktiv.
+        if ($this->ReadAttributeBoolean('Calibrating')) {
+            $this->CalibFinish(false, CHUB_Text::t('Aborted: configuration applied.'));
+        }
         // Treiber-Merker („Register nicht vorhanden") bei jedem Übernehmen zurücksetzen.
         $this->WriteAttributeString('DriverFlags', '{}');
         if (!$this->ReadPropertyBoolean('PlugTimes')) {
@@ -4074,27 +4093,8 @@ class ChargerHub extends IPSModule
         if (!$this->ReadPropertyBoolean('Active')) {
             return;
         }
-        // Lesen und Schreiben am selben Gerät gegeneinander sperren, ein Lesezyklus = eine Verbindung
-        // (SUITE.md Stolperstein 31): viele Wallboxen/Gateways nehmen nur EINE Modbus-TCP-Verbindung an. Bekommt
-        // dieser Lesezyklus die Sperre nicht (ein Schreibbefehl läuft gerade), fällt er einfach aus.
-        if (!$this->IoLockEnter(8000)) {
+        if (!$this->ReadDeviceOnce()) {
             return;
-        }
-        try {
-            $mb = $this->GetModbusClient();
-            $batch = $this->UseBatchConnection();
-            if ($batch) {
-                $mb->beginBatch();
-            }
-            try {
-                $this->GetDriver()->readValues($mb, $this);
-            } finally {
-                if ($batch) {
-                    $mb->endBatch();
-                }
-            }
-        } finally {
-            $this->IoLockLeave();
         }
         if ($this->ReadPropertyString('Manufacturer') === 'goe' && $this->ReadPropertyBoolean('MqttCardsEnabled')) {
             // Die Seriennummer (fürs Topic nötig) ist erst NACH dem ersten
@@ -4115,6 +4115,35 @@ class ChargerHub extends IPSModule
         $this->SurplusChargeControl();
         $this->CheckDuplicateManagedByConflict();
         $this->UpdateControlState();
+    }
+
+    // Ein Lesezyklus: Gerätesperre, eine Verbindung, Treiber lesen. false, wenn die Sperre nicht frei war (der
+    // Zyklus fällt dann aus). Gemeinsam für Update() und die Messung der Ladegeschwindigkeit.
+    private function ReadDeviceOnce(): bool
+    {
+        // Lesen und Schreiben am selben Gerät gegeneinander sperren, ein Lesezyklus = eine Verbindung
+        // (SUITE.md Stolperstein 31): viele Wallboxen/Gateways nehmen nur EINE Modbus-TCP-Verbindung an. Bekommt
+        // dieser Lesezyklus die Sperre nicht (ein Schreibbefehl läuft gerade), fällt er einfach aus.
+        if (!$this->IoLockEnter(8000)) {
+            return false;
+        }
+        try {
+            $mb = $this->GetModbusClient();
+            $batch = $this->UseBatchConnection();
+            if ($batch) {
+                $mb->beginBatch();
+            }
+            try {
+                $this->GetDriver()->readValues($mb, $this);
+            } finally {
+                if ($batch) {
+                    $mb->endBatch();
+                }
+            }
+        } finally {
+            $this->IoLockLeave();
+        }
+        return true;
     }
 
     // ---- Gerätesperre (SUITE.md Stolperstein 31, Vorfall Paul 15.11.2026 bei InverterHub) ----------------------
@@ -4311,6 +4340,11 @@ class ChargerHub extends IPSModule
         if ($pw !== null && $this->FindVarByIdent('charging_active')) {
             $this->SetVarBool('charging_active', (float)$pw > 100.0);
         }
+        $wUntil = $this->ReadAttributeInteger('PlanWindowsUntil');
+        if ($wUntil > 0 && time() > $wUntil) {
+            $this->WriteAttributeInteger('PlanWindowsUntil', 0);
+            $this->WriteAttributeString('PlanWindows', '[]');
+        }
         $until = $this->ReadAttributeInteger('PlanValidUntil');
         if ($until > 0 && time() > $until) {
             $this->WriteAttributeInteger('PlanValidUntil', 0);
@@ -4338,6 +4372,9 @@ class ChargerHub extends IPSModule
     {
         if (!$this->ReadPropertyBoolean('EnableSurplusCharging')) {
             return;
+        }
+        if ($this->ReadAttributeBoolean('Calibrating')) {
+            return; // die Messung der Ladegeschwindigkeit hat die Wallbox
         }
         if ($this->GetManagedBy() !== 'none') {
             $this->SetSurplusStatus(CHUB_Text::t('⏸️ Inactive — “Who controls?” is not set to “Nobody”.'));
@@ -4505,6 +4542,204 @@ class ChargerHub extends IPSModule
         $this->SetVarStr('control_plan', trim($text));
     }
 
+    // Geplante Ladefenster von außen (z. B. vom EMS), als Liste von ['from' => Unixzeit, 'to' => Unixzeit] (optional
+    // 'powerW') oder als JSON-String. Nur Auskunft (Vertrag 1.15, Feld planWindows): ChargerHub regelt danach nicht, ein
+    // Dashboard kann die Fenster als Balken im Tagesplan zeigen. Nach $validUntil (Unixzeit, 0 = ohne Ablauf) entfallen sie.
+    public function SetPlanWindows($windows, int $validUntil = 0): string
+    {
+        $list = CHUB_Calib::normalizeWindows($windows, time());
+        $this->WriteAttributeString('PlanWindows', json_encode($list));
+        $this->WriteAttributeInteger('PlanWindowsUntil', $list === [] ? 0 : max(0, $validUntil));
+        return CHUB_Text::t('%d charging windows stored.', count($list));
+    }
+
+    // ---- Messung der Ladegeschwindigkeit (Vertrag 1.15) ---------------------------------------------------------------
+    // Fährt die Stromstufen von 6 A bis zum erlaubten Maximum ab, liest je Stufe die Leistung des angesteckten Fahrzeugs und
+    // merkt sich die höchste Leistung. So weiß ein Planer (EMS), wie viele Viertelstunden ein Ladevorgang braucht. Läuft
+    // asynchron über den CalibTimer; währenddessen ignoriert ChargerHub Steuerbefehle von außen (Vertragsfeld 'calibrating').
+    private const CALIB_SETTLE_S = 25;
+    private const CALIB_DWELL_S  = 50;
+    private const CALIB_MAX_S    = 720;
+    private const CALIB_MIN_W    = 300;
+
+    public function MeasureChargeCurve(): string
+    {
+        if (!$this->ReadPropertyBoolean('Active')) {
+            return CHUB_Text::t('Not started: the instance is inactive.');
+        }
+        if ($this->ReadPropertyBoolean('DemoMode')) {
+            return CHUB_Text::t('Not started: demo mode.');
+        }
+        if ($this->ReadAttributeBoolean('Calibrating')) {
+            return CHUB_Text::t('A measurement is already running.');
+        }
+        if ($this->ReadPropertyString('Manufacturer') === 'openwb' && !$this->OpenWBWritesAllowed()) {
+            return CHUB_Text::t('Not started: this wallbox is read-only.');
+        }
+        if (!in_array($this->GetManagedBy(), ['none', 'ems'], true)) {
+            return CHUB_Text::t('Not started: another controller has authority over this charge point.');
+        }
+        if (!$this->FindVarByIdent('ctl_enable') || !$this->FindVarByIdent('ctl_curr_limit')) {
+            return CHUB_Text::t('Not started: this wallbox has no controllable charging enable and current limit.');
+        }
+        $plugVid = $this->FindVarByIdent('vehicle_plugged');
+        if ($plugVid && $this->GetVarValue('vehicle_plugged') !== true) {
+            return CHUB_Text::t('Not started: no vehicle connected.');
+        }
+        $steps = CHUB_Calib::steps(self::MIN_CURRENT, $this->GetMaxCurrentA());
+        if ($steps === []) {
+            return CHUB_Text::t('Not started: no valid current range.');
+        }
+        $now = time();
+        $state = [
+            'startedAt'  => $now,
+            'stepAt'     => $now,
+            'i'          => 0,
+            'steps'      => $steps,
+            'samples'    => [],
+            'results'    => [],
+            'prevEnable' => (bool)$this->GetVarValue('ctl_enable'),
+            'prevLimit'  => $this->GetVarValue('ctl_curr_limit'),
+        ];
+        $this->WriteAttributeBoolean('Calibrating', true);
+        $this->WriteAttributeString('CalibState', json_encode($state));
+        // Start immer erst die Freigabe, dann das Limit.
+        if (!$this->ApplyControlWrite('ctl_enable', true) || !$this->ApplyControlWrite('ctl_curr_limit', $steps[0])) {
+            $this->CalibFinish(false, CHUB_Text::t('Aborted: the wallbox did not accept the start command.'));
+            return (string)$this->GetVarValue('calib_status');
+        }
+        $this->SetVarStr('calib_status', CHUB_Text::t('Measuring: step 1 of %d (%d A) ...', count($steps), $steps[0]));
+        $this->SetTimerInterval('CalibTimer', 5000);
+        $this->LogMessage(CHUB_Text::t('Charging speed measurement started (%d steps, %d to %d A).', count($steps), $steps[0], end($steps)), KL_MESSAGE);
+        return CHUB_Text::t('Measurement started (%d steps, about %d minutes).', count($steps), (int)ceil(count($steps) * self::CALIB_DWELL_S / 60));
+    }
+
+    public function CancelChargeCurve(): string
+    {
+        if (!$this->ReadAttributeBoolean('Calibrating')) {
+            return CHUB_Text::t('No measurement is running.');
+        }
+        $this->CalibFinish(false, CHUB_Text::t('Aborted by user.'));
+        return (string)$this->GetVarValue('calib_status');
+    }
+
+    public function CalibTick(): void
+    {
+        if (!$this->ReadAttributeBoolean('Calibrating')) {
+            $this->SetTimerInterval('CalibTimer', 0);
+            return;
+        }
+        $st = json_decode($this->ReadAttributeString('CalibState'), true);
+        if (!is_array($st)) {
+            $this->CalibFinish(false, CHUB_Text::t('Aborted: measurement state lost.'));
+            return;
+        }
+        $now = time();
+        if (!$this->ReadPropertyBoolean('Active')) {
+            $this->CalibFinish(false, CHUB_Text::t('Aborted: the instance is inactive.'));
+            return;
+        }
+        if ($now - (int)$st['startedAt'] > self::CALIB_MAX_S) {
+            $this->CalibFinish(false, CHUB_Text::t('Aborted: the measurement took too long.'));
+            return;
+        }
+        $this->ReadDeviceOnce();
+        if ($this->FindVarByIdent('vehicle_plugged') && $this->GetVarValue('vehicle_plugged') === false) {
+            $this->CalibFinish(false, CHUB_Text::t('Aborted: vehicle disconnected.'));
+            return;
+        }
+        $steps = (array)$st['steps'];
+        $i = (int)$st['i'];
+        $elapsed = $now - (int)$st['stepAt'];
+        if ($elapsed >= self::CALIB_SETTLE_S) {
+            $st['samples'][] = (float)$this->GetVarValue('power');
+            $st['samples'] = array_slice($st['samples'], -12);
+        }
+        if ($elapsed >= self::CALIB_DWELL_S) {
+            $amps = (int)$steps[$i];
+            $stable = CHUB_Calib::median((array)$st['samples']);
+            $st['results'][] = ['a' => $amps, 'w' => (int)round($stable)];
+            if ($i === 0 && $stable < self::CALIB_MIN_W) {
+                $this->WriteAttributeString('CalibState', json_encode($st));
+                $this->CalibFinish(false, CHUB_Text::t('Aborted: the vehicle draws no power (battery full, charging paused or onboard charger off).'));
+                return;
+            }
+            $n = count($st['results']);
+            $limited = $n >= 2 && CHUB_Calib::plateau((float)$st['results'][$n - 2]['w'], $stable, (int)$st['results'][$n - 2]['a'], $amps);
+            if ($limited || $i >= count($steps) - 1) {
+                $this->WriteAttributeString('CalibState', json_encode($st));
+                $this->CalibFinish(true, '');
+                return;
+            }
+            $i++;
+            $this->WriteAttributeString('CalibState', json_encode($st));
+            if (!$this->ApplyControlWrite('ctl_curr_limit', (int)$steps[$i])) {
+                $this->CalibFinish(false, CHUB_Text::t('Aborted: the wallbox did not accept the current limit.'));
+                return;
+            }
+            $st['i'] = $i;
+            $st['stepAt'] = $now;
+            $st['samples'] = [];
+        }
+        $this->WriteAttributeString('CalibState', json_encode($st));
+        $this->SetVarStr('calib_status', CHUB_Text::t('Measuring: step %d of %d (%d A) ...', (int)$st['i'] + 1, count($steps), (int)$steps[(int)$st['i']]));
+    }
+
+    // Beendet die Messung (auch bei Abbruch), stellt Limit und Freigabe wie vor der Messung wieder her, wertet aus.
+    private function CalibFinish(bool $ok, string $reason): void
+    {
+        $st = json_decode($this->ReadAttributeString('CalibState'), true);
+        $this->SetTimerInterval('CalibTimer', 0);
+        $this->WriteAttributeBoolean('Calibrating', false);
+        $this->WriteAttributeString('CalibState', '');
+        if (is_array($st) && array_key_exists('prevLimit', $st)) {
+            // erst das alte Limit, dann die alte Freigabe (war sie aus, bleibt die Wallbox am Ende pausiert)
+            $this->ApplyControlWrite('ctl_curr_limit', $st['prevLimit']);
+            $this->ApplyControlWrite('ctl_enable', (bool)$st['prevEnable']);
+        }
+        if (!$ok || !is_array($st) || empty($st['results'])) {
+            $this->SetVarStr('calib_status', $reason !== '' ? $reason : CHUB_Text::t('Aborted.'));
+            $this->LogMessage(CHUB_Text::t('Charging speed measurement: %s', $reason !== '' ? $reason : CHUB_Text::t('Aborted.')), KL_WARNING);
+            return;
+        }
+        $best = null;
+        foreach ($st['results'] as $r) {
+            if ($best === null || $r['w'] > $best['w']) {
+                $best = $r;
+            }
+        }
+        // kleinste Stufe, die schon fast die Höchstleistung bringt (97 %): daraus die Phasenzahl schätzen
+        $ref = $best;
+        foreach ($st['results'] as $r) {
+            if ($r['w'] >= 0.97 * $best['w']) {
+                $ref = $r;
+                break;
+            }
+        }
+        $maxW = (int)(round($best['w'] / 10) * 10);
+        $phases = CHUB_Calib::estimatePhases((float)$ref['w'], (int)$ref['a']);
+        $this->WriteAttributeInteger('MeasuredMaxPowerW', $maxW);
+        $this->WriteAttributeInteger('MeasuredPhases', $phases);
+        $this->WriteAttributeInteger('MeasuredAt', time());
+        $this->SetVarFloat('measured_max_power', (float)$maxW);
+        $this->SetVarInt('measured_phases', $phases);
+        $this->SetVarInt('measured_at', time());
+        $text = CHUB_Text::t('Measured: %d W (at %d A, about %d phase(s)).', $maxW, (int)$ref['a'], $phases);
+        $this->SetVarStr('calib_status', $text);
+        $this->LogMessage(CHUB_Text::t('Charging speed measurement: %s', $text), KL_MESSAGE);
+    }
+
+    private function ClearMeasurement(): void
+    {
+        $this->WriteAttributeInteger('MeasuredMaxPowerW', 0);
+        $this->WriteAttributeInteger('MeasuredPhases', 0);
+        $this->WriteAttributeInteger('MeasuredAt', 0);
+        $this->SetVarFloat('measured_max_power', 0.0);
+        $this->SetVarInt('measured_phases', 0);
+        $this->SetVarInt('measured_at', 0);
+        $this->SetVarStr('calib_status', '');
+    }
+
     // Generischer, herstellerunabhängiger Ankerpunkt für Fahrzeug-Module
     // (Tessie oder ein beliebiges anderes, bei jedem Nutzer mit beliebigen
     // Fahrzeugen/Wallboxen) — ChargerHub kennt weder Fahrzeugnamen noch
@@ -4650,13 +4885,26 @@ class ChargerHub extends IPSModule
         // markiert), wird aber weiterhin von UNS geregelt (managedBy hier
         // „none") — eine Schreibsperre an `duplicateOf` hätte WB1 ihren
         // einzigen Regler genommen.
+        // Während der Messung der Ladegeschwindigkeit gehört die Wallbox der Messung: Steuerbefehle von außen
+        // (EMS, Skript, Konsole) würden die Teststufen überschreiben und werden deshalb nicht ausgeführt.
+        if ($this->ReadAttributeBoolean('Calibrating') && in_array($Ident, ['ctl_enable', 'ctl_curr_limit', 'ctl_phase_mode'], true)) {
+            $this->LogMessage(CHUB_Text::t("Charging speed measurement running: control command '%s' ignored.", $Ident), KL_WARNING);
+            return;
+        }
+        $this->ApplyControlWrite($Ident, $Value);
+    }
+
+    // Schreibt einen Steuerwert ans Gerät (Gerätesperre, Wiederholversuch, Schreibstatus). Gemeinsamer Weg für
+    // RequestAction und die Messung der Ladegeschwindigkeit. Rückgabe: true, wenn das Gerät den Befehl angenommen hat.
+    private function ApplyControlWrite(string $Ident, $Value): bool
+    {
         // Schreiben unter der Gerätesperre (wartet länger als der Lesezyklus), eine Verbindung je Versuch und ein
         // Wiederholversuch nach 1,5 s bei Verbindungs-/Zeitüberschreitungsfehler (SUITE.md Stolperstein 31). Die
         // Steuerwerte sind idempotent; eine Modbus-Exception (Gerät lehnt ab) wird nicht wiederholt.
         if (!$this->IoLockEnter(20000)) {
             $this->LogMessage(CHUB_Text::t('Write error %s: %s', $Ident, CHUB_Text::t('device busy, another access did not finish in time')), KL_ERROR);
             $this->RecordWriteResult($Ident, false, CHUB_Text::t('device busy, another access did not finish in time'));
-            return;
+            return false;
         }
         $trace = [];
         $error = '';
@@ -4701,6 +4949,7 @@ class ChargerHub extends IPSModule
                 $this->LogMessage(CHUB_Text::t('Write log %s: %s', $Ident, $line), KL_MESSAGE);
             }
         }
+        return $error === '' && $sent;
     }
 
     // Vertrag für Partnermodule (EMS, Kacheln) — Muster wie MHUB_GetFunctions.
@@ -5427,6 +5676,11 @@ class ChargerHub extends IPSModule
                     'onChange' => 'IPS_RequestAction($id, "FormCtlPhase", $FormCtlPhase);'];
             }
         }
+        if ($allowOpenWB && $this->FindVarByIdent('ctl_enable') && $this->FindVarByIdent('ctl_curr_limit')) {
+            $items[] = ['type' => 'Button', 'name' => 'CalibButton', 'caption' => '🆕 Measure charging speed', 'onClick' => 'echo CHUB_MeasureChargeCurve($id);'];
+            $calibStatus = (string)$this->GetVarValue('calib_status');
+            $items[] = ['type' => 'Label', 'name' => 'CalibButtonHint', 'caption' => CHUB_Text::t('Runs through the current steps once and measures how fast the connected vehicle can charge (about 5 minutes, only with a vehicle connected). Control commands are ignored meanwhile; the previous state is restored afterwards.') . ($calibStatus !== '' ? ' ' . $calibStatus : '')];
+        }
         return $items;
     }
 
@@ -5579,7 +5833,9 @@ class ChargerHub extends IPSModule
             // 1.13: contractType ('charger', damit ein Konsument den Eintrag auch ohne Modulkenntnis erkennt) und
             // failsafeSec (Sekunden bis zum Rückfall ohne Sollwert vom Konsumenten; 0 = kein Rückfall).
             // 1.14: groupName (optional, vom Nutzer gesetzter Gruppenname zum Zusammenfassen von Ladepunkten, '' = keine).
-            'contractVersion'    => '1.14',
+            // 1.15: calibrating/measuredMaxPowerW/measuredPhases/measuredAt (Messung der Ladegeschwindigkeit) und planWindows
+            // (geplante Ladefenster von außen, CHUB_SetPlanWindows).
+            'contractVersion'    => '1.15',
             'contractType'       => 'charger',
             'function'           => 'charger',
             'label'              => IPS_GetName($this->InstanceID),
@@ -5684,6 +5940,18 @@ class ChargerHub extends IPSModule
         $fn['failsafeSec'] = 0;
         // 1.14: Gruppenname, vom Nutzer gesetzt (leer = keine Gruppe). Nur zum Zusammenfassen in der Darstellung.
         $fn['groupName'] = mb_substr(trim($this->ReadPropertyString('GroupName')), 0, 60);
+        // 1.15: Messung der Ladegeschwindigkeit. calibrating = true, solange sie läuft (ein Regler fasst die Wallbox dann nicht
+        // an). measuredMaxPowerW/measuredPhases/measuredAt: letztes Ergebnis für das angesteckte Fahrzeug, 0 = unbekannt
+        // (gelöscht beim Abstecken). measuredPhases ist eine Schätzung aus der Messung, nicht vom Gerät gemeldet.
+        $fn['calibrating']       = $this->ReadAttributeBoolean('Calibrating');
+        $fn['measuredMaxPowerW'] = $this->ReadAttributeInteger('MeasuredMaxPowerW');
+        $fn['measuredPhases']    = $this->ReadAttributeInteger('MeasuredPhases');
+        $fn['measuredAt']        = $this->ReadAttributeInteger('MeasuredAt');
+        // 1.15: geplante Ladefenster von außen (CHUB_SetPlanWindows), nur noch nicht beendete und nicht abgelaufene.
+        $pwUntil = $this->ReadAttributeInteger('PlanWindowsUntil');
+        $pw = ($pwUntil > 0 && time() > $pwUntil) ? [] : (json_decode($this->ReadAttributeString('PlanWindows'), true) ?: []);
+        $nowTs = time();
+        $fn['planWindows'] = array_values(array_filter((array)$pw, fn ($w) => is_array($w) && (int)($w['to'] ?? 0) > $nowTs));
         // 1.6 (EMS-Anfrage 20.09.2026): Phasenangaben nur, wenn das Gerät sie
         // selbst gemeldet hat. Fehlt ein Feld, ist der Wert UNBEKANNT — nie als
         // 3 oder „nicht umschaltbar" deuten. phases: aktuell genutzte Phasen
@@ -6563,7 +6831,8 @@ class ChargerHub extends IPSModule
         $valid['control_status'] = true;
         $valid['charging_active'] = true;
         $valid['control_plan'] = true;
-        foreach (['ctl_write_fail_count', 'ctl_write_fail_time', 'ctl_write_fail_text', 'ctl_write_ok_time'] as $wi) {
+        foreach (['ctl_write_fail_count', 'ctl_write_fail_time', 'ctl_write_fail_text', 'ctl_write_ok_time',
+            'calib_status', 'measured_max_power', 'measured_phases', 'measured_at'] as $wi) {
             $valid[$wi] = true;
         }
         $surplusActive = $this->ReadPropertyBoolean('EnableSurplusCharging');
@@ -6608,6 +6877,10 @@ class ChargerHub extends IPSModule
         $this->RegisterVar(['ctl_write_fail_time', 'Last write failure at', 'I', '~UnixTimestamp', false, 'errors', 'derived: time of the last failed control command'], $pos++);
         $this->RegisterVar(['ctl_write_fail_text', 'Last write failure (reason)', 'S', '', false, 'errors', 'derived: reason of the last failed control command'], $pos++);
         $this->RegisterVar(['ctl_write_ok_time', 'Last successful write at', 'I', '~UnixTimestamp', false, 'errors', 'derived: time of the last control command that reached the device'], $pos++);
+        $this->RegisterVar(['calib_status', 'Charging speed measurement', 'S', '', false, 'errors', 'derived: state and result of the charging speed measurement'], $pos++);
+        $this->RegisterVar(['measured_max_power', 'Measured charging speed (W)', 'F', 'NRG.Watt', false, 'device', 'derived: highest power measured at the connected vehicle'], $pos++);
+        $this->RegisterVar(['measured_phases', 'Measured phases', 'I', '', false, 'device', 'derived: phases estimated from the measurement (0 = unknown)'], $pos++);
+        $this->RegisterVar(['measured_at', 'Speed measured at', 'I', '~UnixTimestamp', false, 'device', 'derived: time of the last charging speed measurement'], $pos++);
         if ($goeHttp) {
             $this->RegisterVar(['goe_use_pv', 'PV surplus (Eco) in the wallbox', 'B', '', false, 'device', 'HTTP API fup'], $pos++);
             $this->RegisterVar(['goe_logic_mode', 'Logic mode of the wallbox', 'I', '', false, 'device', 'HTTP API lmo (3 default, 4 Eco/aWATTar, 5 stop automatically)'], $pos++);
@@ -6936,6 +7209,21 @@ class ChargerHub extends IPSModule
         // gesehene Zustand (PlugState = -1) setzt keinen Zeitstempel, sonst stünde nach jedem Neustart
         // oder Einschalten der Option „jetzt“ als Zeit eines längst steckenden Fahrzeugs. Die Zeit ist
         // die des Lesezyklus, der den Wechsel bemerkt (Genauigkeit = Lese-Intervall), nicht von der Box.
+        if ($ident === 'vehicle_plugged') {
+            // Ein abgestecktes Fahrzeug macht die gemessene Ladegeschwindigkeit ungültig (das nächste Auto kann anders laden),
+            // und eine laufende Messung endet.
+            $plugNow = $value ? 1 : 0;
+            $plugPrev = $this->ReadAttributeInteger('CalibPlug');
+            if ($plugPrev !== $plugNow) {
+                $this->WriteAttributeInteger('CalibPlug', $plugNow);
+                if ($plugNow === 0 && $plugPrev !== -1) {
+                    if ($this->ReadAttributeBoolean('Calibrating')) {
+                        $this->CalibFinish(false, CHUB_Text::t('Aborted: vehicle disconnected.'));
+                    }
+                    $this->ClearMeasurement();
+                }
+            }
+        }
         if ($ident === 'vehicle_plugged' && $this->PlugTimesActive()) {
             $now  = $value ? 1 : 0;
             $prev = $this->ReadAttributeInteger('PlugState');
