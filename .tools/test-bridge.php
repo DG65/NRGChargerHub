@@ -79,6 +79,7 @@ class IPSModule {
     public $logs = [];
     public function LogMessage($text, $type) { $this->logs[] = [$type, $text]; }
     public function EnableAction($ident) {}
+    public function SetTimerInterval($n, $ms) { $this->timers[$n] = $ms; }
     public function GetBuffer($n) { return $this->buf[$n] ?? ''; }
     public function SetBuffer($n, $v) { $this->buf[$n] = $v; }
     public $formFields = [];
@@ -619,7 +620,52 @@ function contract18(string $mfr, array $attrs, array $vars): array {
     return $h->GetFunctions()[0];
 }
 $c1 = contract18('goe', ['DevicePhaseSwitch' => 1, 'DevicePhases' => 3], ['ctl_phase_mode' => 41001]);
-check('Vertrag 1.14: contractVersion 1.14', $c1['contractVersion'] === '1.14');
+check('Vertrag 1.15: contractVersion 1.15', $c1['contractVersion'] === '1.15');
+check('Vertrag 1.15: keine Messung, kein Plan als Grundzustand', $c1['calibrating'] === false && $c1['measuredMaxPowerW'] === 0 && $c1['measuredPhases'] === 0 && $c1['measuredAt'] === 0 && $c1['planWindows'] === []);
+// Messung der Ladegeschwindigkeit: reine Hilfsfunktionen
+check('Messung: Stromstufen 6..16 A', CHUB_Calib::steps(6, 16) === [6, 8, 10, 13, 16]);
+check('Messung: Stromstufen enden genau am erlaubten Maximum', CHUB_Calib::steps(6, 14) === [6, 8, 10, 13, 14]);
+check('Messung: Stromstufen ohne gültigen Bereich leer', CHUB_Calib::steps(6, 5) === []);
+check('Messung: Median', CHUB_Calib::median([5000, 4900, 5100]) === 5000.0 && CHUB_Calib::median([]) === 0.0);
+check('Messung: Plateau erkannt (Strom +60 %, Leistung +1 %)', CHUB_Calib::plateau(3680.0, 3720.0, 16, 25) === true);
+check('Messung: kein Plateau bei wachsender Leistung', CHUB_Calib::plateau(1840.0, 2900.0, 8, 13) === false);
+check('Messung: kein Plateau bei kleinem Stromsprung', CHUB_Calib::plateau(3000.0, 3000.0, 16, 17) === false);
+check('Messung: Phasen aus Leistung (3,7 kW bei 16 A = 1, 11 kW bei 16 A = 3)', CHUB_Calib::estimatePhases(3680.0, 16) === 1 && CHUB_Calib::estimatePhases(11040.0, 16) === 3 && CHUB_Calib::estimatePhases(0.0, 16) === 0);
+$nowW = time();
+$w = CHUB_Calib::normalizeWindows([['from' => $nowW + 3600, 'to' => $nowW + 7200, 'powerW' => 5000.4], ['from' => $nowW - 7200, 'to' => $nowW - 3600], ['from' => 5, 'to' => 3], 'x', ['from' => $nowW + 100, 'to' => $nowW + 200]], $nowW);
+check('Ladefenster: Vergangenes und Ungültiges entfällt, sortiert, powerW gerundet', count($w) === 2 && $w[0]['from'] === $nowW + 100 && $w[1]['powerW'] === 5000);
+check('Ladefenster: JSON-String und Müll', count(CHUB_Calib::normalizeWindows(json_encode([['from' => $nowW + 10, 'to' => $nowW + 20]]), $nowW)) === 1 && CHUB_Calib::normalizeWindows('kein json', $nowW) === []);
+// Modul: Ladefenster speichern, Messung ohne steuerbare Wallbox ablehnen
+$pwHub = new ChargerHub(802); $pwHub->prop = ['Manufacturer' => 'goe', 'Active' => true]; $pwHub->RegisterAttributeInteger('LastSeenAt', 0);
+$msgW = $pwHub->SetPlanWindows([['from' => $nowW + 60, 'to' => $nowW + 900]], $nowW + 3600);
+$cw = $pwHub->GetFunctions()[0];
+check('Ladefenster: gespeichert und im Vertrag als planWindows', strpos($msgW, '1 Ladefenster') === 0 && count($cw['planWindows']) === 1 && $cw['planWindows'][0]['from'] === $nowW + 60);
+$pwHub->SetPlanWindows([], 0);
+check('Ladefenster: leere Liste löscht', $pwHub->GetFunctions()[0]['planWindows'] === []);
+$mHub = new ChargerHub(803); $mHub->prop = ['Manufacturer' => 'goe', 'Active' => true, 'ManagedBy' => 'none'];
+check('Messung: ohne Ladefreigabe-Variable nicht gestartet', strpos($mHub->MeasureChargeCurve(), 'Nicht gestartet') === 0 && $mHub->ReadAttributeBoolean('Calibrating') === false);
+$mHub2 = new ChargerHub(804); $mHub2->prop = ['Manufacturer' => 'goe', 'Active' => false];
+$fHub = new ChargerHub(806); $fHub->prop = ['Manufacturer' => 'goe', 'Active' => true]; $fHub->RegisterAttributeInteger('LastSeenAt', 0);
+$fHub->WriteAttributeBoolean('Calibrating', true);
+$fHub->WriteAttributeString('CalibState', json_encode(['results' => [['a' => 6, 'w' => 1380], ['a' => 10, 'w' => 2300], ['a' => 16, 'w' => 3650], ['a' => 25, 'w' => 3700]]]));
+(new ReflectionMethod($fHub, 'CalibFinish'))->invoke($fHub, true, '');
+$cf = $fHub->GetFunctions()[0];
+check('Messung: Ergebnis = höchste Leistung (auf 10 W gerundet), Phasen aus der kleinsten Stufe mit 97 %', $cf['measuredMaxPowerW'] === 3700 && $cf['measuredPhases'] === 1 && $cf['measuredAt'] > 0 && $cf['calibrating'] === false);
+$aHub = new ChargerHub(807); $aHub->prop = ['Manufacturer' => 'goe', 'Active' => true]; $aHub->RegisterAttributeInteger('LastSeenAt', 0);
+$aHub->WriteAttributeBoolean('Calibrating', true); $aHub->WriteAttributeString('CalibState', json_encode(['results' => []]));
+(new ReflectionMethod($aHub, 'CalibFinish'))->invoke($aHub, false, 'Abgebrochen: Test');
+check('Messung: Abbruch lässt kein Ergebnis zurück und beendet den Zustand', $aHub->GetFunctions()[0]['measuredMaxPowerW'] === 0 && $aHub->ReadAttributeBoolean('Calibrating') === false);
+$bHub = new ChargerHub(808); $bHub->prop = ['Manufacturer' => 'goe', 'Active' => true]; $bHub->RegisterAttributeInteger('LastSeenAt', 0);
+$bHub->WriteAttributeInteger('MeasuredMaxPowerW', 5000); $bHub->WriteAttributeInteger('CalibPlug', 1);
+$bHub->SetVarBool('vehicle_plugged', false);
+check('Messung: Abstecken löscht das gemessene Ergebnis', $bHub->GetFunctions()[0]['measuredMaxPowerW'] === 0);
+$cHub = new ChargerHub(809); $cHub->prop = ['Manufacturer' => 'goe', 'Active' => true]; $cHub->RegisterAttributeInteger('LastSeenAt', 0);
+$cHub->WriteAttributeBoolean('Calibrating', true);
+$cHub->RequestAction('ctl_curr_limit', 10);
+check('Messung: Steuerbefehl von außen wird während der Messung ignoriert und geloggt', count(array_filter($cHub->logs, fn ($l) => $l[0] === KL_WARNING && strpos($l[1], 'ignoriert') !== false)) === 1);
+check('Messung: bei inaktiver Instanz nicht gestartet', strpos($mHub2->MeasureChargeCurve(), 'inaktiv') !== false);
+$mHub3 = new ChargerHub(805); $mHub3->prop = ['Manufacturer' => 'goe', 'Active' => true, 'ManagedBy' => 'tibber'];
+check('Messung: bei fremdem Regler nicht gestartet', strpos($mHub3->MeasureChargeCurve(), 'anderer Regler') !== false);
 check('Vertrag 1.14: groupName leer, wenn keine Gruppe gesetzt', array_key_exists('groupName', $c1) && $c1['groupName'] === '');
 $gh = new ChargerHub(799); $gh->prop = ['Manufacturer' => 'goe', 'GroupName' => '  Garage  ']; $gh->RegisterAttributeInteger('LastSeenAt', 0);
 check('Vertrag 1.14: groupName getrimmt gemeldet', $gh->GetFunctions()[0]['groupName'] === 'Garage');

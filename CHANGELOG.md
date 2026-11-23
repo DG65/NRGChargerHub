@@ -5,6 +5,20 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.17.0] - 2026-11-24
+
+### Added
+- **Ladegeschwindigkeit messen:** `CHUB_MeasureChargeCurve($id)` (auch als Schaltfläche „Ladegeschwindigkeit messen“ im Panel „Bedienung“)
+  fährt die Stromstufen von 6 A bis zum erlaubten Maximum ab, liest je Stufe die Leistung des angesteckten Fahrzeugs und merkt sich die
+  höchste Leistung. `CHUB_CancelChargeCurve($id)` bricht ab. Läuft asynchron (Timer, etwa 50 Sekunden je Stufe, Plateau-Erkennung beendet
+  früher). Voraussetzungen: Fahrzeug angesteckt, `managedBy` = `none` oder `ems`, Wallbox steuerbar. Während der Messung ignoriert ChargerHub
+  Steuerbefehle von außen; danach werden Freigabe und Limit wie vorher wiederhergestellt. Beim Abstecken wird das Ergebnis gelöscht.
+  Neue Variablen `calib_status`, `measured_max_power`, `measured_phases`, `measured_at`.
+- **Ladefenster von außen:** `CHUB_SetPlanWindows($id, $windows, $validUntil)` nimmt geplante Ladefenster eines Planers auf (Liste von
+  `from`/`to` als Unixzeit, optional `powerW`). Reine Auskunft; ChargerHub regelt danach nicht.
+- **Vertrag `CHUB_GetFunctions` 1.15 (additiv):** Felder `calibrating`, `measuredMaxPowerW`, `measuredPhases`, `measuredAt`, `planWindows`.
+  Keine bestehenden Felder oder Idents geändert.
+
 ## [0.16.0] - 2026-11-22
 
 ### Added
