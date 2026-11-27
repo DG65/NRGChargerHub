@@ -663,6 +663,15 @@ $cHub = new ChargerHub(809); $cHub->prop = ['Manufacturer' => 'goe', 'Active' =>
 $cHub->WriteAttributeBoolean('Calibrating', true);
 $cHub->RequestAction('ctl_curr_limit', 10);
 check('Messung: Steuerbefehl von außen wird während der Messung ignoriert und geloggt', count(array_filter($cHub->logs, fn ($l) => $l[0] === KL_WARNING && strpos($l[1], 'ignoriert') !== false)) === 1);
+check('openWB: HTTP-Wartezeit einstellbar (Standard 8 s, Begrenzung 1 bis 60 s)', (new CHUB_OpenWBHttpClient('h', 80, 0))->getTimeout() === 8.0 && (new CHUB_OpenWBHttpClient('h', 80, 0, false, '', 12.0))->getTimeout() === 12.0 && (new CHUB_OpenWBHttpClient('h', 80, 0, false, '', 0.1))->getTimeout() === 1.0 && (new CHUB_OpenWBHttpClient('h', 80, 0, false, '', 999.0))->getTimeout() === 60.0);
+$slow = stream_socket_server('tcp://127.0.0.1:0', $se1, $se2);
+$slowPort = (int)substr(strrchr(stream_socket_get_name($slow, false), ':'), 1);
+$slowClient = new CHUB_OpenWBHttpClient('127.0.0.1', $slowPort, 1, false, '', 1.0);
+$t0 = microtime(true);
+$slowRes = $slowClient->getChargePoint();
+$slowDt = microtime(true) - $t0;
+check('openWB: antwortet die Primary nicht, endet die Anfrage nach der Wartezeit mit klarem Hinweis', $slowRes === null && $slowDt >= 0.9 && $slowDt < 5 && strpos($slowClient->getLastError(), 'ohne Antwort') !== false);
+fclose($slow);
 check('Messung: bei inaktiver Instanz nicht gestartet', strpos($mHub2->MeasureChargeCurve(), 'inaktiv') !== false);
 $mHub3 = new ChargerHub(805); $mHub3->prop = ['Manufacturer' => 'goe', 'Active' => true, 'ManagedBy' => 'tibber'];
 check('Messung: bei fremdem Regler nicht gestartet', strpos($mHub3->MeasureChargeCurve(), 'anderer Regler') !== false);

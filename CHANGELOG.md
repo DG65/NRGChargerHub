@@ -5,6 +5,15 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
 Ältere Versionen: [CHANGELOG-Archiv.md](CHANGELOG-Archiv.md)
 
+## [0.17.1] - 2026-11-27
+
+### Fixed
+- **openWB-Primary: „Connection failed“ nach dem Update auf openWB 2.4 alpha-1.** Die Primary antwortet danach langsamer, die bisher
+  fest eingestellten 3 Sekunden Wartezeit je HTTP-Anfrage reichten nicht mehr (Fund und Test von Dirk Allard, dallard: mit 8 Sekunden
+  läuft es, 4 wären knapp). Die Wartezeit ist jetzt je Instanz einstellbar (neue Eigenschaft „HTTP-Wartezeit“, 2 bis 30 Sekunden, Standard
+  **8**), und bleibt eine Antwort aus, zeigt die Instanz „HTTP-Anfrage nach … s ohne Antwort“ mit dem Hinweis, den Wert zu erhöhen, statt
+  der allgemeinen Meldung „HTTP connection failed“.
+
 ## [0.17.0] - 2026-11-24
 
 ### Added

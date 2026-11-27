@@ -15,6 +15,9 @@ gesteuerte openWB Pro wird **nie** direkt per Modbus oder OCPP angesprochen: nur
 3. Optional HTTPS (Serverzertifikat wird geprüft) und ein Bearer-Token. Das Token wird nur über HTTPS gesendet. Es wird mit
    der Schaltfläche „Token speichern“ im Attribut abgelegt (nicht in der Property, also nicht im Formular sichtbar), das
    Eingabefeld wird danach geleert; ein leeres Feld löscht das gespeicherte Token.
+4. **HTTP-Wartezeit** (Standard 8 Sekunden, 2 bis 30): wie lange ChargerHub auf eine Antwort der Primary wartet. Nach einem Update
+   (zum Beispiel auf openWB 2.4 alpha-1) antwortet die Primary langsamer; mit der früher fest eingestellten Wartezeit von 3 Sekunden
+   endete dann jede Anfrage mit „Connection failed“. Zeigt die Instanz „HTTP-Anfrage nach … s ohne Antwort“, den Wert erhöhen.
 
 ## Lesen (ein GET je Abfrage)
 
