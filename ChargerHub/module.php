@@ -718,13 +718,22 @@ class CHUB_OpenWBHttpClient extends CHUB_ModbusTcpClient
     private bool $https;
     private string $bearerToken;
     private string $lastError = '';
+    // Wartezeit je HTTP-Anfrage in Sekunden. Fund Dirk Allard (27.11.2026): nach dem Update auf openWB 2.4 alpha-1 antwortet
+    // die Primary langsamer, mit festen 3 s scheiterte jede Anfrage („Connection failed“).
+    private float $timeout;
 
-    public function __construct(string $host, int $port, int $chargePointId, bool $https = false, string $bearerToken = '')
+    public function __construct(string $host, int $port, int $chargePointId, bool $https = false, string $bearerToken = '', float $timeout = 8.0)
     {
         parent::__construct($host, $port, 0);
         $this->chargePointId = $chargePointId;
         $this->https = $https;
         $this->bearerToken = $bearerToken;
+        $this->timeout = max(1.0, min(60.0, $timeout));
+    }
+
+    public function getTimeout(): float
+    {
+        return $this->timeout;
     }
 
     public function getLastError(): string
@@ -755,7 +764,7 @@ class CHUB_OpenWBHttpClient extends CHUB_ModbusTcpClient
         $context = stream_context_create([
             'http' => [
                 'method' => $method,
-                'timeout' => 3.0,
+                'timeout' => $this->timeout,
                 'ignore_errors' => true,
                 'follow_location' => 0,
                 'header' => implode("\r\n", $headers) . "\r\n",
@@ -763,7 +772,9 @@ class CHUB_OpenWBHttpClient extends CHUB_ModbusTcpClient
             ],
             'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
         ]);
+        $startedAt = microtime(true);
         $body = @file_get_contents($url, false, $context);
+        $elapsed = microtime(true) - $startedAt;
         $responseHeaders = $http_response_header ?? [];
         $status = 0;
         foreach ($responseHeaders as $line) {
@@ -772,7 +783,12 @@ class CHUB_OpenWBHttpClient extends CHUB_ModbusTcpClient
             }
         }
         if ($body === false) {
-            $this->lastError = CHUB_Text::t('HTTP connection failed (address, port, TLS or timeout).');
+            // PHP meldet eine ausbleibende Antwort nur als „HTTP request failed!“: als Zeitüberschreitung gilt, wenn die Anfrage
+            // die Wartezeit praktisch ausgeschöpft hat (eine abgelehnte Verbindung scheitert sofort).
+            $detail = (string)(error_get_last()['message'] ?? '');
+            $this->lastError = ($elapsed >= $this->timeout - 0.3 || stripos($detail, 'timed out') !== false)
+                ? CHUB_Text::t('HTTP request timed out after %d s: increase the timeout in the instance (openWB can answer slowly after an update).', (int)$this->timeout)
+                : CHUB_Text::t('HTTP connection failed (address, port, TLS or timeout).');
             return null;
         }
         if ($status < 200 || $status >= 300) {
@@ -3488,7 +3504,7 @@ class ChargerHub extends IPSModule
     // für die Formular-Optik (SUITE.md, Referenz InverterHub).
     private const NEWS_VERSION = '0.17.0';
     // Modulversion für die Anzeige im Doku-Panel (gleich library.json, Prüfstand vergleicht).
-    private const VERSION = '0.17.0';
+    private const VERSION = '0.17.1';
     private const MODBUS_GATEWAY_GUID = '{A5F663AB-C400-4FE5-B207-4D67CC030564}';
     private const BRIDGE_GUID = '{70A95152-45C4-4E07-9563-FB3AF5D88A40}';
     private const LICENSE_URL = 'https://github.com/DG65/NRGChargerHub/blob/beta/LICENSE';
@@ -3731,6 +3747,8 @@ class ChargerHub extends IPSModule
         $this->RegisterPropertyInteger('OpenWBChargePointID', -1);
         $this->RegisterPropertyInteger('OpenWBHttpPort', 80);
         $this->RegisterPropertyBoolean('OpenWBHTTPS', false);
+        // Wartezeit je HTTP-Anfrage an die openWB-Primary in Sekunden (Standard 8; bis 2.3 reichten 3 s).
+        $this->RegisterPropertyInteger('OpenWBTimeoutSec', 8);
         $this->RegisterPropertyString('OpenWBBearerToken', '');
         $this->RegisterPropertyInteger('IntervalFast', 10);
         // Zwei-Regler-Schutz: WER hat die Hoheit über diesen Ladepunkt?
@@ -4835,7 +4853,7 @@ class ChargerHub extends IPSModule
         if ($Ident === 'ManufacturerChanged') {
             $this->UpdateFormField('ChargePointNo', 'visible', (string)$Value === 'charx');
             $openWB = (string)$Value === 'openwb';
-            foreach (['OpenWBChargePointID', 'OpenWBHttpPort', 'OpenWBHTTPS', 'OpenWBBearerToken', 'OpenWBTokenButton', 'OpenWBInfoLabel'] as $f) {
+            foreach (['OpenWBChargePointID', 'OpenWBHttpPort', 'OpenWBHTTPS', 'OpenWBTimeoutSec', 'OpenWBTimeoutSecHint', 'OpenWBBearerToken', 'OpenWBTokenButton', 'OpenWBInfoLabel'] as $f) {
                 $this->UpdateFormField($f, 'visible', $openWB);
             }
             $direct = $this->ReadPropertyString('ConnectionType') !== 'gateway';
@@ -6054,7 +6072,8 @@ class ChargerHub extends IPSModule
                 $this->ReadPropertyInteger('OpenWBHttpPort'),
                 $this->ReadPropertyInteger('OpenWBChargePointID'),
                 $this->ReadPropertyBoolean('OpenWBHTTPS'),
-                $this->ReadAttributeString('OpenWBToken') !== '' ? $this->ReadAttributeString('OpenWBToken') : $this->ReadPropertyString('OpenWBBearerToken')
+                $this->ReadAttributeString('OpenWBToken') !== '' ? $this->ReadAttributeString('OpenWBToken') : $this->ReadPropertyString('OpenWBBearerToken'),
+                (float)max(2, min(30, $this->ReadPropertyInteger('OpenWBTimeoutSec') ?: 8))
             );
         }
         // ASCII (ABL) geht IMMER über den direkten Socket-Weg — das native
@@ -6269,6 +6288,8 @@ class ChargerHub extends IPSModule
                         ['type' => 'NumberSpinner', 'name' => 'OpenWBChargePointID', 'caption' => 'openWB chargepoint ID (status page; zero-based)', 'minimum' => -1, 'maximum' => 255, 'visible' => $openWB],
                         ['type' => 'NumberSpinner', 'name' => 'OpenWBHttpPort', 'caption' => 'Primary HTTP(S) port (80 or 443)', 'minimum' => 1, 'maximum' => 65535, 'visible' => $openWB],
                         ['type' => 'CheckBox', 'name' => 'OpenWBHTTPS', 'caption' => 'Use HTTPS (verify server certificate)', 'visible' => $openWB],
+                        ['type' => 'NumberSpinner', 'name' => 'OpenWBTimeoutSec', 'caption' => '🆕 HTTP timeout (seconds)', 'minimum' => 2, 'maximum' => 30, 'suffix' => 's', 'visible' => $openWB],
+                        ['type' => 'Label', 'name' => 'OpenWBTimeoutSecHint', 'caption' => 'How long ChargerHub waits for an answer from the openWB Primary. Default 8 s. After an update (for example to openWB 2.4) the Primary may answer slower; if the status shows “HTTP request timed out”, raise the value.', 'visible' => $openWB],
                         ['type' => 'PasswordTextBox', 'name' => 'OpenWBBearerToken', 'caption' => 'Bearer token (optional; requires HTTPS)', 'visible' => $openWB],
                         ['type' => 'Button', 'name' => 'OpenWBTokenButton', 'caption' => 'Store token (field is cleared afterwards; an empty field deletes the stored token)', 'onClick' => 'echo CHUB_SetOpenWBToken($id, $OpenWBBearerToken);', 'visible' => $openWB],
                         ['type' => 'Label', 'name' => 'OpenWBInfoLabel', 'caption' => 'Only the openWB Primary address belongs here (NOT the Pro). A Bearer token is never sent over plain HTTP. The chargepoint ID must be explicitly selected; automatic selection is deliberately disabled.', 'visible' => $openWB],
